@@ -1,0 +1,27 @@
+# Python / Streamlit / RAG PoC
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Env
+.env
+
+# Runtime data (not tracked)
+data/
+indexes/
+metadata/
+logs/
+
+# Jupyter cache
+.ipynb_checkpoints/
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db

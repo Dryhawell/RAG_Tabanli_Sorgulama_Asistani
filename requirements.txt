@@ -1,0 +1,11 @@
+streamlit
+pymupdf
+pdfplumber
+sentence-transformers
+torch
+faiss-cpu
+numpy
+tqdm
+pydantic
+openai
+requests
