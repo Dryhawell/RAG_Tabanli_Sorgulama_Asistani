@@ -9,3 +9,4 @@ tqdm
 pydantic
 openai
 requests
+pytest

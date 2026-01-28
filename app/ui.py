@@ -1,6 +1,7 @@
 import os
 import streamlit as st
 from typing import List
+import requests
 
 from rag.readers import read_document
 from rag.chunking import chunk_pages
@@ -13,6 +14,10 @@ from app.config import INDEX_PATH, DOCSTORE_PATH, DEFAULT_EMBEDDING_MODEL, DEFAU
 st.set_page_config(page_title="RAG Not/PDF Asistanı", layout="wide")
 st.title("LLM Destekli PDF / Not Sorgulama Asistanı (RAG)")
 
+# Gerekli klasörleri oluştur
+for _d in ["data", "indexes", "metadata"]:
+    os.makedirs(_d, exist_ok=True)
+
 # Sidebar kontroller
 with st.sidebar:
     st.header("Ayarlar")
@@ -20,9 +25,20 @@ with st.sidebar:
     if provider == "ollama":
         model_name = st.text_input("Ollama Model", value="phi3:mini")
         st.caption("Öneri: küçük/quantized model (örn. phi3:mini) CPU'da daha hızlı")
+        # Basit Ollama sağlık kontrolü
+        try:
+            r = requests.get("http://localhost:11434/api/tags", timeout=1.5)
+            if r.status_code == 200:
+                st.success("Ollama çalışıyor (localhost:11434)")
+            else:
+                st.warning("Ollama'a ulaşılamadı veya beklenmeyen yanıt.")
+        except Exception:
+            st.warning("Ollama kapalı görünüyor. Lütfen Ollama'yı başlatın.")
     else:
         model_name = st.text_input("OpenAI Model", value="gpt-3.5-turbo")
         st.caption("OPENAI_API_KEY çevre değişkeni gerekli")
+        if not os.getenv("OPENAI_API_KEY"):
+            st.warning("OPENAI_API_KEY tanımlı değil. Ayarlamazsanız yanıt üretemeyiz.")
     top_k = st.slider("Top‑K", min_value=3, max_value=10, value=DEFAULT_TOP_K)
     rebuild = st.button("İndeksi Yeniden Oluştur")
 
@@ -90,11 +106,16 @@ if rebuild:
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
 
+# İndeks boşsa kullanıcıyı bilgilendir
+index_empty = getattr(index.idmap, "ntotal", 0) == 0
+if index_empty:
+    st.info("İndeks boş. Soru sorabilmek için önce dosya yükleyin veya indeksi yeniden oluşturun.")
+
 for m in st.session_state["messages"]:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])# basit gösterim
 
-user_input = st.chat_input("Sorunuzu yazın...")
+user_input = st.chat_input("Sorunuzu yazın...", disabled=index_empty)
 
 if user_input:
     st.session_state["messages"].append({"role": "user", "content": user_input})
@@ -116,6 +137,7 @@ if user_input:
                 answer = generate_answer(provider=provider, model_name=model_name, prompt=prompt)
             except Exception as e:
                 answer = f"LLM çağrısı başarısız: {e}"
+                st.error(answer)
         with st.chat_message("assistant"):
             st.markdown(answer)
             with st.expander("Alınan Chunk’lar (skorlar)"):

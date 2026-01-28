@@ -31,17 +31,40 @@ Kullanıcının yüklediği PDF veya TXT dokümanlarını analiz ederek, yalnız
 - Küçük yerel LLM modellerinde (Ollama, CPU) hız/kalite kısıtları olabilir
 - İngilizce dışı metinlerde MiniLM performansı düşebilir (gelecekte çok dilli model düşünülebilir)
 
-## Kurulum (Windows, PowerShell)
-1. Python 3.10/3.11 ile sanal ortam önerilir
-2. Bağımlılıkları kurun
-3. OpenAI kullanacaksanız API anahtarını ayarlayın veya Ollama’yı kurun
+## Kurulum ve Çalıştırma (Windows, PowerShell)
+1) Python 3.10/3.11 sanal ortam (önerilir):
 
-### Çalıştırma Adımları
-1. Dosyaları yüklemek için arayüzü açın
-2. İndeksi oluşturun ve soru sorun
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
 
-## Çalıştırma Komutları
-Gerekli komutlar aşağıda ana akışta ayrıca verilmiştir.
+2) Bağımlılıklar:
+
+```powershell
+pip install -r requirements.txt
+```
+
+3) LLM sağlayıcı seçimi:
+- Ollama (varsayılan): Ollama'yı kurup çalıştırın. Uygulama, `http://localhost:11434` adresini kontrol eder.
+- OpenAI: Ortam değişkenini ayarlayın ve bir model seçin (örn. `gpt-3.5-turbo`).
+
+```powershell
+$env:OPENAI_API_KEY = "<anahtarınız>"
+```
+
+4) Uygulamayı başlatma:
+
+```powershell
+streamlit run app/ui.py
+```
+
+5) Kullanım:
+- Sol taraftan sağlayıcı ve model seçin.
+- PDF/TXT dosyalarınızı yükleyin (data/ klasörüne kaydedilir, indeks oluşturulur).
+- Sohbet kutusuna sorunuzu yazın. Altta ilgili chunk’lar ve skorlar gösterilir.
+
+İpucu: “İndeksi Yeniden Oluştur” butonu, `data/` klasöründeki dosyalardan indeksi sıfırdan kurar.
 
 ## Dosya Yapısı
 - `app/ui.py`: Streamlit arayüzü
@@ -53,3 +76,12 @@ Gerekli komutlar aşağıda ana akışta ayrıca verilmiştir.
 - `rag/prompt.py`: katı RAG prompt şablonu
 - `rag/types.py`: metadata modelleri
 - `indexes/`, `metadata/`, `data/`: kalıcı klasörler
+
+## Testler
+Basit smoke testleri `pytest` ile çalıştırabilirsiniz:
+
+```powershell
+pytest -q
+```
+
+Not: Testler model indirmesi yapmaz; FAISS ve chunking mantığını küçük örneklerle doğrular.
