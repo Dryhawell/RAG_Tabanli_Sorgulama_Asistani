@@ -1,7 +1,11 @@
 import os
 from unittest.mock import MagicMock
 
-from rag.ingest import is_supported_file, list_data_files, rebuild_from_data_dir
+import numpy as np
+
+from rag.ingest import delete_source, is_supported_file, list_data_files, rebuild_from_data_dir
+from rag.index import FaissIndex
+from rag.types import ChunkMetadata
 
 
 def test_is_supported_file():
@@ -18,6 +22,26 @@ def test_list_data_files_filters(tmp_path):
     files = list_data_files(str(tmp_path))
     names = {os.path.basename(p) for p in files}
     assert names == {"a.pdf", "b.txt"}
+
+
+def test_delete_source_removes_file_and_chunks(tmp_path):
+    path = tmp_path / "notlar.txt"
+    path.write_text("merhaba", encoding="utf-8")
+    idx = FaissIndex(dim=2)
+    vec = np.array([[1.0, 0.0]], dtype=np.float32)
+    meta = ChunkMetadata(
+        source_file="notlar.txt",
+        chunk_id=0,
+        page_start=1,
+        page_end=1,
+        word_count=1,
+    )
+    idx.add(vec, ["merhaba"], [meta])
+    report = delete_source("notlar.txt", idx, str(tmp_path))
+    assert report["chunks_removed"] == 1
+    assert report["file_deleted"] is True
+    assert not path.exists()
+    assert idx.size == 0
 
 
 def test_rebuild_skips_bad_files(tmp_path):

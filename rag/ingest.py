@@ -84,6 +84,25 @@ def ingest_path(
     }
 
 
+def delete_source(
+    source_file: str,
+    index: FaissIndex,
+    data_dir: str,
+) -> Dict:
+    """Kaynağı diskten ve indeksten kaldırır."""
+    removed_chunks = index.remove_source(source_file)
+    path = os.path.join(data_dir, source_file)
+    deleted_file = False
+    if os.path.isfile(path):
+        os.remove(path)
+        deleted_file = True
+    return {
+        "source_file": source_file,
+        "chunks_removed": removed_chunks,
+        "file_deleted": deleted_file,
+    }
+
+
 def rebuild_from_data_dir(
     data_dir: str,
     embedder: Embedder,
