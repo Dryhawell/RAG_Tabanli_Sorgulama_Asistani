@@ -9,35 +9,51 @@ from rag.embed import Embedder
 from rag.index import FaissIndex
 from rag.prompt import build_prompt
 from rag.llm import generate_answer
-from app.config import INDEX_PATH, DOCSTORE_PATH, DEFAULT_EMBEDDING_MODEL, DEFAULT_TOP_K, NO_ANSWER_THRESHOLD
+from app.config import (
+    INDEX_PATH,
+    DOCSTORE_PATH,
+    DATA_DIR,
+    INDEXES_DIR,
+    METADATA_DIR,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_TOP_K,
+    NO_ANSWER_THRESHOLD,
+    DEFAULT_LLM_PROVIDER,
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OPENAI_MODEL,
+    OLLAMA_HOST,
+    OPENAI_API_KEY,
+)
 
 st.set_page_config(page_title="RAG Not/PDF Asistanı", layout="wide")
 st.title("LLM Destekli PDF / Not Sorgulama Asistanı (RAG)")
 
 # Gerekli klasörleri oluştur
-for _d in ["data", "indexes", "metadata"]:
+for _d in [DATA_DIR, INDEXES_DIR, METADATA_DIR]:
     os.makedirs(_d, exist_ok=True)
 
 # Sidebar kontroller
 with st.sidebar:
     st.header("Ayarlar")
-    provider = st.selectbox("LLM Sağlayıcı", options=["ollama", "openai"], index=0)
+    provider_options = ["ollama", "openai"]
+    provider_index = provider_options.index(DEFAULT_LLM_PROVIDER) if DEFAULT_LLM_PROVIDER in provider_options else 0
+    provider = st.selectbox("LLM Sağlayıcı", options=provider_options, index=provider_index)
     if provider == "ollama":
-        model_name = st.text_input("Ollama Model", value="phi3:mini")
+        model_name = st.text_input("Ollama Model", value=DEFAULT_OLLAMA_MODEL)
         st.caption("Öneri: küçük/quantized model (örn. phi3:mini) CPU'da daha hızlı")
         # Basit Ollama sağlık kontrolü
         try:
-            r = requests.get("http://localhost:11434/api/tags", timeout=1.5)
+            r = requests.get(f"{OLLAMA_HOST.rstrip('/')}/api/tags", timeout=1.5)
             if r.status_code == 200:
-                st.success("Ollama çalışıyor (localhost:11434)")
+                st.success(f"Ollama çalışıyor ({OLLAMA_HOST})")
             else:
                 st.warning("Ollama'a ulaşılamadı veya beklenmeyen yanıt.")
         except Exception:
             st.warning("Ollama kapalı görünüyor. Lütfen Ollama'yı başlatın.")
     else:
-        model_name = st.text_input("OpenAI Model", value="gpt-3.5-turbo")
+        model_name = st.text_input("OpenAI Model", value=DEFAULT_OPENAI_MODEL)
         st.caption("OPENAI_API_KEY çevre değişkeni gerekli")
-        if not os.getenv("OPENAI_API_KEY"):
+        if not OPENAI_API_KEY:
             st.warning("OPENAI_API_KEY tanımlı değil. Ayarlamazsanız yanıt üretemeyiz.")
     top_k = st.slider("Top‑K", min_value=3, max_value=10, value=DEFAULT_TOP_K)
     rebuild = st.button("İndeksi Yeniden Oluştur")
@@ -69,7 +85,7 @@ emb = get_embedder()
 if uploaded_files:
     with st.spinner("Dosyalar işleniyor..."):
         for uf in uploaded_files:
-            save_path = os.path.join("data", uf.name)
+            save_path = os.path.join(DATA_DIR, uf.name)
             with open(save_path, "wb") as f:
                 f.write(uf.getbuffer())
             source_name, pages = read_document(save_path)
@@ -87,7 +103,7 @@ if rebuild:
     st.session_state["index"] = FaissIndex(dim=emb.dim)
     index = st.session_state["index"]
     # Var olan data klasöründeki dosyaları tekrar işleme
-    files = [os.path.join("data", x) for x in os.listdir("data")]
+    files = [os.path.join(DATA_DIR, x) for x in os.listdir(DATA_DIR)]
     with st.spinner("İndeks yeniden oluşturuluyor..."):
         for path in files:
             try:
