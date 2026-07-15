@@ -6,6 +6,7 @@ DOCSTORE_PATH = os.getenv("RAG_DOCSTORE_PATH", "metadata/docstore.json")
 DATA_DIR = os.getenv("RAG_DATA_DIR", "data")
 METADATA_DIR = os.getenv("RAG_METADATA_DIR", "metadata")
 INDEXES_DIR = os.getenv("RAG_INDEXES_DIR", "indexes")
+CHAT_DIR = os.getenv("RAG_CHAT_DIR", os.path.join(METADATA_DIR, "chats"))
 
 # Embedding
 DEFAULT_EMBEDDING_MODEL = os.getenv(

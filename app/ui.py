@@ -13,12 +13,21 @@ from rag.llm import generate_answer, stream_answer
 from rag.rerank import get_reranker
 from rag.retrieve import retrieve
 from rag.readers import _ocr_available
+from rag.chat_store import (
+    append_messages,
+    create_session,
+    delete_session,
+    list_sessions,
+    load_session,
+    save_session,
+)
 from app.config import (
     INDEX_PATH,
     DOCSTORE_PATH,
     DATA_DIR,
     INDEXES_DIR,
     METADATA_DIR,
+    CHAT_DIR,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_TOP_K,
     NO_ANSWER_THRESHOLD,
@@ -36,7 +45,7 @@ from app.config import (
 st.set_page_config(page_title="RAG Not/PDF Asistanı", layout="wide")
 st.title("LLM Destekli PDF / Not Sorgulama Asistanı (RAG)")
 
-for _d in [DATA_DIR, INDEXES_DIR, METADATA_DIR]:
+for _d in [DATA_DIR, INDEXES_DIR, METADATA_DIR, CHAT_DIR]:
     os.makedirs(_d, exist_ok=True)
 
 
@@ -126,14 +135,63 @@ with st.sidebar:
         st.caption(f"Model: {DEFAULT_RERANKER_MODEL}")
     use_stream = st.checkbox("Yanıtı stream et", value=True)
     rebuild = st.button("İndeksi Yeniden Oluştur")
-    clear_chat = st.button("Sohbeti Temizle")
+
+    st.header("Sohbetler")
+    sessions = list_sessions()
+    session_ids = [s["id"] for s in sessions]
+    labels = {
+        s["id"]: f"{s['title']} ({s['n_messages']})"
+        for s in sessions
+    }
+
+    if "chat_session_id" not in st.session_state:
+        if session_ids:
+            st.session_state["chat_session_id"] = session_ids[0]
+        else:
+            created = create_session()
+            st.session_state["chat_session_id"] = created["id"]
+            sessions = list_sessions()
+            session_ids = [s["id"] for s in sessions]
+            labels = {s["id"]: f"{s['title']} ({s['n_messages']})" for s in sessions}
+
+    current_id = st.session_state["chat_session_id"]
+    if current_id not in session_ids and session_ids:
+        current_id = session_ids[0]
+        st.session_state["chat_session_id"] = current_id
+
+    selected = st.selectbox(
+        "Kayıtlı oturum",
+        options=session_ids,
+        index=session_ids.index(current_id) if current_id in session_ids else 0,
+        format_func=lambda sid: labels.get(sid, sid),
+    )
+    if selected != st.session_state.get("chat_session_id"):
+        st.session_state["chat_session_id"] = selected
+        loaded = load_session(selected) or create_session()
+        st.session_state["chat_session"] = loaded
+        st.session_state["messages"] = list(loaded.get("messages") or [])
+        st.rerun()
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        new_chat = st.button("Yeni", use_container_width=True)
+    with c2:
+        clear_chat = st.button("Temizle", use_container_width=True)
+    with c3:
+        delete_chat = st.button("Sil", use_container_width=True)
 
 # Session / index
 emb = get_embedder(embedding_model)
 if "index" not in st.session_state:
     st.session_state["index"] = load_or_create_index(dim=emb.dim, embedding_model=embedding_model)
+
+if "chat_session" not in st.session_state:
+    sid = st.session_state.get("chat_session_id")
+    loaded = load_session(sid) if sid else None
+    st.session_state["chat_session"] = loaded or create_session()
+    st.session_state["chat_session_id"] = st.session_state["chat_session"]["id"]
 if "messages" not in st.session_state:
-    st.session_state["messages"] = []
+    st.session_state["messages"] = list(st.session_state["chat_session"].get("messages") or [])
 
 index: FaissIndex = st.session_state["index"]
 if index.embedding_model and index.embedding_model != embedding_model and index.size > 0:
@@ -142,7 +200,24 @@ if index.embedding_model and index.embedding_model != embedding_model and index.
         "Doğru arama için «İndeksi Yeniden Oluştur» kullanın."
     )
 
+if new_chat:
+    created = create_session()
+    st.session_state["chat_session"] = created
+    st.session_state["chat_session_id"] = created["id"]
+    st.session_state["messages"] = []
+    st.rerun()
+
 if clear_chat:
+    st.session_state["messages"] = []
+    st.session_state["chat_session"]["messages"] = []
+    save_session(st.session_state["chat_session"])
+    st.rerun()
+
+if delete_chat:
+    delete_session(st.session_state["chat_session_id"])
+    created = create_session()
+    st.session_state["chat_session"] = created
+    st.session_state["chat_session_id"] = created["id"]
     st.session_state["messages"] = []
     st.rerun()
 
@@ -322,7 +397,8 @@ for m in st.session_state["messages"]:
 user_input = st.chat_input("Sorunuzu yazın...", disabled=index_empty)
 
 if user_input:
-    st.session_state["messages"].append({"role": "user", "content": user_input})
+    user_msg = {"role": "user", "content": user_input}
+    st.session_state["messages"].append(user_msg)
     with st.chat_message("user"):
         st.markdown(user_input)
 
@@ -400,10 +476,13 @@ if user_input:
                         )
                         st.write(src["text"])
 
-    st.session_state["messages"].append(
-        {
-            "role": "assistant",
-            "content": answer,
-            "sources": source_payload,
-        }
+    assistant_msg = {
+        "role": "assistant",
+        "content": answer,
+        "sources": source_payload,
+    }
+    st.session_state["messages"].append(assistant_msg)
+    st.session_state["chat_session"] = append_messages(
+        st.session_state["chat_session"],
+        [user_msg, assistant_msg],
     )
