@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
-from rag.hybrid import BM25Index, hybrid_search
+from rag.hybrid import BM25Index, build_bm25_from_index
 from rag.index import FaissIndex
+from rag.retrieve import retrieve
 
 
 @dataclass
@@ -37,27 +38,27 @@ def evaluate_cases(
     threshold: float = 0.30,
     use_hybrid: bool = True,
     alpha: float = 0.65,
+    use_reranker: bool = False,
+    reranker=None,
 ) -> List[EvalResult]:
     if bm25 is None:
-        from rag.hybrid import build_bm25_from_index
-
         bm25 = build_bm25_from_index(index)
 
     results: List[EvalResult] = []
     for case in cases:
         qvec = embedder.encode([case.question])
-        dense = index.search(qvec, top_k=top_k)
-        if use_hybrid:
-            hits = hybrid_search(
-                index, qvec, case.question, bm25, top_k=top_k, alpha=alpha
-            )
-            gate = max(
-                dense[0].score if dense else 0.0,
-                hits[0].score if hits else 0.0,
-            )
-        else:
-            hits = dense
-            gate = dense[0].score if dense else 0.0
+        hits, gate = retrieve(
+            index,
+            qvec,
+            case.question,
+            bm25=bm25,
+            top_k=top_k,
+            use_hybrid=use_hybrid,
+            hybrid_alpha=alpha,
+            use_reranker=use_reranker,
+            reranker=reranker,
+            threshold=threshold,
+        )
 
         top_sources = [h.metadata.source_file for h in hits]
         answered = bool(hits) and gate >= threshold

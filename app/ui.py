@@ -4,12 +4,14 @@ import streamlit as st
 import requests
 
 from rag.embed import EMBEDDING_PRESETS, Embedder, preset_for_model, resolve_embedding_model
-from rag.hybrid import build_bm25_from_index, hybrid_search
+from rag.hybrid import build_bm25_from_index
 from rag.index import FaissIndex
 from rag.ingest import delete_source, ingest_path, list_data_files, rebuild_from_data_dir
 from rag.eval import EvalCase, evaluate_cases, summarize
 from rag.prompt import build_prompt
 from rag.llm import generate_answer, stream_answer
+from rag.rerank import get_reranker
+from rag.retrieve import retrieve
 from app.config import (
     INDEX_PATH,
     DOCSTORE_PATH,
@@ -20,6 +22,8 @@ from app.config import (
     DEFAULT_TOP_K,
     NO_ANSWER_THRESHOLD,
     HYBRID_ALPHA,
+    ENABLE_RERANKER,
+    DEFAULT_RERANKER_MODEL,
     DEFAULT_LLM_PROVIDER,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OPENAI_MODEL,
@@ -42,6 +46,13 @@ def _source_anchor(source_file: str, chunk_id: int) -> str:
 @st.cache_resource(show_spinner=True)
 def get_embedder(model_name: str):
     return Embedder(model_name=model_name)
+
+
+@st.cache_resource(show_spinner=True)
+def get_cached_reranker(enabled: bool, model_name: str):
+    if not enabled:
+        return None
+    return get_reranker(model_name=model_name, prefer_cross_encoder=True)
 
 
 @st.cache_resource(show_spinner=False)
@@ -108,6 +119,9 @@ with st.sidebar:
         step=0.05,
         disabled=not use_hybrid,
     )
+    use_reranker = st.checkbox("Reranker (cross-encoder)", value=ENABLE_RERANKER)
+    if use_reranker:
+        st.caption(f"Model: {DEFAULT_RERANKER_MODEL}")
     use_stream = st.checkbox("Yanıtı stream et", value=True)
     rebuild = st.button("İndeksi Yeniden Oluştur")
     clear_chat = st.button("Sohbeti Temizle")
@@ -276,6 +290,8 @@ with st.expander("Eval paneli (retrieval smoke)"):
                     threshold=NO_ANSWER_THRESHOLD,
                     use_hybrid=use_hybrid,
                     alpha=hybrid_alpha,
+                    use_reranker=use_reranker,
+                    reranker=get_cached_reranker(use_reranker, DEFAULT_RERANKER_MODEL),
                 )
             summary = summarize(results)
             st.write(
@@ -304,32 +320,20 @@ if user_input:
         st.markdown(user_input)
 
     qvec = emb.encode([user_input])
-    dense_hits = index.search(qvec, top_k=max(top_k * 3, top_k))
-    if use_hybrid:
-        retrieved = hybrid_search(
-            index,
-            qvec,
-            user_input,
-            st.session_state["bm25"],
-            top_k=max(top_k * 3, top_k),
-            alpha=hybrid_alpha,
-        )
-    else:
-        retrieved = dense_hits
-
-    if source_filter:
-        retrieved = [rc for rc in retrieved if rc.metadata.source_file in source_filter]
-        dense_hits = [rc for rc in dense_hits if rc.metadata.source_file in source_filter]
-
-    retrieved = retrieved[:top_k]
-    dense_hits = dense_hits[:top_k]
-
-    if use_hybrid:
-        best_dense = dense_hits[0].score if dense_hits else 0.0
-        best_fused = retrieved[0].score if retrieved else 0.0
-        gate_score = max(best_dense, best_fused)
-    else:
-        gate_score = dense_hits[0].score if dense_hits else 0.0
+    reranker = get_cached_reranker(use_reranker, DEFAULT_RERANKER_MODEL)
+    retrieved, gate_score = retrieve(
+        index,
+        qvec,
+        user_input,
+        bm25=st.session_state["bm25"],
+        top_k=top_k,
+        use_hybrid=use_hybrid,
+        hybrid_alpha=hybrid_alpha,
+        use_reranker=use_reranker,
+        reranker=reranker,
+        source_filter=source_filter or None,
+        threshold=NO_ANSWER_THRESHOLD,
+    )
 
     source_payload = []
     for rc in retrieved:
@@ -374,6 +378,8 @@ if user_input:
             if source_payload:
                 with st.expander("Alınan kaynaklar / chunk’lar", expanded=True):
                     mode = "hybrid" if use_hybrid else "dense"
+                    if use_reranker:
+                        mode += "+rerank"
                     st.caption(f"Retrieval modu: {mode}")
                     for src in source_payload:
                         st.markdown(

@@ -21,6 +21,12 @@ MULTILINGUAL_EMBEDDING_MODEL = os.getenv(
 DEFAULT_TOP_K = int(os.getenv("RAG_TOP_K", "6"))
 NO_ANSWER_THRESHOLD = float(os.getenv("RAG_NO_ANSWER_THRESHOLD", "0.30"))
 HYBRID_ALPHA = float(os.getenv("RAG_HYBRID_ALPHA", "0.65"))  # vektör ağırlığı
+DEFAULT_RERANKER_MODEL = os.getenv(
+    "RAG_RERANKER_MODEL",
+    "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+)
+RERANK_CANDIDATES = int(os.getenv("RAG_RERANK_CANDIDATES", "20"))
+ENABLE_RERANKER = os.getenv("RAG_ENABLE_RERANKER", "1") not in {"0", "false", "False"}
 
 # Chunking
 CHUNK_SIZE_WORDS = int(os.getenv("RAG_CHUNK_SIZE_WORDS", "700"))
