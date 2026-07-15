@@ -7,6 +7,7 @@ from rag.embed import EMBEDDING_PRESETS, Embedder, preset_for_model, resolve_emb
 from rag.hybrid import build_bm25_from_index, hybrid_search
 from rag.index import FaissIndex
 from rag.ingest import delete_source, ingest_path, list_data_files, rebuild_from_data_dir
+from rag.eval import EvalCase, evaluate_cases, summarize
 from rag.prompt import build_prompt
 from rag.llm import generate_answer, stream_answer
 from app.config import (
@@ -232,6 +233,58 @@ if index_empty:
     st.info("İndeks boş. Soru sorabilmek için önce dosya yükleyin veya indeksi yeniden oluşturun.")
 elif index.list_sources():
     st.caption(f"İndeksteki kaynaklar: {', '.join(index.list_sources())} ({index.size} chunk)")
+
+with st.expander("Eval paneli (retrieval smoke)"):
+    st.caption(
+        "Her satır: soru | beklenen_kaynak | expect_no_answer(0/1). "
+        "Kaynak boş bırakılabilir."
+    )
+    default_eval = "örnek soru | | 1\n"
+    if index.list_sources():
+        default_eval = f"{index.list_sources()[0]} hakkında ne diyor? | {index.list_sources()[0]} | 0\n"
+    eval_text = st.text_area("Eval seti", value=default_eval, height=120)
+    if st.button("Eval çalıştır", disabled=index_empty):
+        cases = []
+        for line in eval_text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            question = parts[0] if parts else ""
+            expected = parts[1] if len(parts) > 1 and parts[1] else None
+            expect_no = False
+            if len(parts) > 2 and parts[2] in {"1", "true", "True", "yes"}:
+                expect_no = True
+            if question:
+                cases.append(
+                    EvalCase(
+                        question=question,
+                        expected_source=expected,
+                        expect_no_answer=expect_no,
+                    )
+                )
+        if not cases:
+            st.warning("Geçerli eval satırı yok.")
+        else:
+            with st.spinner("Eval çalışıyor..."):
+                results = evaluate_cases(
+                    index,
+                    emb,
+                    cases,
+                    bm25=st.session_state["bm25"],
+                    top_k=top_k,
+                    threshold=NO_ANSWER_THRESHOLD,
+                    use_hybrid=use_hybrid,
+                    alpha=hybrid_alpha,
+                )
+            summary = summarize(results)
+            st.write(
+                f"Skor: {summary['passed']}/{summary['total']} "
+                f"(accuracy={summary['accuracy']:.2%})"
+            )
+            for r in results:
+                mark = "GEÇTI" if r.passed else "KALDI"
+                st.markdown(f"`{mark}` **{r.question}** — {r.reason}")
 
 for m in st.session_state["messages"]:
     with st.chat_message(m["role"]):
