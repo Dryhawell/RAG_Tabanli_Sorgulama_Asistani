@@ -7,6 +7,16 @@ DATA_DIR = os.getenv("RAG_DATA_DIR", "data")
 METADATA_DIR = os.getenv("RAG_METADATA_DIR", "metadata")
 INDEXES_DIR = os.getenv("RAG_INDEXES_DIR", "indexes")
 CHAT_DIR = os.getenv("RAG_CHAT_DIR", os.path.join(METADATA_DIR, "chats"))
+USERS_PATH = os.getenv("RAG_USERS_PATH", os.path.join(METADATA_DIR, "users.json"))
+
+# Auth (çok kullanıcılı; indeks paylaşımlı)
+ENABLE_AUTH = os.getenv("RAG_ENABLE_AUTH", "0") not in {"0", "false", "False"}
+# true: tüm kullanıcılar aynı data/indeksi paylaşır
+AUTH_SHARED_INDEX = os.getenv("RAG_AUTH_SHARED_INDEX", "1") not in {"0", "false", "False"}
+# user rolünün dosya yükleme/silme yetkisi
+AUTH_USER_CAN_INGEST = os.getenv("RAG_AUTH_USER_CAN_INGEST", "0") not in {"0", "false", "False"}
+# İlk kurulum için: "admin:parola" — users.json yoksa oluşturulur
+AUTH_BOOTSTRAP_ADMIN = os.getenv("RAG_AUTH_BOOTSTRAP_ADMIN", "admin:admin")
 
 # Embedding
 DEFAULT_EMBEDDING_MODEL = os.getenv(

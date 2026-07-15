@@ -28,6 +28,7 @@ from rag.chat_store import (
     load_session,
     save_session,
 )
+from rag.auth import authenticate, auth_enabled, ensure_users_file, user_chat_dir
 from app.config import (
     INDEX_PATH,
     DOCSTORE_PATH,
@@ -35,6 +36,8 @@ from app.config import (
     INDEXES_DIR,
     METADATA_DIR,
     CHAT_DIR,
+    ENABLE_AUTH,
+    AUTH_SHARED_INDEX,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_TOP_K,
     NO_ANSWER_THRESHOLD,
@@ -55,6 +58,39 @@ st.title("LLM Destekli PDF / Not Sorgulama Asistanı (RAG)")
 
 for _d in [DATA_DIR, INDEXES_DIR, METADATA_DIR, CHAT_DIR]:
     os.makedirs(_d, exist_ok=True)
+
+# --- Auth (opsiyonel; indeks paylaşımlı, sohbetler kullanıcıya özel) ---
+current_user = None
+if auth_enabled():
+    ensure_users_file()
+    if "auth_user" not in st.session_state:
+        st.session_state["auth_user"] = None
+
+    if st.session_state["auth_user"] is None:
+        st.subheader("Giriş")
+        st.caption(
+            "Çok kullanıcılı mod açık. Doküman indeksi paylaşımlıdır; sohbet geçmişi kullanıcıya özeldir."
+        )
+        with st.form("login_form"):
+            lu = st.text_input("Kullanıcı adı")
+            lp = st.text_input("Parola", type="password")
+            submitted = st.form_submit_button("Giriş yap")
+        if submitted:
+            user = authenticate(lu, lp)
+            if user is None:
+                st.error("Geçersiz kullanıcı adı veya parola.")
+            else:
+                st.session_state["auth_user"] = user
+                for k in ("chat_session", "chat_session_id", "messages", "bm25", "bm25_index_id"):
+                    st.session_state.pop(k, None)
+                st.rerun()
+        st.info("Örnek: `users.example.json` dosyasını `metadata/users.json` olarak kopyalayın veya `RAG_AUTH_BOOTSTRAP_ADMIN` kullanın.")
+        st.stop()
+
+    current_user = st.session_state["auth_user"]
+
+active_chat_dir = user_chat_dir(current_user.username) if current_user else CHAT_DIR
+can_ingest = (not auth_enabled()) or bool(current_user and current_user.can_ingest)
 
 
 def _source_anchor(source_file: str, chunk_id: int) -> str:
@@ -142,10 +178,25 @@ with st.sidebar:
     if use_reranker:
         st.caption(f"Model: {DEFAULT_RERANKER_MODEL}")
     use_stream = st.checkbox("Yanıtı stream et", value=True)
-    rebuild = st.button("İndeksi Yeniden Oluştur")
+    rebuild = False
+    if can_ingest:
+        rebuild = st.button("İndeksi Yeniden Oluştur")
+    else:
+        st.caption("İndeks yönetimi için admin yetkisi gerekir.")
+
+    if current_user:
+        st.header("Hesap")
+        st.write(f"Kullanıcı: **{current_user.username}** (`{current_user.role}`)")
+        if AUTH_SHARED_INDEX:
+            st.caption("İndeks paylaşımlı (tüm kullanıcılar aynı doküman havuzu).")
+        if st.button("Çıkış yap"):
+            st.session_state["auth_user"] = None
+            for k in ("chat_session", "chat_session_id", "messages"):
+                st.session_state.pop(k, None)
+            st.rerun()
 
     st.header("Sohbetler")
-    sessions = list_sessions()
+    sessions = list_sessions(chat_dir=active_chat_dir)
     session_ids = [s["id"] for s in sessions]
     labels = {
         s["id"]: f"{s['title']} ({s['n_messages']})"
@@ -156,9 +207,9 @@ with st.sidebar:
         if session_ids:
             st.session_state["chat_session_id"] = session_ids[0]
         else:
-            created = create_session()
+            created = create_session(chat_dir=active_chat_dir)
             st.session_state["chat_session_id"] = created["id"]
-            sessions = list_sessions()
+            sessions = list_sessions(chat_dir=active_chat_dir)
             session_ids = [s["id"] for s in sessions]
             labels = {s["id"]: f"{s['title']} ({s['n_messages']})" for s in sessions}
 
@@ -175,7 +226,9 @@ with st.sidebar:
     )
     if selected != st.session_state.get("chat_session_id"):
         st.session_state["chat_session_id"] = selected
-        loaded = load_session(selected) or create_session()
+        loaded = load_session(selected, chat_dir=active_chat_dir) or create_session(
+            chat_dir=active_chat_dir
+        )
         st.session_state["chat_session"] = loaded
         st.session_state["messages"] = list(loaded.get("messages") or [])
         st.rerun()
@@ -195,8 +248,8 @@ if "index" not in st.session_state:
 
 if "chat_session" not in st.session_state:
     sid = st.session_state.get("chat_session_id")
-    loaded = load_session(sid) if sid else None
-    st.session_state["chat_session"] = loaded or create_session()
+    loaded = load_session(sid, chat_dir=active_chat_dir) if sid else None
+    st.session_state["chat_session"] = loaded or create_session(chat_dir=active_chat_dir)
     st.session_state["chat_session_id"] = st.session_state["chat_session"]["id"]
 if "messages" not in st.session_state:
     st.session_state["messages"] = list(st.session_state["chat_session"].get("messages") or [])
@@ -209,7 +262,7 @@ if index.embedding_model and index.embedding_model != embedding_model and index.
     )
 
 if new_chat:
-    created = create_session()
+    created = create_session(chat_dir=active_chat_dir)
     st.session_state["chat_session"] = created
     st.session_state["chat_session_id"] = created["id"]
     st.session_state["messages"] = []
@@ -218,12 +271,12 @@ if new_chat:
 if clear_chat:
     st.session_state["messages"] = []
     st.session_state["chat_session"]["messages"] = []
-    save_session(st.session_state["chat_session"])
+    save_session(st.session_state["chat_session"], chat_dir=active_chat_dir)
     st.rerun()
 
 if delete_chat:
-    delete_session(st.session_state["chat_session_id"])
-    created = create_session()
+    delete_session(st.session_state["chat_session_id"], chat_dir=active_chat_dir)
+    created = create_session(chat_dir=active_chat_dir)
     st.session_state["chat_session"] = created
     st.session_state["chat_session_id"] = created["id"]
     st.session_state["messages"] = []
@@ -231,6 +284,8 @@ if delete_chat:
 
 # Dosya yönetimi
 st.subheader("Dokümanlar")
+if auth_enabled() and AUTH_SHARED_INDEX:
+    st.caption("Paylaşımlı indeks: yüklenen dokümanlar tüm kullanıcıların sorgularına dahil olur.")
 caps = []
 if ENABLE_LAYOUT_PDF:
     caps.append("Layout PDF açık: blok okuma sırası + tablolar markdown.")
@@ -241,13 +296,22 @@ if ENABLE_OCR:
         caps.append("OCR ayarı açık ancak Tesseract yok; yalnızca metin katmanı okunur.")
 for c in caps:
     st.caption(c)
-upload_folder = st.text_input("Yükleme klasörü (opsiyonel)", value="", placeholder="ör. hukuk/sozlesmeler")
-upload_tags = st.text_input("Etiketler (virgülle)", value="", placeholder="ör. sözleşme, 2024")
-uploaded_files = st.file_uploader(
-    "PDF veya TXT dosyaları yükleyin",
-    type=["pdf", "txt"],
-    accept_multiple_files=True,
-)
+
+uploaded_files = None
+upload_folder = ""
+upload_tags = ""
+if can_ingest:
+    upload_folder = st.text_input(
+        "Yükleme klasörü (opsiyonel)", value="", placeholder="ör. hukuk/sozlesmeler"
+    )
+    upload_tags = st.text_input("Etiketler (virgülle)", value="", placeholder="ör. sözleşme, 2024")
+    uploaded_files = st.file_uploader(
+        "PDF veya TXT dosyaları yükleyin",
+        type=["pdf", "txt"],
+        accept_multiple_files=True,
+    )
+else:
+    st.info("Bu hesap yalnızca sorgu yapabilir. Doküman yükleme/silme için admin gerekir.")
 
 col_a, col_b = st.columns(2)
 with col_a:
@@ -284,7 +348,7 @@ with col_b:
         st.caption("İndeks boş.")
 
 delete_candidates = sorted(set(data_files) | set(sources))
-if delete_candidates:
+if delete_candidates and can_ingest:
     to_delete = st.multiselect("Silinecek dosyalar", options=delete_candidates)
     if st.button("Seçilenleri sil", disabled=not to_delete):
         for name in to_delete:
@@ -554,4 +618,5 @@ if user_input:
     st.session_state["chat_session"] = append_messages(
         st.session_state["chat_session"],
         [user_msg, assistant_msg],
+        chat_dir=active_chat_dir,
     )

@@ -76,7 +76,21 @@ docker compose up --build
 - Cross-encoder reranker anahtarı
 - Streaming yanıt
 - Kalıcı sohbet oturumları (yeni / temizle / sil / seç)
+- Opsiyonel çok kullanıcılı giriş (paylaşımlı indeks, kullanıcıya özel sohbet)
 - Eval paneli: `soru | beklenen_kaynak | expect_no_answer(0/1)`
+
+### Çok kullanıcılı mod
+```bash
+export RAG_ENABLE_AUTH=1
+# İsteğe bağlı: ilk admin (users.json yoksa oluşturulur)
+export RAG_AUTH_BOOTSTRAP_ADMIN=admin:admin
+# veya:
+cp users.example.json metadata/users.json
+streamlit run app/ui.py
+```
+- İndeks varsayılan olarak **paylaşımlıdır** (`RAG_AUTH_SHARED_INDEX=1`)
+- Sohbetler `metadata/chats/<kullanici>/` altında ayrılır
+- `admin` doküman yükleyebilir/silebilir; `user` varsayılan olarak yalnızca sorgu yapar (`RAG_AUTH_USER_CAN_INGEST=1` ile açılır)
 
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
@@ -90,6 +104,10 @@ docker compose up --build
 | `RAG_ENABLE_OCR` | OCR varsayılanı (1/0) |
 | `RAG_OCR_LANGS` | Tesseract dil kodları (ör. `tur+eng`) |
 | `RAG_ENABLE_LAYOUT_PDF` | Layout/tablo çıkarımı (1/0) |
+| `RAG_ENABLE_AUTH` | Çok kullanıcılı giriş (1/0) |
+| `RAG_AUTH_SHARED_INDEX` | Paylaşımlı indeks (1/0) |
+| `RAG_AUTH_USER_CAN_INGEST` | user rolünün yükleme yetkisi (1/0) |
+| `RAG_AUTH_BOOTSTRAP_ADMIN` | `kullanici:parola` ilk admin |
 | `OLLAMA_HOST` | Ollama adresi |
 | `OPENAI_API_KEY` | OpenAI anahtarı |
 
@@ -101,10 +119,12 @@ docker compose up --build
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
 - `rag/chat_store.py`: kalıcı sohbetler
+- `rag/auth.py`: çok kullanıcılı kimlik doğrulama
+- `users.example.json`: örnek kullanıcı şablonu
 - `rag/eval.py`: retrieval smoke eval
 - `rag/llm.py`, `rag/prompt.py`
 - `Dockerfile`, `docker-compose.yml`
-- `indexes/`, `metadata/` (`chats/`, `sources.json` dahil), `data/` (alt klasörler OK): çalışma zamanı (git dışı)
+- `indexes/`, `metadata/` (`chats/`, `users.json`, `sources.json` dahil), `data/` (alt klasörler OK): çalışma zamanı (git dışı)
 
 ## Testler
 ```bash
@@ -113,5 +133,5 @@ pytest -q
 Testler model indirmez; FAISS, chunking, hybrid, retrieve, OCR mock, chat store ve CLI parser mantığını doğrular.
 
 ## Sonraki adaylar
-- Çok kullanıcılı auth / paylaşımlı indeks
 - Online değerlendirme seti ve otomatik regression
+- Kullanıcıya özel indeks (paylaşımsız) seçeneğinin genişletilmesi
