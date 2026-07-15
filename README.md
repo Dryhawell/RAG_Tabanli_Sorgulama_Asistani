@@ -5,18 +5,19 @@ Kullanıcının yüklediği PDF veya TXT dokümanlarını analiz ederek, yalnız
 
 ## Kullanılan Teknolojiler
 - Python, Streamlit (UI)
-- PDF okuma: PyMuPDF (pymupdf) ve pdfplumber (yedek)
-- Embedding: sentence-transformers (`all-MiniLM-L6-v2` veya çok dilli `paraphrase-multilingual-MiniLM-L12-v2`)
+- PDF okuma: PyMuPDF (pymupdf) + pdfplumber (yedek); tarama PDF için Tesseract OCR (tur+eng)
+- Embedding: sentence-transformers (`all-MiniLM-L6-v2` veya `paraphrase-multilingual-MiniLM-L12-v2`)
 - Vektör indeksi: FAISS (CPU, IndexFlatIP)
 - Seyrek retrieval: saf Python BM25 (hybrid füzyon)
+- Reranker: cross-encoder (`mmarco-mMiniLMv2-L12-H384-v1`) + lexikal yedek
 - LLM: OpenAI API veya lokal Ollama
 
 ## RAG Mimarisine Kısa Bakış
 1. Doküman yüklenir (PDF/TXT)
-2. Metin çıkarılır; başlık/paragraf duyarlı chunk’lara bölünür
+2. Metin çıkarılır (gerekirse OCR); başlık/paragraf duyarlı chunk’lara bölünür
 3. Chunk’lar embedding vektörlerine çevrilir
 4. Vektörler FAISS’te, metinler docstore JSON’da saklanır
-5. Sorgu dense (+ isteğe bağlı BM25 hybrid) ile aranır
+5. Sorgu dense → isteğe bağlı BM25 hybrid → isteğe bağlı rerank ile aranır
 6. Top‑k chunk’lar katı prompt ile LLM’e verilir
 7. Metinde yoksa “Bu bilgi dokümanda bulunmamaktadır” döner
 
@@ -27,9 +28,10 @@ Kullanıcının yüklediği PDF veya TXT dokümanlarını analiz ederek, yalnız
 - Cevapta kaynak/chunk referansları gösterilir
 
 ## Sınırlamalar
-- OCR (tarama PDF’ler) kapsam dışıdır; görüntü-tabanlı sayfalarda PyMuPDF/pdfplumber metin çıkaramayabilir
+- OCR için sistemde Tesseract gerekir (`tesseract-ocr`, `tesseract-ocr-tur`); yoksa yalnızca metin katmanı okunur
 - Küçük yerel LLM modellerinde (Ollama, CPU) hız/kalite kısıtları olabilir
 - Embedding modeli değişince indeks yeniden oluşturulmalıdır
+- Cross-encoder reranker ilk kullanımda model indirir (CPU’da yavaş olabilir)
 
 ## Kurulum ve Çalıştırma
 
@@ -38,6 +40,8 @@ Kullanıcının yüklediği PDF veya TXT dokümanlarını analiz ederek, yalnız
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+# OCR için (opsiyonel):
+# sudo apt-get install tesseract-ocr tesseract-ocr-tur tesseract-ocr-eng
 streamlit run app/ui.py
 ```
 
@@ -62,13 +66,15 @@ python -m rag.cli list
 docker compose up --build
 # UI: http://localhost:8501
 ```
-`data/`, `indexes/`, `metadata/` volume olarak bağlanır. Host’taki Ollama için `OLLAMA_HOST=http://host.docker.internal:11434` kullanılır.
+`data/`, `indexes/`, `metadata/` volume olarak bağlanır. İmaj Tesseract (tur/eng) içerir. Host’taki Ollama için `OLLAMA_HOST=http://host.docker.internal:11434` kullanılır.
 
 ## UI Özellikleri
 - Dosya yükleme, listeleme, silme ve kaynak filtresi
 - Embedding preset seçimi (EN / Multilingual)
 - Hybrid arama (BM25 + vektör) ve α kaydırıcısı
-- Streaming yanıt, sohbet temizleme
+- Cross-encoder reranker anahtarı
+- Streaming yanıt
+- Kalıcı sohbet oturumları (yeni / temizle / sil / seç)
 - Eval paneli: `soru | beklenen_kaynak | expect_no_answer(0/1)`
 
 ## Ortam Değişkenleri
@@ -78,6 +84,10 @@ docker compose up --build
 | `RAG_TOP_K` | Top‑k |
 | `RAG_NO_ANSWER_THRESHOLD` | Cosine/füzyon eşiği |
 | `RAG_HYBRID_ALPHA` | Vektör ağırlığı (0–1) |
+| `RAG_ENABLE_RERANKER` | Reranker varsayılanı (1/0) |
+| `RAG_RERANKER_MODEL` | Cross-encoder model adı |
+| `RAG_ENABLE_OCR` | OCR varsayılanı (1/0) |
+| `RAG_OCR_LANGS` | Tesseract dil kodları (ör. `tur+eng`) |
 | `OLLAMA_HOST` | Ollama adresi |
 | `OPENAI_API_KEY` | OpenAI anahtarı |
 
@@ -85,20 +95,22 @@ docker compose up --build
 - `app/ui.py`: Streamlit arayüzü
 - `app/config.py`: merkezi ayarlar
 - `rag/readers.py`, `chunking.py`, `embed.py`, `index.py`
-- `rag/hybrid.py`: BM25 + füzyon
+- `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
+- `rag/chat_store.py`: kalıcı sohbetler
 - `rag/eval.py`: retrieval smoke eval
 - `rag/llm.py`, `rag/prompt.py`
 - `Dockerfile`, `docker-compose.yml`
-- `indexes/`, `metadata/`, `data/`: çalışma zamanı (git dışı)
+- `indexes/`, `metadata/` (`chats/` dahil), `data/`: çalışma zamanı (git dışı)
 
 ## Testler
 ```bash
 pytest -q
 ```
-Testler model indirmez; FAISS, chunking, hybrid, eval ve CLI parser mantığını doğrular.
+Testler model indirmez; FAISS, chunking, hybrid, retrieve, OCR mock, chat store ve CLI parser mantığını doğrular.
 
-## Sonraki adaylar (bilinçli olarak dışarıda bırakıldı)
-- OCR hattı (ör. Tesseract / ocrmypdf)
-- Çapraz kodlayıcı reranker
-- Çok kullanıcılı auth / kalıcı sohbet geçmişi
+## Sonraki adaylar
+- Çok kullanıcılı auth / paylaşımlı indeks
+- Metadata filtreleri (tarih, klasör, etiket)
+- Daha agresif tablolar / layout-aware PDF çıkarma
+- Online değerlendirme seti ve otomatik regression
