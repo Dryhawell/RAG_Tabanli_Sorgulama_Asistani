@@ -12,7 +12,11 @@ def render_context(chunks: List[RetrievedChunk]) -> str:
     parts = []
     for c in chunks:
         meta = c.metadata
-        header = f"[Kaynak: {meta.source_file} | Sayfa: {meta.page_start} | Chunk: {meta.chunk_id} | Skor: {c.score:.3f}]"
+        heading = f" | Başlık: {meta.heading}" if meta.heading else ""
+        header = (
+            f"[Kaynak: {meta.source_file} | Sayfa: {meta.page_start}-{meta.page_end}"
+            f"{heading} | Chunk: {meta.chunk_id} | Skor: {c.score:.3f}]"
+        )
         parts.append(header)
         parts.append(c.text)
         parts.append("\n---\n")
