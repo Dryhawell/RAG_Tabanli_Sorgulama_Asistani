@@ -61,12 +61,19 @@ def ingest_path(
             "reason": "Boş veya parçalanabilir metin yok",
         }
 
+    if index.embedding_model and index.embedding_model != embedder.model_name:
+        raise ValueError(
+            f"Embedding modeli uyuşmuyor: indeks={index.embedding_model}, "
+            f"seçili={embedder.model_name}. Lütfen indeksi yeniden oluşturun."
+        )
+
     vecs = embedder.encode(chunk_texts)
     removed = 0
     if replace_existing:
         removed = index.replace_source(source_name, vecs, chunk_texts, metas)
     else:
         index.add(vecs, chunk_texts, metas)
+    index.embedding_model = embedder.model_name
 
     return {
         "source_file": source_name,
@@ -85,7 +92,7 @@ def rebuild_from_data_dir(
     overlap_ratio: float = CHUNK_OVERLAP_RATIO,
 ) -> Tuple[FaissIndex, List[Dict]]:
     """data/ altındaki desteklenen dosyalardan indeksi sıfırdan kurar."""
-    index = FaissIndex(dim=embedder.dim)
+    index = FaissIndex(dim=embedder.dim, embedding_model=embedder.model_name)
     reports: List[Dict] = []
     for path in list_data_files(data_dir):
         try:
@@ -108,4 +115,5 @@ def rebuild_from_data_dir(
                     "reason": str(exc),
                 }
             )
+    index.embedding_model = embedder.model_name
     return index, reports

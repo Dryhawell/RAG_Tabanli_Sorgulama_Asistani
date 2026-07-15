@@ -3,7 +3,7 @@ import streamlit as st
 from typing import List
 import requests
 
-from rag.embed import Embedder
+from rag.embed import EMBEDDING_PRESETS, Embedder, preset_for_model, resolve_embedding_model
 from rag.index import FaissIndex
 from rag.ingest import ingest_path, rebuild_from_data_dir
 from rag.prompt import build_prompt
@@ -54,32 +54,52 @@ with st.sidebar:
         st.caption("OPENAI_API_KEY çevre değişkeni gerekli")
         if not OPENAI_API_KEY:
             st.warning("OPENAI_API_KEY tanımlı değil. Ayarlamazsanız yanıt üretemeyiz.")
+    embedding_keys = list(EMBEDDING_PRESETS.keys())
+    default_preset = preset_for_model(DEFAULT_EMBEDDING_MODEL)
+    embedding_preset = st.selectbox(
+        "Embedding modeli",
+        options=embedding_keys,
+        index=embedding_keys.index(default_preset) if default_preset in embedding_keys else 0,
+        format_func=lambda k: EMBEDDING_PRESETS[k]["label"],
+    )
+    embedding_model = resolve_embedding_model(embedding_preset)
+    st.caption(embedding_model)
     top_k = st.slider("Top‑K", min_value=3, max_value=10, value=DEFAULT_TOP_K)
     rebuild = st.button("İndeksi Yeniden Oluştur")
 
-@st.cache_resource(show_spinner=False)
-def get_embedder():
-    return Embedder(model_name=DEFAULT_EMBEDDING_MODEL)
+@st.cache_resource(show_spinner=True)
+def get_embedder(model_name: str):
+    return Embedder(model_name=model_name)
 
 @st.cache_resource(show_spinner=False)
-def load_or_create_index(dim: int):
+def load_or_create_index(dim: int, embedding_model: str):
     if os.path.exists(INDEX_PATH) and os.path.exists(DOCSTORE_PATH):
         try:
-            return FaissIndex.load(INDEX_PATH, DOCSTORE_PATH)
+            loaded = FaissIndex.load(INDEX_PATH, DOCSTORE_PATH)
+            if loaded.dim == dim and (
+                not loaded.embedding_model or loaded.embedding_model == embedding_model
+            ):
+                if not loaded.embedding_model:
+                    loaded.embedding_model = embedding_model
+                return loaded
         except Exception:
             pass
-    return FaissIndex(dim=dim)
+    return FaissIndex(dim=dim, embedding_model=embedding_model)
 
 # Dosya yükleme
 uploaded_files = st.file_uploader("PDF veya TXT dosyaları yükleyin", type=["pdf", "txt"], accept_multiple_files=True)
 
 # Session state
+emb = get_embedder(embedding_model)
 if "index" not in st.session_state:
-    emb = get_embedder()
-    st.session_state["index"] = load_or_create_index(dim=emb.dim)
+    st.session_state["index"] = load_or_create_index(dim=emb.dim, embedding_model=embedding_model)
 
 index: FaissIndex = st.session_state["index"]
-emb = get_embedder()
+if index.embedding_model and index.embedding_model != embedding_model and index.size > 0:
+    st.warning(
+        "Seçili embedding modeli mevcut indeksten farklı. "
+        "Doğru arama için «İndeksi Yeniden Oluştur» kullanın."
+    )
 
 if uploaded_files:
     with st.spinner("Dosyalar işleniyor..."):

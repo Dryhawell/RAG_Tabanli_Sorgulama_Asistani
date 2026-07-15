@@ -7,8 +7,9 @@ from .types import ChunkMetadata, RetrievedChunk
 
 
 class FaissIndex:
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, embedding_model: str | None = None):
         self.dim = dim
+        self.embedding_model = embedding_model
         self.index = faiss.IndexFlatIP(dim)
         self.idmap = faiss.IndexIDMap2(self.index)
         self._id_to_meta: Dict[int, ChunkMetadata] = {}
@@ -92,6 +93,7 @@ class FaissIndex:
         data = {
             "dim": self.dim,
             "next_id": self._next_id,
+            "embedding_model": self.embedding_model,
             "items": {
                 str(k): {
                     "text": self._id_to_text[k],
@@ -108,7 +110,10 @@ class FaissIndex:
         idmap = faiss.read_index(index_path)
         with open(docstore_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        fi = FaissIndex(dim=data.get("dim", idmap.d))
+        fi = FaissIndex(
+            dim=data.get("dim", idmap.d),
+            embedding_model=data.get("embedding_model"),
+        )
         fi.idmap = idmap
         items = data.get("items", {})
         for k, v in items.items():
