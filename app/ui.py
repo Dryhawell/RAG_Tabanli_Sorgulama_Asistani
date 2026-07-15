@@ -3,10 +3,9 @@ import streamlit as st
 from typing import List
 import requests
 
-from rag.readers import read_document
-from rag.chunking import chunk_pages
 from rag.embed import Embedder
 from rag.index import FaissIndex
+from rag.ingest import ingest_path, rebuild_from_data_dir
 from rag.prompt import build_prompt
 from rag.llm import generate_answer
 from app.config import (
@@ -84,48 +83,60 @@ emb = get_embedder()
 
 if uploaded_files:
     with st.spinner("Dosyalar işleniyor..."):
+        reports = []
         for uf in uploaded_files:
             save_path = os.path.join(DATA_DIR, uf.name)
             with open(save_path, "wb") as f:
                 f.write(uf.getbuffer())
-            source_name, pages = read_document(save_path)
-            chunk_texts, metas = chunk_pages(source_file=source_name, pages=pages)
-            if not chunk_texts:
-                continue
-            vecs = emb.encode(chunk_texts)
-            index.add(vecs, chunk_texts, metas)
-        # Kalıcılık
+            try:
+                reports.append(ingest_path(save_path, index, emb, replace_existing=True))
+            except Exception as e:
+                reports.append(
+                    {
+                        "source_file": uf.name,
+                        "chunks_added": 0,
+                        "chunks_removed": 0,
+                        "skipped": True,
+                        "reason": str(e),
+                    }
+                )
         index.save(INDEX_PATH, DOCSTORE_PATH)
-    st.success("İndeks güncellendi.")
+        st.session_state["index"] = index
+    added = sum(r["chunks_added"] for r in reports)
+    replaced = sum(1 for r in reports if r["chunks_removed"] > 0)
+    skipped = sum(1 for r in reports if r.get("skipped"))
+    st.success(
+        f"İndeks güncellendi: {added} chunk eklendi"
+        + (f", {replaced} dosya yenilendi" if replaced else "")
+        + (f", {skipped} dosya atlandı" if skipped else "")
+        + "."
+    )
+    for r in reports:
+        if r.get("skipped"):
+            st.warning(f"{r['source_file']}: {r.get('reason') or 'atlandı'}")
 
 if rebuild:
-    # Basit yeniden yükleme: docstore'u yeniden okur ve FAISS'i sıfırlar
-    st.session_state["index"] = FaissIndex(dim=emb.dim)
-    index = st.session_state["index"]
-    # Var olan data klasöründeki dosyaları tekrar işleme
-    files = [os.path.join(DATA_DIR, x) for x in os.listdir(DATA_DIR)]
     with st.spinner("İndeks yeniden oluşturuluyor..."):
-        for path in files:
-            try:
-                source_name, pages = read_document(path)
-                chunk_texts, metas = chunk_pages(source_file=source_name, pages=pages)
-                if not chunk_texts:
-                    continue
-                vecs = emb.encode(chunk_texts)
-                index.add(vecs, chunk_texts, metas)
-            except Exception:
-                continue
+        index, reports = rebuild_from_data_dir(DATA_DIR, emb)
         index.save(INDEX_PATH, DOCSTORE_PATH)
-    st.success("İndeks yeniden oluşturuldu.")
+        st.session_state["index"] = index
+    ok = [r for r in reports if not r.get("skipped")]
+    bad = [r for r in reports if r.get("skipped")]
+    st.success(f"İndeks yeniden oluşturuldu: {len(ok)} dosya, {index.size} chunk.")
+    for r in bad:
+        st.warning(f"{r['source_file']}: {r.get('reason') or 'atlandı'}")
 
 # Chat arayüzü
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
 
 # İndeks boşsa kullanıcıyı bilgilendir
-index_empty = getattr(index.idmap, "ntotal", 0) == 0
+index = st.session_state["index"]
+index_empty = index.size == 0
 if index_empty:
     st.info("İndeks boş. Soru sorabilmek için önce dosya yükleyin veya indeksi yeniden oluşturun.")
+elif index.list_sources():
+    st.caption(f"İndeksteki kaynaklar: {', '.join(index.list_sources())} ({index.size} chunk)")
 
 for m in st.session_state["messages"]:
     with st.chat_message(m["role"]):
