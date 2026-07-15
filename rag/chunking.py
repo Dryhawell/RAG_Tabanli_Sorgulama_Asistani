@@ -1,5 +1,5 @@
 import re
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from app.config import CHUNK_OVERLAP_RATIO, CHUNK_SIZE_WORDS, MIN_CHUNK_WORDS
 from .types import ChunkMetadata
@@ -89,6 +89,8 @@ def chunk_pages(
     chunk_size_words: int = CHUNK_SIZE_WORDS,
     overlap_ratio: float = CHUNK_OVERLAP_RATIO,
     min_chunk_words: int = MIN_CHUNK_WORDS,
+    folder: str = "",
+    tags: Optional[Sequence[str]] = None,
 ) -> Tuple[List[str], List[ChunkMetadata]]:
     """Paragraf/başlık sınırlarını gözeten chunking.
 
@@ -100,6 +102,7 @@ def chunk_pages(
     metas: List[ChunkMetadata] = []
     chunk_id = 0
     overlap = max(1, int(chunk_size_words * overlap_ratio))
+    tag_list = list(tags or [])
 
     # (page_no 1-based, text, heading)
     units: List[Tuple[int, str, Optional[str]]] = []
@@ -192,6 +195,8 @@ def chunk_pages(
                     page_end=page_end,
                     word_count=len(window),
                     heading=heading,
+                    folder=folder or "",
+                    tags=list(tag_list),
                 )
             )
             chunk_id += 1

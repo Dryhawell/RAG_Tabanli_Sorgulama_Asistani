@@ -54,10 +54,10 @@ streamlit run app/ui.py
 # data/ altındaki dosyalardan indeksi sıfırdan kur
 python -m rag.cli rebuild --embedding mini-multi
 
-# tek dosya ekle/yenile
-python -m rag.cli ingest ./data/notlar.pdf --embedding mini-en
+# tek dosya ekle/yenile (klasör + etiket)
+python -m rag.cli ingest ./data/notlar.pdf --embedding mini-en --folder hukuk --tags sozlesme,2024
 
-# data/ listesi
+# data/ listesi (alt klasörler dahil)
 python -m rag.cli list
 ```
 
@@ -69,7 +69,8 @@ docker compose up --build
 `data/`, `indexes/`, `metadata/` volume olarak bağlanır. İmaj Tesseract (tur/eng) içerir. Host’taki Ollama için `OLLAMA_HOST=http://host.docker.internal:11434` kullanılır.
 
 ## UI Özellikleri
-- Dosya yükleme, listeleme, silme ve kaynak filtresi
+- Dosya yükleme, listeleme, silme; klasör ve etiket atama
+- Arama filtreleri: dosya / klasör / etiket (any|all)
 - Embedding preset seçimi (EN / Multilingual)
 - Hybrid arama (BM25 + vektör) ve α kaydırıcısı
 - Cross-encoder reranker anahtarı
@@ -97,11 +98,12 @@ docker compose up --build
 - `rag/readers.py`, `chunking.py`, `embed.py`, `index.py`
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
+- `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
 - `rag/chat_store.py`: kalıcı sohbetler
 - `rag/eval.py`: retrieval smoke eval
 - `rag/llm.py`, `rag/prompt.py`
 - `Dockerfile`, `docker-compose.yml`
-- `indexes/`, `metadata/` (`chats/` dahil), `data/`: çalışma zamanı (git dışı)
+- `indexes/`, `metadata/` (`chats/`, `sources.json` dahil), `data/` (alt klasörler OK): çalışma zamanı (git dışı)
 
 ## Testler
 ```bash
@@ -111,6 +113,5 @@ Testler model indirmez; FAISS, chunking, hybrid, retrieve, OCR mock, chat store 
 
 ## Sonraki adaylar
 - Çok kullanıcılı auth / paylaşımlı indeks
-- Metadata filtreleri (tarih, klasör, etiket)
-- Daha agresif tablolar / layout-aware PDF çıkarma
+- Tablolar / layout-aware PDF çıkarma
 - Online değerlendirme seti ve otomatik regression

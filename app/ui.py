@@ -6,7 +6,14 @@ import requests
 from rag.embed import EMBEDDING_PRESETS, Embedder, preset_for_model, resolve_embedding_model
 from rag.hybrid import build_bm25_from_index
 from rag.index import FaissIndex
-from rag.ingest import delete_source, ingest_path, list_data_files, rebuild_from_data_dir
+from rag.ingest import (
+    delete_source,
+    ensure_data_path,
+    ingest_path,
+    list_data_files,
+    rebuild_from_data_dir,
+)
+from rag.meta_store import normalize_folder, normalize_tags
 from rag.eval import EvalCase, evaluate_cases, summarize
 from rag.prompt import build_prompt
 from rag.llm import generate_answer, stream_answer
@@ -228,6 +235,8 @@ if ENABLE_OCR:
         st.caption("OCR açık (Tesseract). Metin katmanı zayıf PDF sayfalarında devreye girer.")
     else:
         st.caption("OCR ayarı açık ancak Tesseract bulunamadı; yalnızca metin katmanı okunur.")
+upload_folder = st.text_input("Yükleme klasörü (opsiyonel)", value="", placeholder="ör. hukuk/sozlesmeler")
+upload_tags = st.text_input("Etiketler (virgülle)", value="", placeholder="ör. sözleşme, 2024")
 uploaded_files = st.file_uploader(
     "PDF veya TXT dosyaları yükleyin",
     type=["pdf", "txt"],
@@ -236,7 +245,10 @@ uploaded_files = st.file_uploader(
 
 col_a, col_b = st.columns(2)
 with col_a:
-    data_files = [os.path.basename(p) for p in list_data_files(DATA_DIR)]
+    data_files = [
+        os.path.relpath(p, DATA_DIR).replace("\\", "/")
+        for p in list_data_files(DATA_DIR)
+    ]
     st.markdown("**data/**")
     if data_files:
         for name in data_files:
@@ -249,7 +261,19 @@ with col_b:
     if sources:
         for name in sources:
             n_chunks = len(index.ids_for_source(name))
-            st.write(f"- {name} ({n_chunks} chunk)")
+            # ilk chunk meta'sından klasör/etiket göster
+            ids = index.ids_for_source(name)
+            meta0 = index._id_to_meta.get(ids[0]) if ids else None
+            extra = ""
+            if meta0:
+                bits = []
+                if meta0.folder:
+                    bits.append(f"klasör:{meta0.folder}")
+                if meta0.tags:
+                    bits.append("etiket:" + ",".join(meta0.tags))
+                if bits:
+                    extra = " — " + " · ".join(bits)
+            st.write(f"- {name} ({n_chunks} chunk){extra}")
     else:
         st.caption("İndeks boş.")
 
@@ -265,21 +289,55 @@ if delete_candidates:
         st.success(f"Silindi: {', '.join(to_delete)}")
         st.rerun()
 
-source_filter = st.multiselect(
-    "Aramada kullanılacak dosyalar (boş = tümü)",
-    options=index.list_sources(),
-    default=[],
+st.markdown("**Arama filtreleri**")
+fcol1, fcol2, fcol3 = st.columns(3)
+with fcol1:
+    source_filter = st.multiselect(
+        "Dosyalar",
+        options=index.list_sources(),
+        default=[],
+    )
+with fcol2:
+    folder_options = index.list_folders()
+    # kök belgeleri de filtreleyebilmek için özel etiket
+    display_folders = folder_options + (["(kök)"] if any(
+        not (index._id_to_meta[i].folder or "").strip()
+        for i in index._id_to_meta
+    ) else [])
+    folder_filter_raw = st.multiselect("Klasörler", options=display_folders, default=[])
+    folder_filter = [
+        "" if f == "(kök)" else f for f in folder_filter_raw
+    ]
+with fcol3:
+    tag_filter = st.multiselect("Etiketler", options=index.list_tags(), default=[])
+tag_mode = st.radio(
+    "Etiket modu",
+    options=["any", "all"],
+    format_func=lambda m: "Herhangi biri" if m == "any" else "Hepsi",
+    horizontal=True,
+    index=0,
 )
 
 if uploaded_files:
+    folder_n = normalize_folder(upload_folder)
+    tags_n = normalize_tags(upload_tags)
     with st.spinner("Dosyalar işleniyor..."):
         reports = []
         for uf in uploaded_files:
-            save_path = os.path.join(DATA_DIR, uf.name)
+            save_path = ensure_data_path(uf.name, DATA_DIR, folder=folder_n)
             with open(save_path, "wb") as f:
                 f.write(uf.getbuffer())
             try:
-                reports.append(ingest_path(save_path, index, emb, replace_existing=True))
+                reports.append(
+                    ingest_path(
+                        save_path,
+                        index,
+                        emb,
+                        replace_existing=True,
+                        folder=folder_n,
+                        tags=tags_n,
+                    )
+                )
             except Exception as e:
                 reports.append(
                     {
@@ -300,6 +358,8 @@ if uploaded_files:
         f"İndeks güncellendi: {added} chunk eklendi"
         + (f", {replaced} dosya yenilendi" if replaced else "")
         + (f", {skipped} dosya atlandı" if skipped else "")
+        + (f" | klasör={folder_n or '(kök)'}" if folder_n is not None else "")
+        + (f" | etiket={', '.join(tags_n)}" if tags_n else "")
         + "."
     )
     for r in reports:
@@ -415,6 +475,9 @@ if user_input:
         use_reranker=use_reranker,
         reranker=reranker,
         source_filter=source_filter or None,
+        folder_filter=folder_filter or None,
+        tag_filter=tag_filter or None,
+        tag_mode=tag_mode,
         threshold=NO_ANSWER_THRESHOLD,
     )
 

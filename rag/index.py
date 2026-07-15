@@ -42,6 +42,22 @@ class FaissIndex:
         sources: Set[str] = {meta.source_file for meta in self._id_to_meta.values()}
         return sorted(sources)
 
+    def list_folders(self) -> List[str]:
+        folders: Set[str] = {
+            (meta.folder or "").strip()
+            for meta in self._id_to_meta.values()
+            if (meta.folder or "").strip()
+        }
+        return sorted(folders)
+
+    def list_tags(self) -> List[str]:
+        tags: Set[str] = set()
+        for meta in self._id_to_meta.values():
+            for t in meta.tags or []:
+                if t and str(t).strip():
+                    tags.add(str(t).strip())
+        return sorted(tags, key=lambda x: x.lower())
+
     def remove_ids(self, ids: List[int]) -> int:
         if not ids:
             return 0

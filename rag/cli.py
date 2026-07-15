@@ -52,7 +52,7 @@ def cmd_list(_: argparse.Namespace) -> int:
         print("(data/ boş)")
         return 0
     for path in files:
-        print(os.path.basename(path))
+        print(os.path.relpath(path, DATA_DIR).replace("\\", "/"))
     return 0
 
 
@@ -91,10 +91,19 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             continue
         # data/ dışındaysa kopyalama yapmadan doğrudan ingest et
         try:
-            report = ingest_path(path, index, emb, replace_existing=True)
+            report = ingest_path(
+                path,
+                index,
+                emb,
+                replace_existing=True,
+                folder=getattr(args, "folder", None),
+                tags=getattr(args, "tags", None),
+            )
             print(
                 f"{report['source_file']}: +{report['chunks_added']} "
-                f"(silinen={report['chunks_removed']})"
+                f"(silinen={report['chunks_removed']}"
+                f", klasör={report.get('folder') or '(kök)'}"
+                f", etiket={','.join(report.get('tags') or []) or '-'})"
                 + (f" ATLANDI: {report['reason']}" if report.get("skipped") else "")
             )
         except Exception as exc:
@@ -133,6 +142,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--from-data",
         action="store_true",
         help="data/ klasöründeki tüm desteklenen dosyaları da ekle",
+    )
+    p_ingest.add_argument("--folder", default=None, help="Kaynak klasör etiketi (ör. hukuk)")
+    p_ingest.add_argument(
+        "--tags",
+        default=None,
+        help="Virgülle ayrılmış etiketler (ör. sozlesme,2024)",
     )
     p_ingest.set_defaults(func=cmd_ingest)
     return p

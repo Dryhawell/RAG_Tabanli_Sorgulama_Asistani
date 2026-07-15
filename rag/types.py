@@ -1,5 +1,7 @@
-from pydantic import BaseModel
-from typing import Optional
+from typing import List, Optional
+
+from pydantic import BaseModel, Field
+
 
 class ChunkMetadata(BaseModel):
     source_file: str
@@ -8,6 +10,9 @@ class ChunkMetadata(BaseModel):
     page_end: int
     word_count: int
     heading: Optional[str] = None
+    folder: str = ""
+    tags: List[str] = Field(default_factory=list)
+
 
 class RetrievedChunk(BaseModel):
     chunk_id: int

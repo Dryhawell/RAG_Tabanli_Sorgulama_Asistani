@@ -18,10 +18,12 @@ def test_list_data_files_filters(tmp_path):
     (tmp_path / "a.pdf").write_text("x")
     (tmp_path / "b.txt").write_text("y")
     (tmp_path / "c.docx").write_text("z")
-    (tmp_path / "subdir").mkdir()
+    nested = tmp_path / "hukuk"
+    nested.mkdir()
+    (nested / "d.txt").write_text("nested")
     files = list_data_files(str(tmp_path))
-    names = {os.path.basename(p) for p in files}
-    assert names == {"a.pdf", "b.txt"}
+    rels = {os.path.relpath(p, tmp_path).replace("\\", "/") for p in files}
+    assert rels == {"a.pdf", "b.txt", "hukuk/d.txt"}
 
 
 def test_delete_source_removes_file_and_chunks(tmp_path):
