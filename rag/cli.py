@@ -104,9 +104,8 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="rag.cli", description="RAG ingest CLI")
-    p.add_argument(
+def _add_embedding_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
         "--embedding",
         default=DEFAULT_EMBEDDING_MODEL,
         help=(
@@ -114,15 +113,21 @@ def build_parser() -> argparse.ArgumentParser:
             f"Multilingual varsayılan: {MULTILINGUAL_EMBEDDING_MODEL}"
         ),
     )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="rag.cli", description="RAG ingest CLI")
     sub = p.add_subparsers(dest="command", required=True)
 
     p_list = sub.add_parser("list", help="data/ altındaki desteklenen dosyaları listele")
     p_list.set_defaults(func=cmd_list)
 
     p_rebuild = sub.add_parser("rebuild", help="data/ üzerinden indeksi sıfırdan kur")
+    _add_embedding_arg(p_rebuild)
     p_rebuild.set_defaults(func=cmd_rebuild)
 
     p_ingest = sub.add_parser("ingest", help="Dosya(lar)ı indekse ekle/yenile")
+    _add_embedding_arg(p_ingest)
     p_ingest.add_argument("paths", nargs="*", help="PDF/TXT yolları")
     p_ingest.add_argument(
         "--from-data",
