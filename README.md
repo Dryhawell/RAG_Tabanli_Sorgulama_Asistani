@@ -5,7 +5,7 @@ Kullanıcının yüklediği PDF veya TXT dokümanlarını analiz ederek, yalnız
 
 ## Kullanılan Teknolojiler
 - Python, Streamlit (UI)
-- PDF okuma: PyMuPDF (pymupdf) + pdfplumber (yedek); tarama PDF için Tesseract OCR (tur+eng)
+- PDF okuma: layout-aware (PyMuPDF blok sırası + pdfplumber tablolar → markdown); tarama PDF için Tesseract OCR (tur+eng)
 - Embedding: sentence-transformers (`all-MiniLM-L6-v2` veya `paraphrase-multilingual-MiniLM-L12-v2`)
 - Vektör indeksi: FAISS (CPU, IndexFlatIP)
 - Seyrek retrieval: saf Python BM25 (hybrid füzyon)
@@ -14,7 +14,7 @@ Kullanıcının yüklediği PDF veya TXT dokümanlarını analiz ederek, yalnız
 
 ## RAG Mimarisine Kısa Bakış
 1. Doküman yüklenir (PDF/TXT)
-2. Metin çıkarılır (gerekirse OCR); başlık/paragraf duyarlı chunk’lara bölünür
+2. Metin çıkarılır (layout/tablo + gerekirse OCR); başlık/paragraf duyarlı chunk’lara bölünür
 3. Chunk’lar embedding vektörlerine çevrilir
 4. Vektörler FAISS’te, metinler docstore JSON’da saklanır
 5. Sorgu dense → isteğe bağlı BM25 hybrid → isteğe bağlı rerank ile aranır
@@ -89,13 +89,14 @@ docker compose up --build
 | `RAG_RERANKER_MODEL` | Cross-encoder model adı |
 | `RAG_ENABLE_OCR` | OCR varsayılanı (1/0) |
 | `RAG_OCR_LANGS` | Tesseract dil kodları (ör. `tur+eng`) |
+| `RAG_ENABLE_LAYOUT_PDF` | Layout/tablo çıkarımı (1/0) |
 | `OLLAMA_HOST` | Ollama adresi |
 | `OPENAI_API_KEY` | OpenAI anahtarı |
 
 ## Dosya Yapısı
 - `app/ui.py`: Streamlit arayüzü
 - `app/config.py`: merkezi ayarlar
-- `rag/readers.py`, `chunking.py`, `embed.py`, `index.py`
+- `rag/readers.py`, `rag/pdf_layout.py`, `chunking.py`, `embed.py`, `index.py`
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -113,5 +114,4 @@ Testler model indirmez; FAISS, chunking, hybrid, retrieve, OCR mock, chat store 
 
 ## Sonraki adaylar
 - Çok kullanıcılı auth / paylaşımlı indeks
-- Tablolar / layout-aware PDF çıkarma
 - Online değerlendirme seti ve otomatik regression

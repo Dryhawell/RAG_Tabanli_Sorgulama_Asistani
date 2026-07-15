@@ -42,6 +42,7 @@ from app.config import (
     ENABLE_RERANKER,
     DEFAULT_RERANKER_MODEL,
     ENABLE_OCR,
+    ENABLE_LAYOUT_PDF,
     DEFAULT_LLM_PROVIDER,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OPENAI_MODEL,
@@ -230,11 +231,16 @@ if delete_chat:
 
 # Dosya yönetimi
 st.subheader("Dokümanlar")
+caps = []
+if ENABLE_LAYOUT_PDF:
+    caps.append("Layout PDF açık: blok okuma sırası + tablolar markdown.")
 if ENABLE_OCR:
     if _ocr_available():
-        st.caption("OCR açık (Tesseract). Metin katmanı zayıf PDF sayfalarında devreye girer.")
+        caps.append("OCR açık (Tesseract); zayıf metin katmanında devreye girer.")
     else:
-        st.caption("OCR ayarı açık ancak Tesseract bulunamadı; yalnızca metin katmanı okunur.")
+        caps.append("OCR ayarı açık ancak Tesseract yok; yalnızca metin katmanı okunur.")
+for c in caps:
+    st.caption(c)
 upload_folder = st.text_input("Yükleme klasörü (opsiyonel)", value="", placeholder="ör. hukuk/sozlesmeler")
 upload_tags = st.text_input("Etiketler (virgülle)", value="", placeholder="ör. sözleşme, 2024")
 uploaded_files = st.file_uploader(

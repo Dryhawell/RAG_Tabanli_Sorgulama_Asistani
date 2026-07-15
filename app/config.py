@@ -46,5 +46,10 @@ ENABLE_OCR = os.getenv("RAG_ENABLE_OCR", "1") not in {"0", "false", "False"}
 OCR_LANGS = os.getenv("RAG_OCR_LANGS", "tur+eng")
 OCR_MIN_CHARS = int(os.getenv("RAG_OCR_MIN_CHARS", "40"))  # sayfa metni bundan kısaysa OCR dene
 
+# Layout-aware PDF (blok okuma sırası + tablo → markdown)
+ENABLE_LAYOUT_PDF = os.getenv("RAG_ENABLE_LAYOUT_PDF", "1") not in {"0", "false", "False"}
+LAYOUT_TABLE_MIN_ROWS = int(os.getenv("RAG_LAYOUT_TABLE_MIN_ROWS", "2"))
+
 # Desteklenen dosya uzantıları
 SUPPORTED_EXTENSIONS = {".pdf", ".txt"}
+
