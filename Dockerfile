@@ -2,9 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Sistem bağımlılıkları (PyMuPDF vb.)
+# Sistem bağımlılıkları (PyMuPDF + Tesseract OCR TR/EN)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    tesseract-ocr-tur \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

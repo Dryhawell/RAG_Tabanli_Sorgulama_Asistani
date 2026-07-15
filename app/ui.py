@@ -12,6 +12,7 @@ from rag.prompt import build_prompt
 from rag.llm import generate_answer, stream_answer
 from rag.rerank import get_reranker
 from rag.retrieve import retrieve
+from rag.readers import _ocr_available
 from app.config import (
     INDEX_PATH,
     DOCSTORE_PATH,
@@ -24,6 +25,7 @@ from app.config import (
     HYBRID_ALPHA,
     ENABLE_RERANKER,
     DEFAULT_RERANKER_MODEL,
+    ENABLE_OCR,
     DEFAULT_LLM_PROVIDER,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OPENAI_MODEL,
@@ -146,6 +148,11 @@ if clear_chat:
 
 # Dosya yönetimi
 st.subheader("Dokümanlar")
+if ENABLE_OCR:
+    if _ocr_available():
+        st.caption("OCR açık (Tesseract). Metin katmanı zayıf PDF sayfalarında devreye girer.")
+    else:
+        st.caption("OCR ayarı açık ancak Tesseract bulunamadı; yalnızca metin katmanı okunur.")
 uploaded_files = st.file_uploader(
     "PDF veya TXT dosyaları yükleyin",
     type=["pdf", "txt"],
