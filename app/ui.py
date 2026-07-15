@@ -4,6 +4,7 @@ from typing import List
 import requests
 
 from rag.embed import EMBEDDING_PRESETS, Embedder, preset_for_model, resolve_embedding_model
+from rag.hybrid import build_bm25_from_index, hybrid_search
 from rag.index import FaissIndex
 from rag.ingest import ingest_path, rebuild_from_data_dir
 from rag.prompt import build_prompt
@@ -17,6 +18,7 @@ from app.config import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_TOP_K,
     NO_ANSWER_THRESHOLD,
+    HYBRID_ALPHA,
     DEFAULT_LLM_PROVIDER,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OPENAI_MODEL,
@@ -65,6 +67,15 @@ with st.sidebar:
     embedding_model = resolve_embedding_model(embedding_preset)
     st.caption(embedding_model)
     top_k = st.slider("Top‑K", min_value=3, max_value=10, value=DEFAULT_TOP_K)
+    use_hybrid = st.checkbox("Hybrid arama (BM25 + vektör)", value=True)
+    hybrid_alpha = st.slider(
+        "Hybrid α (vektör ağırlığı)",
+        min_value=0.0,
+        max_value=1.0,
+        value=float(HYBRID_ALPHA),
+        step=0.05,
+        disabled=not use_hybrid,
+    )
     rebuild = st.button("İndeksi Yeniden Oluştur")
 
 @st.cache_resource(show_spinner=True)
@@ -122,6 +133,7 @@ if uploaded_files:
                 )
         index.save(INDEX_PATH, DOCSTORE_PATH)
         st.session_state["index"] = index
+        st.session_state["bm25"] = build_bm25_from_index(index)
     added = sum(r["chunks_added"] for r in reports)
     replaced = sum(1 for r in reports if r["chunks_removed"] > 0)
     skipped = sum(1 for r in reports if r.get("skipped"))
@@ -140,6 +152,7 @@ if rebuild:
         index, reports = rebuild_from_data_dir(DATA_DIR, emb)
         index.save(INDEX_PATH, DOCSTORE_PATH)
         st.session_state["index"] = index
+        st.session_state["bm25"] = build_bm25_from_index(index)
     ok = [r for r in reports if not r.get("skipped")]
     bad = [r for r in reports if r.get("skipped")]
     st.success(f"İndeks yeniden oluşturuldu: {len(ok)} dosya, {index.size} chunk.")
@@ -152,6 +165,10 @@ if "messages" not in st.session_state:
 
 # İndeks boşsa kullanıcıyı bilgilendir
 index = st.session_state["index"]
+if "bm25" not in st.session_state or st.session_state.get("bm25_index_id") != id(index):
+    st.session_state["bm25"] = build_bm25_from_index(index)
+    st.session_state["bm25_index_id"] = id(index)
+
 index_empty = index.size == 0
 if index_empty:
     st.info("İndeks boş. Soru sorabilmek için önce dosya yükleyin veya indeksi yeniden oluşturun.")
@@ -160,24 +177,37 @@ elif index.list_sources():
 
 for m in st.session_state["messages"]:
     with st.chat_message(m["role"]):
-        st.markdown(m["content"])# basit gösterim
+        st.markdown(m["content"])  # basit gösterim
 
 user_input = st.chat_input("Sorunuzu yazın...", disabled=index_empty)
 
 if user_input:
     st.session_state["messages"].append({"role": "user", "content": user_input})
-    # Sorgu embedding
     qvec = emb.encode([user_input])
-    retrieved = index.search(qvec, top_k=top_k)
+    dense_hits = index.search(qvec, top_k=top_k)
+    if use_hybrid:
+        retrieved = hybrid_search(
+            index,
+            qvec,
+            user_input,
+            st.session_state["bm25"],
+            top_k=top_k,
+            alpha=hybrid_alpha,
+        )
+        best_dense = dense_hits[0].score if dense_hits else 0.0
+        best_fused = retrieved[0].score if retrieved else 0.0
+        gate_score = max(best_dense, best_fused)
+    else:
+        retrieved = dense_hits
+        gate_score = dense_hits[0].score if dense_hits else 0.0
 
     # Eşik kontrolü: en iyi skor düşükse doğrudan "dokümanda yok" cevabı üret
-    if not retrieved or retrieved[0].score < NO_ANSWER_THRESHOLD:
+    if not retrieved or gate_score < NO_ANSWER_THRESHOLD:
         answer = "Bu bilgi dokümanda bulunmamaktadır"
         with st.chat_message("assistant"):
             st.markdown(answer)
         st.session_state["messages"].append({"role": "assistant", "content": answer})
     else:
-        # Prompt ve LLM çağrısı
         prompt = build_prompt(user_input, retrieved)
         with st.spinner("Yanıt üretiliyor..."):
             try:
@@ -188,7 +218,14 @@ if user_input:
         with st.chat_message("assistant"):
             st.markdown(answer)
             with st.expander("Alınan Chunk’lar (skorlar)"):
+                mode = "hybrid" if use_hybrid else "dense"
+                st.caption(f"Retrieval modu: {mode}")
                 for rc in retrieved:
-                    st.markdown(f"**Skor:** {rc.score:.3f} | **Kaynak:** {rc.metadata.source_file} | **Sayfa:** {rc.metadata.page_start} | **Chunk:** {rc.metadata.chunk_id}")
+                    heading = f" | **Başlık:** {rc.metadata.heading}" if rc.metadata.heading else ""
+                    st.markdown(
+                        f"**Skor:** {rc.score:.3f} | **Kaynak:** {rc.metadata.source_file} | "
+                        f"**Sayfa:** {rc.metadata.page_start}–{rc.metadata.page_end} | "
+                        f"**Chunk:** {rc.metadata.chunk_id}{heading}"
+                    )
                     st.write(rc.text)
         st.session_state["messages"].append({"role": "assistant", "content": answer})
