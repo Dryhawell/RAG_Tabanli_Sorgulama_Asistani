@@ -1,12 +1,16 @@
-"""Basit retrieval/eval yardımcıları."""
+"""Retrieval eval / regression yardımcıları."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional, Sequence
+import json
+import os
+from dataclasses import asdict, dataclass
+from typing import List, Optional, Sequence, Union
 
+from rag.chunking import chunk_pages
 from rag.hybrid import BM25Index, build_bm25_from_index
 from rag.index import FaissIndex
+from rag.readers import read_document
 from rag.retrieve import retrieve
 
 
@@ -17,6 +21,7 @@ class EvalCase:
     expected_source: Optional[str] = None
     # Yanıt dokümanda olmamalıysa True
     expect_no_answer: bool = False
+    id: Optional[str] = None
 
 
 @dataclass
@@ -26,6 +31,67 @@ class EvalResult:
     gate_score: float
     top_sources: List[str]
     reason: str
+    case_id: Optional[str] = None
+
+
+def load_cases(path: str) -> List[EvalCase]:
+    """JSON eval setini yükler.
+
+    Desteklenen format:
+    [
+      {"id": "...", "question": "...", "expected_source": "a.txt", "expect_no_answer": false},
+      ...
+    ]
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    if not isinstance(raw, list):
+        raise ValueError("Eval seti bir JSON listesi olmalıdır")
+
+    cases: List[EvalCase] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        q = (item.get("question") or "").strip()
+        if not q:
+            continue
+        cases.append(
+            EvalCase(
+                id=item.get("id"),
+                question=q,
+                expected_source=item.get("expected_source") or None,
+                expect_no_answer=bool(item.get("expect_no_answer", False)),
+            )
+        )
+    return cases
+
+
+def build_index_from_fixture_dir(fixture_dir: str, embedder) -> FaissIndex:
+    """evals/fixtures benzeri klasörden küçük bir indeks kurar."""
+    index = FaissIndex(dim=embedder.dim, embedding_model=getattr(embedder, "model_name", None))
+    if not os.path.isdir(fixture_dir):
+        raise FileNotFoundError(f"Fixture klasörü yok: {fixture_dir}")
+
+    for name in sorted(os.listdir(fixture_dir)):
+        path = os.path.join(fixture_dir, name)
+        if not os.path.isfile(path):
+            continue
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in {".txt", ".pdf"}:
+            continue
+        source_name, pages = read_document(path, enable_ocr=False, enable_layout=False)
+        texts, metas = chunk_pages(
+            source_file=source_name,
+            pages=pages,
+            chunk_size_words=200,
+            overlap_ratio=0.1,
+            min_chunk_words=20,
+        )
+        if not texts:
+            continue
+        vecs = embedder.encode(texts)
+        index.add(vecs, texts, metas)
+    return index
 
 
 def evaluate_cases(
@@ -67,7 +133,12 @@ def evaluate_cases(
             passed = not answered
             reason = "beklenen: yok" + (" | model cevap üretir gibi" if answered else " | OK")
         elif case.expected_source:
-            passed = answered and case.expected_source in top_sources
+            # alt klasörlü kaynak adlarında basename de kabul
+            matched = any(
+                s == case.expected_source or os.path.basename(s) == case.expected_source
+                for s in top_sources
+            )
+            passed = answered and matched
             reason = (
                 f"beklenen kaynak={case.expected_source}; top={top_sources[:3]}; gate={gate:.3f}"
             )
@@ -82,6 +153,7 @@ def evaluate_cases(
                 gate_score=gate,
                 top_sources=top_sources,
                 reason=reason,
+                case_id=case.id,
             )
         )
     return results
@@ -96,3 +168,45 @@ def summarize(results: Sequence[EvalResult]) -> dict:
         "failed": total - passed,
         "accuracy": (passed / total) if total else 0.0,
     }
+
+
+def results_to_dict(results: Sequence[EvalResult], summary: Optional[dict] = None) -> dict:
+    return {
+        "summary": summary or summarize(results),
+        "results": [asdict(r) for r in results],
+    }
+
+
+def run_regression(
+    fixture_dir: str,
+    cases_path: str,
+    embedder,
+    *,
+    top_k: int = 4,
+    threshold: float = 0.20,
+    use_hybrid: bool = True,
+    alpha: float = 0.55,
+    use_reranker: bool = False,
+    reranker=None,
+    min_accuracy: float = 1.0,
+) -> dict:
+    """Fixture + cases ile regression çalıştırır; rapor dict döner."""
+    cases = load_cases(cases_path)
+    index = build_index_from_fixture_dir(fixture_dir, embedder)
+    if index.size == 0:
+        raise RuntimeError(f"Fixture indeks boş: {fixture_dir}")
+    results = evaluate_cases(
+        index,
+        embedder,
+        cases,
+        top_k=top_k,
+        threshold=threshold,
+        use_hybrid=use_hybrid,
+        alpha=alpha,
+        use_reranker=use_reranker,
+        reranker=reranker,
+    )
+    summary = summarize(results)
+    summary["min_accuracy"] = min_accuracy
+    summary["ok"] = summary["accuracy"] + 1e-9 >= min_accuracy
+    return results_to_dict(results, summary)
