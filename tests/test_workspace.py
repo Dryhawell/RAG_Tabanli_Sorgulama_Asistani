@@ -54,3 +54,52 @@ def test_private_user_can_ingest(monkeypatch):
     monkeypatch.setattr("rag.auth.AUTH_USER_CAN_INGEST", False)
     u = User("demo", role="user")
     assert u.can_ingest is True
+
+
+def test_tenant_shared_paths_isolated(tmp_path, monkeypatch):
+    monkeypatch.setattr("rag.workspace.DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr("rag.workspace.INDEXES_DIR", str(tmp_path / "indexes"))
+    monkeypatch.setattr("rag.workspace.METADATA_DIR", str(tmp_path / "metadata"))
+    monkeypatch.setattr("rag.workspace.CHAT_DIR", str(tmp_path / "chats"))
+    monkeypatch.setattr("rag.workspace.INDEX_PATH", str(tmp_path / "indexes" / "faiss.index"))
+    monkeypatch.setattr("rag.workspace.DOCSTORE_PATH", str(tmp_path / "metadata" / "docstore.json"))
+    monkeypatch.setattr("rag.workspace.ENABLE_TENANTS", True)
+
+    acme = resolve_workspace(
+        User("alice", role="user", tenant_id="acme"),
+        shared=True,
+        enable_tenants=True,
+    )
+    beta = resolve_workspace(
+        User("bob", role="user", tenant_id="beta"),
+        shared=True,
+        enable_tenants=True,
+    )
+    ensure_workspace_dirs(acme)
+    ensure_workspace_dirs(beta)
+
+    assert "tenants/acme" in acme.data_dir.replace("\\", "/")
+    assert "tenants/beta" in beta.data_dir.replace("\\", "/")
+    assert acme.index_path != beta.index_path
+    assert acme.audit_path != beta.audit_path
+    assert acme.key == "tenant:acme|shared"
+    assert beta.key == "tenant:beta|shared"
+
+
+def test_tenant_private_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr("rag.workspace.DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr("rag.workspace.INDEXES_DIR", str(tmp_path / "indexes"))
+    monkeypatch.setattr("rag.workspace.METADATA_DIR", str(tmp_path / "metadata"))
+    monkeypatch.setattr("rag.workspace.CHAT_DIR", str(tmp_path / "chats"))
+    monkeypatch.setattr("rag.workspace.ENABLE_TENANTS", True)
+
+    ws = resolve_workspace(
+        User("Alice", role="user", tenant_id="Acme!"),
+        shared=False,
+        enable_tenants=True,
+    )
+    ensure_workspace_dirs(ws)
+    norm = ws.data_dir.replace("\\", "/")
+    assert "tenants/acme" in norm
+    assert "users/alice" in norm
+    assert ws.tenant_id == "acme"

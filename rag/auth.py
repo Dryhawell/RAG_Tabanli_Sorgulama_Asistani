@@ -15,6 +15,7 @@ from app.config import (
     AUTH_SHARED_INDEX,
     AUTH_USER_CAN_INGEST,
     CHAT_DIR,
+    DEFAULT_TENANT,
     ENABLE_AUTH,
     USERS_PATH,
 )
@@ -24,6 +25,7 @@ from app.config import (
 class User:
     username: str
     role: str = "user"  # admin | user
+    tenant_id: str = "default"
     # None veya ["*"] => tümü; liste => kısıtlı ACL
     allowed_folders: Optional[List[str]] = None
     allowed_tags: Optional[List[str]] = None
@@ -50,6 +52,12 @@ def _parse_acl_list(raw) -> Optional[List[str]]:
     return None
 
 
+def _safe_tenant(tenant_id: Optional[str]) -> str:
+    t = (tenant_id or DEFAULT_TENANT or "default").strip().lower()
+    t = re.sub(r"[^a-z0-9._-]+", "", t)
+    return t or "default"
+
+
 def user_from_meta(username: str, meta: dict) -> User:
     role = meta.get("role") or "user"
     if role not in {"admin", "user"}:
@@ -57,6 +65,7 @@ def user_from_meta(username: str, meta: dict) -> User:
     return User(
         username=username,
         role=role,
+        tenant_id=_safe_tenant(meta.get("tenant_id") or DEFAULT_TENANT),
         allowed_folders=_parse_acl_list(meta.get("allowed_folders")),
         allowed_tags=_parse_acl_list(meta.get("allowed_tags")),
     )
@@ -82,9 +91,17 @@ def _safe_username(username: str) -> str:
     return u
 
 
-def user_chat_dir(username: str, base: str = CHAT_DIR) -> str:
+def user_chat_dir(
+    username: str,
+    base: str = CHAT_DIR,
+    *,
+    tenant_id: Optional[str] = None,
+) -> str:
     safe = _safe_username(username) or "anon"
-    path = os.path.join(base, safe)
+    if tenant_id:
+        path = os.path.join(base, _safe_tenant(tenant_id), safe)
+    else:
+        path = os.path.join(base, safe)
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -117,6 +134,7 @@ def ensure_users_file(path: str = USERS_PATH) -> Dict[str, dict]:
         users[uname] = {
             "password_hash": _hash_password(raw_pass),
             "role": "admin",
+            "tenant_id": DEFAULT_TENANT,
         }
         changed = True
 
@@ -129,6 +147,9 @@ def ensure_users_file(path: str = USERS_PATH) -> Dict[str, dict]:
             del meta["password"]
             changed = True
         meta.setdefault("role", "user")
+        if "tenant_id" not in meta:
+            meta["tenant_id"] = DEFAULT_TENANT
+            changed = True
 
     if changed:
         save_users(users, path)
@@ -160,6 +181,7 @@ def add_user(
     *,
     role: str = "user",
     path: str = USERS_PATH,
+    tenant_id: Optional[str] = None,
     allowed_folders: Optional[List[str]] = None,
     allowed_tags: Optional[List[str]] = None,
 ) -> User:
@@ -171,7 +193,11 @@ def add_user(
         raise ValueError("Kullanıcı zaten var")
     if role not in {"admin", "user"}:
         role = "user"
-    entry = {"password_hash": _hash_password(password), "role": role}
+    entry = {
+        "password_hash": _hash_password(password),
+        "role": role,
+        "tenant_id": _safe_tenant(tenant_id or DEFAULT_TENANT),
+    }
     folders = _parse_acl_list(allowed_folders)
     tags = _parse_acl_list(allowed_tags)
     if folders is not None:
@@ -257,6 +283,7 @@ def list_users_detail(path: str = USERS_PATH) -> List[dict]:
             {
                 "username": uname,
                 "role": meta.get("role") or "user",
+                "tenant_id": meta.get("tenant_id") or DEFAULT_TENANT,
                 "allowed_folders": meta.get("allowed_folders"),
                 "allowed_tags": meta.get("allowed_tags"),
             }

@@ -1,11 +1,13 @@
 {
   "admin": {
     "password": "admin",
-    "role": "admin"
+    "role": "admin",
+    "tenant_id": "default"
   },
   "demo": {
     "password": "demo",
     "role": "user",
+    "tenant_id": "default",
     "allowed_folders": ["genel", "urun"],
     "allowed_tags": ["public"]
   }

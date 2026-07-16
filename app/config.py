@@ -18,6 +18,12 @@ AUTH_SHARED_INDEX = os.getenv("RAG_AUTH_SHARED_INDEX", "1") not in {"0", "false"
 AUTH_USER_CAN_INGEST = os.getenv("RAG_AUTH_USER_CAN_INGEST", "0") not in {"0", "false", "False"}
 # İlk kurulum için: "admin:parola" — users.json yoksa oluşturulur
 AUTH_BOOTSTRAP_ADMIN = os.getenv("RAG_AUTH_BOOTSTRAP_ADMIN", "admin:admin")
+# Çok kiracılı (tenant) izolasyon
+ENABLE_TENANTS = os.getenv("RAG_ENABLE_TENANTS", "0") not in {"0", "false", "False"}
+DEFAULT_TENANT = os.getenv("RAG_DEFAULT_TENANT", "default")
+# Audit log
+ENABLE_AUDIT = os.getenv("RAG_ENABLE_AUDIT", "1") not in {"0", "false", "False"}
+AUDIT_LOG_PATH = os.getenv("RAG_AUDIT_LOG_PATH", os.path.join(METADATA_DIR, "audit.jsonl"))
 
 # Embedding
 DEFAULT_EMBEDDING_MODEL = os.getenv(

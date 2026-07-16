@@ -20,17 +20,19 @@ def test_password_hash_roundtrip():
 def test_authenticate_and_roles(tmp_path, monkeypatch):
     path = str(tmp_path / "users.json")
     monkeypatch.setattr("rag.auth.AUTH_BOOTSTRAP_ADMIN", "")
-    add_user("Admin", "secret", role="admin", path=path)
+    add_user("Admin", "secret", role="admin", path=path, tenant_id="acme")
     add_user("demo", "demo", role="user", path=path)
 
     admin = authenticate("admin", "secret", path=path)
     assert admin is not None
     assert admin.role == "admin"
     assert admin.can_ingest is True
+    assert admin.tenant_id == "acme"
 
     user = authenticate("demo", "demo", path=path)
     assert user is not None
     assert user.role == "user"
+    assert user.tenant_id == "default"
 
     assert authenticate("demo", "nope", path=path) is None
 

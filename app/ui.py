@@ -45,6 +45,7 @@ from rag.acl import (
     intersect_tag_filter,
 )
 from rag.export_chat import export_session_json, export_session_markdown
+from rag.audit import read_audit, write_audit
 from rag.workspace import ensure_workspace_dirs, resolve_workspace
 from app.config import (
     DATA_DIR,
@@ -53,6 +54,8 @@ from app.config import (
     CHAT_DIR,
     ENABLE_AUTH,
     AUTH_SHARED_INDEX,
+    ENABLE_TENANTS,
+    DEFAULT_TENANT,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_TOP_K,
     NO_ANSWER_THRESHOLD,
@@ -84,8 +87,11 @@ if auth_enabled():
     if st.session_state["auth_user"] is None:
         st.subheader("Giriş")
         st.caption(
-            "Çok kullanıcılı mod açık. Doküman indeksi paylaşımlıdır; sohbet geçmişi kullanıcıya özeldir."
+            "Çok kullanıcılı mod açık. Sohbet geçmişi kullanıcıya özeldir; "
+            "indeks paylaşımlı veya kişisel olabilir."
         )
+        if ENABLE_TENANTS:
+            st.caption(f"Tenant izolasyonu açık (varsayılan tenant: `{DEFAULT_TENANT}`).")
         with st.form("login_form"):
             lu = st.text_input("Kullanıcı adı")
             lp = st.text_input("Parola", type="password")
@@ -93,8 +99,14 @@ if auth_enabled():
         if submitted:
             user = authenticate(lu, lp)
             if user is None:
+                write_audit("login_fail", username=lu, details={"reason": "invalid_credentials"})
                 st.error("Geçersiz kullanıcı adı veya parola.")
             else:
+                write_audit(
+                    "login_success",
+                    username=user.username,
+                    tenant_id=user.tenant_id if ENABLE_TENANTS else None,
+                )
                 st.session_state["auth_user"] = user
                 for k in ("chat_session", "chat_session_id", "messages", "bm25", "bm25_index_id"):
                     st.session_state.pop(k, None)
@@ -221,11 +233,19 @@ with st.sidebar:
     if current_user:
         st.header("Hesap")
         st.write(f"Kullanıcı: **{current_user.username}** (`{current_user.role}`)")
+        if ENABLE_TENANTS:
+            st.caption(f"Tenant: `{current_user.tenant_id}`")
         if ws.shared:
-            st.caption("İndeks paylaşımlı (tüm kullanıcılar aynı doküman havuzu).")
+            st.caption("İndeks paylaşımlı (aynı tenant içindeki kullanıcılar).")
         else:
             st.caption(f"Kişisel indeks: `{ws.data_dir}`")
         if st.button("Çıkış yap"):
+            write_audit(
+                "logout",
+                username=current_user.username,
+                tenant_id=ws.tenant_id,
+                path=ws.audit_path,
+            )
             st.session_state["auth_user"] = None
             for k in ("chat_session", "chat_session_id", "messages", "index", "bm25", "bm25_index_id", "workspace_key"):
                 st.session_state.pop(k, None)
@@ -238,7 +258,7 @@ with st.sidebar:
             for u in users:
                 acl_f = u.get("allowed_folders")
                 acl_t = u.get("allowed_tags")
-                acl_txt = ""
+                acl_txt = f" tenant={u.get('tenant_id') or DEFAULT_TENANT}"
                 if acl_f is not None:
                     acl_txt += f" klasör={acl_f}"
                 if acl_t is not None:
@@ -249,6 +269,7 @@ with st.sidebar:
                 nu = st.text_input("Yeni kullanıcı adı", key="admin_new_user")
                 npw = st.text_input("Parola", type="password", key="admin_new_pass")
                 nrole = st.selectbox("Rol", options=["user", "admin"], key="admin_new_role")
+                ntenant = st.text_input("Tenant", value=DEFAULT_TENANT, key="admin_new_tenant")
                 nfolders = st.text_input(
                     "İzinli klasörler (* = tümü / boş = tümü)",
                     key="admin_new_folders",
@@ -267,8 +288,16 @@ with st.sidebar:
                             nu,
                             npw,
                             role=nrole,
+                            tenant_id=ntenant,
                             allowed_folders=folders,
                             allowed_tags=tags,
+                        )
+                        write_audit(
+                            "admin_add_user",
+                            username=current_user.username,
+                            tenant_id=ws.tenant_id,
+                            details={"created": created.username, "role": created.role, "tenant": created.tenant_id},
+                            path=ws.audit_path,
                         )
                         st.success(f"Eklendi: {created.username} ({created.role})")
                         st.rerun()
@@ -302,6 +331,17 @@ with st.sidebar:
                             clear_folders=clear_f,
                             clear_tags=clear_t,
                         )
+                        write_audit(
+                            "admin_acl_update",
+                            username=current_user.username,
+                            tenant_id=ws.tenant_id,
+                            details={
+                                "target": updated.username,
+                                "folders": updated.allowed_folders,
+                                "tags": updated.allowed_tags,
+                            },
+                            path=ws.audit_path,
+                        )
                         st.success(
                             f"ACL güncellendi: {updated.username} "
                             f"folders={updated.allowed_folders} tags={updated.allowed_tags}"
@@ -319,10 +359,28 @@ with st.sidebar:
                     if st.button("Sil", key="admin_del_btn"):
                         try:
                             deleted = delete_user(victim)
+                            write_audit(
+                                "admin_delete_user",
+                                username=current_user.username,
+                                tenant_id=ws.tenant_id,
+                                details={"deleted": deleted},
+                                path=ws.audit_path,
+                            )
                             st.success(f"Silindi: {deleted}")
                             st.rerun()
                         except Exception as exc:
                             st.error(str(exc))
+
+            with st.expander("Audit log (son 20)", expanded=False):
+                rows = read_audit(path=ws.audit_path, limit=20)
+                if not rows:
+                    st.caption("Kayıt yok.")
+                else:
+                    for row in rows:
+                        st.write(
+                            f"`{row.get('ts')}` · **{row.get('event')}** · "
+                            f"{row.get('username') or '-'} · {row.get('details')}"
+                        )
 
     st.header("Sohbetler")
     sessions = list_sessions(chat_dir=active_chat_dir)
@@ -499,6 +557,13 @@ if delete_candidates and can_ingest:
         index.save(active_index_path, active_docstore_path)
         st.session_state["index"] = index
         st.session_state["bm25"] = build_bm25_from_index(index)
+        write_audit(
+            "delete_sources",
+            username=current_user.username if current_user else None,
+            tenant_id=ws.tenant_id,
+            details={"sources": list(to_delete)},
+            path=ws.audit_path,
+        )
         st.success(f"Silindi: {', '.join(to_delete)}")
         st.rerun()
 
@@ -584,6 +649,20 @@ if uploaded_files:
     added = sum(r["chunks_added"] for r in reports)
     replaced = sum(1 for r in reports if r["chunks_removed"] > 0)
     skipped = sum(1 for r in reports if r.get("skipped"))
+    write_audit(
+        "ingest",
+        username=current_user.username if current_user else None,
+        tenant_id=ws.tenant_id,
+        details={
+            "files": [r.get("source_file") for r in reports],
+            "chunks_added": added,
+            "replaced": replaced,
+            "skipped": skipped,
+            "folder": folder_n,
+            "tags": tags_n,
+        },
+        path=ws.audit_path,
+    )
     st.success(
         f"İndeks güncellendi: {added} chunk eklendi"
         + (f", {replaced} dosya yenilendi" if replaced else "")
@@ -609,6 +688,13 @@ if rebuild:
         st.session_state["bm25"] = build_bm25_from_index(index)
     ok = [r for r in reports if not r.get("skipped")]
     bad = [r for r in reports if r.get("skipped")]
+    write_audit(
+        "rebuild",
+        username=current_user.username if current_user else None,
+        tenant_id=ws.tenant_id,
+        details={"files_ok": len(ok), "files_skipped": len(bad), "chunks": index.size},
+        path=ws.audit_path,
+    )
     st.success(f"İndeks yeniden oluşturuldu: {len(ok)} dosya, {index.size} chunk.")
     for r in bad:
         st.warning(f"{r['source_file']}: {r.get('reason') or 'atlandı'}")
@@ -806,4 +892,16 @@ if user_input:
         st.session_state["chat_session"],
         [user_msg, assistant_msg],
         chat_dir=active_chat_dir,
+    )
+    write_audit(
+        "query",
+        username=current_user.username if current_user else None,
+        tenant_id=ws.tenant_id,
+        details={
+            "question": user_input[:240],
+            "gate_score": round(float(gate_score), 4),
+            "n_sources": len(source_payload),
+            "no_answer": not retrieved or gate_score < NO_ANSWER_THRESHOLD,
+        },
+        path=ws.audit_path,
     )
