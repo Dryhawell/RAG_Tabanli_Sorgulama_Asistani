@@ -35,7 +35,16 @@ from rag.auth import (
     delete_user,
     ensure_users_file,
     list_users_detail,
+    update_user_acl,
 )
+from rag.acl import (
+    can_ingest_to,
+    filter_folder_options,
+    filter_tag_options,
+    intersect_folder_filter,
+    intersect_tag_filter,
+)
+from rag.export_chat import export_session_json, export_session_markdown
 from rag.workspace import ensure_workspace_dirs, resolve_workspace
 from app.config import (
     DATA_DIR,
@@ -227,16 +236,76 @@ with st.sidebar:
             users = list_users_detail()
             st.caption(f"{len(users)} kullanıcı")
             for u in users:
-                st.write(f"- `{u['username']}` ({u['role']})")
+                acl_f = u.get("allowed_folders")
+                acl_t = u.get("allowed_tags")
+                acl_txt = ""
+                if acl_f is not None:
+                    acl_txt += f" klasör={acl_f}"
+                if acl_t is not None:
+                    acl_txt += f" etiket={acl_t}"
+                st.write(f"- `{u['username']}` ({u['role']}){acl_txt}")
 
             with st.expander("Kullanıcı ekle", expanded=False):
                 nu = st.text_input("Yeni kullanıcı adı", key="admin_new_user")
                 npw = st.text_input("Parola", type="password", key="admin_new_pass")
                 nrole = st.selectbox("Rol", options=["user", "admin"], key="admin_new_role")
+                nfolders = st.text_input(
+                    "İzinli klasörler (* = tümü / boş = tümü)",
+                    key="admin_new_folders",
+                    placeholder="hukuk,genel",
+                )
+                ntags = st.text_input(
+                    "İzinli etiketler (* = tümü / boş = tümü)",
+                    key="admin_new_tags",
+                    placeholder="public",
+                )
                 if st.button("Ekle", key="admin_add_btn"):
                     try:
-                        created = add_user(nu, npw, role=nrole)
+                        folders = None if not nfolders.strip() or nfolders.strip() == "*" else nfolders
+                        tags = None if not ntags.strip() or ntags.strip() == "*" else ntags
+                        created = add_user(
+                            nu,
+                            npw,
+                            role=nrole,
+                            allowed_folders=folders,
+                            allowed_tags=tags,
+                        )
                         st.success(f"Eklendi: {created.username} ({created.role})")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
+
+            with st.expander("ACL güncelle", expanded=False):
+                acl_user = st.selectbox(
+                    "Kullanıcı",
+                    options=[u["username"] for u in users],
+                    key="admin_acl_user",
+                )
+                acl_folders = st.text_input(
+                    "Klasörler (* = tümü)",
+                    key="admin_acl_folders",
+                    placeholder="hukuk,genel",
+                )
+                acl_tags = st.text_input(
+                    "Etiketler (* = tümü)",
+                    key="admin_acl_tags",
+                    placeholder="public",
+                )
+                if st.button("ACL kaydet", key="admin_acl_save"):
+                    try:
+                        clear_f = acl_folders.strip() in {"", "*"}
+                        clear_t = acl_tags.strip() in {"", "*"}
+                        updated = update_user_acl(
+                            acl_user,
+                            allowed_folders=None if clear_f else acl_folders,
+                            allowed_tags=None if clear_t else acl_tags,
+                            clear_folders=clear_f,
+                            clear_tags=clear_t,
+                        )
+                        st.success(
+                            f"ACL güncellendi: {updated.username} "
+                            f"folders={updated.allowed_folders} tags={updated.allowed_tags}"
+                        )
                         st.rerun()
                     except Exception as exc:
                         st.error(str(exc))
@@ -300,6 +369,8 @@ with st.sidebar:
         clear_chat = st.button("Temizle", use_container_width=True)
     with c3:
         delete_chat = st.button("Sil", use_container_width=True)
+
+    # Dışa aktarma mevcut oturum üzerinden (session yüklendikten sonra da çalışır)
 
 # Session / index
 emb = get_embedder(embedding_model)
@@ -440,18 +511,29 @@ with fcol1:
         default=[],
     )
 with fcol2:
-    folder_options = index.list_folders()
+    folder_options = filter_folder_options(current_user, index.list_folders())
     # kök belgeleri de filtreleyebilmek için özel etiket
-    display_folders = folder_options + (["(kök)"] if any(
-        not (index._id_to_meta[i].folder or "").strip()
-        for i in index._id_to_meta
-    ) else [])
+    root_allowed = True
+    if current_user is not None:
+        from rag.acl import folder_set as _folder_set
+
+        fs = _folder_set(current_user)
+        root_allowed = fs is None or "" in fs
+    display_folders = folder_options + (
+        ["(kök)"]
+        if root_allowed
+        and any(not (index._id_to_meta[i].folder or "").strip() for i in index._id_to_meta)
+        else []
+    )
     folder_filter_raw = st.multiselect("Klasörler", options=display_folders, default=[])
     folder_filter = [
         "" if f == "(kök)" else f for f in folder_filter_raw
     ]
+    folder_filter = intersect_folder_filter(current_user, folder_filter)
 with fcol3:
-    tag_filter = st.multiselect("Etiketler", options=index.list_tags(), default=[])
+    tag_options = filter_tag_options(current_user, index.list_tags())
+    tag_filter = st.multiselect("Etiketler", options=tag_options, default=[])
+    tag_filter = intersect_tag_filter(current_user, tag_filter)
 tag_mode = st.radio(
     "Etiket modu",
     options=["any", "all"],
@@ -463,6 +545,10 @@ tag_mode = st.radio(
 if uploaded_files:
     folder_n = normalize_folder(upload_folder)
     tags_n = normalize_tags(upload_tags)
+    if not can_ingest_to(current_user, folder=folder_n, tags=tags_n):
+        st.error("Bu klasör/etiket kombinasyonuna yükleme izniniz yok.")
+        uploaded_files = None
+if uploaded_files:
     with st.spinner("Dosyalar işleniyor..."):
         reports = []
         for uf in uploaded_files:
@@ -593,6 +679,27 @@ with st.expander("Eval paneli (retrieval smoke)"):
                 mark = "GEÇTI" if r.passed else "KALDI"
                 st.markdown(f"`{mark}` **{r.question}** — {r.reason}")
 
+# Sohbet dışa aktarma
+export_session = dict(st.session_state.get("chat_session") or {})
+export_session["messages"] = list(st.session_state.get("messages") or [])
+ex1, ex2 = st.columns(2)
+with ex1:
+    st.download_button(
+        "Sohbeti JSON indir",
+        data=export_session_json(export_session),
+        file_name=f"sohbet-{export_session.get('id') or 'oturum'}.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+with ex2:
+    st.download_button(
+        "Sohbeti Markdown indir",
+        data=export_session_markdown(export_session),
+        file_name=f"sohbet-{export_session.get('id') or 'oturum'}.md",
+        mime="text/markdown",
+        use_container_width=True,
+    )
+
 for m in st.session_state["messages"]:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
@@ -627,6 +734,7 @@ if user_input:
         folder_filter=folder_filter or None,
         tag_filter=tag_filter or None,
         tag_mode=tag_mode,
+        acl_user=current_user,
         threshold=NO_ANSWER_THRESHOLD,
     )
 

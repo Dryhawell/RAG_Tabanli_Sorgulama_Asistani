@@ -12,6 +12,8 @@ from app.config import (
     NO_ANSWER_THRESHOLD,
     RERANK_CANDIDATES,
 )
+from rag.acl import filter_chunks
+from rag.auth import User
 from rag.hybrid import BM25Index, hybrid_search
 from rag.index import FaissIndex
 from rag.meta_store import normalize_folder, normalize_tags
@@ -88,6 +90,7 @@ def retrieve(
     folder_filter: Optional[Sequence[str]] = None,
     tag_filter: Optional[Sequence[str]] = None,
     tag_mode: str = "any",
+    acl_user: Optional[User] = None,
     threshold: float = NO_ANSWER_THRESHOLD,
 ) -> Tuple[List[RetrievedChunk], float]:
     """Döner: (final_chunks, gate_score).
@@ -126,6 +129,10 @@ def retrieve(
     if source_filter or folder_filter or tag_filter:
         hits = apply_metadata_filters(hits, **filt_kwargs)
         dense_hits = apply_metadata_filters(dense_hits, **filt_kwargs)
+
+    if acl_user is not None:
+        hits = filter_chunks(acl_user, hits)
+        dense_hits = filter_chunks(acl_user, dense_hits)
 
     # No-answer eşiği için yalnızca dense (cosine) skoru kullan.
     # Hybrid füzyon min-max normalize edildiği için her zaman ~1 üretebilir.

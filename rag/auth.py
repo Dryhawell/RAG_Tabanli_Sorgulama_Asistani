@@ -7,7 +7,7 @@ import json
 import os
 import re
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from app.config import (
@@ -24,6 +24,9 @@ from app.config import (
 class User:
     username: str
     role: str = "user"  # admin | user
+    # None veya ["*"] => tümü; liste => kısıtlı ACL
+    allowed_folders: Optional[List[str]] = None
+    allowed_tags: Optional[List[str]] = None
 
     @property
     def can_ingest(self) -> bool:
@@ -33,6 +36,30 @@ class User:
         if not AUTH_SHARED_INDEX:
             return True
         return AUTH_USER_CAN_INGEST
+
+
+def _parse_acl_list(raw) -> Optional[List[str]]:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.replace(";", ",").split(",") if p.strip()]
+        return parts or None
+    if isinstance(raw, list):
+        parts = [str(x).strip() for x in raw if str(x).strip()]
+        return parts or None
+    return None
+
+
+def user_from_meta(username: str, meta: dict) -> User:
+    role = meta.get("role") or "user"
+    if role not in {"admin", "user"}:
+        role = "user"
+    return User(
+        username=username,
+        role=role,
+        allowed_folders=_parse_acl_list(meta.get("allowed_folders")),
+        allowed_tags=_parse_acl_list(meta.get("allowed_tags")),
+    )
 
 
 def _hash_password(password: str, salt: Optional[str] = None) -> str:
@@ -124,10 +151,7 @@ def authenticate(
         return None
     if not verify_password(password, meta.get("password_hash", "")):
         return None
-    role = meta.get("role") or "user"
-    if role not in {"admin", "user"}:
-        role = "user"
-    return User(username=uname, role=role)
+    return user_from_meta(uname, meta)
 
 
 def add_user(
@@ -136,6 +160,8 @@ def add_user(
     *,
     role: str = "user",
     path: str = USERS_PATH,
+    allowed_folders: Optional[List[str]] = None,
+    allowed_tags: Optional[List[str]] = None,
 ) -> User:
     users = ensure_users_file(path)
     uname = _safe_username(username)
@@ -145,9 +171,60 @@ def add_user(
         raise ValueError("Kullanıcı zaten var")
     if role not in {"admin", "user"}:
         role = "user"
-    users[uname] = {"password_hash": _hash_password(password), "role": role}
+    entry = {"password_hash": _hash_password(password), "role": role}
+    folders = _parse_acl_list(allowed_folders)
+    tags = _parse_acl_list(allowed_tags)
+    if folders is not None:
+        entry["allowed_folders"] = folders
+    if tags is not None:
+        entry["allowed_tags"] = tags
+    users[uname] = entry
     save_users(users, path)
-    return User(username=uname, role=role)
+    return user_from_meta(uname, entry)
+
+
+def update_user_acl(
+    username: str,
+    *,
+    allowed_folders: Optional[List[str]] = None,
+    allowed_tags: Optional[List[str]] = None,
+    path: str = USERS_PATH,
+    clear_folders: bool = False,
+    clear_tags: bool = False,
+) -> User:
+    """Kullanıcı klasör/etiket ACL'sini günceller.
+
+    clear_*=True => kısıtı kaldır (tümüne izin).
+    """
+    users = ensure_users_file(path)
+    uname = _safe_username(username)
+    if uname not in users:
+        raise ValueError("Kullanıcı bulunamadı")
+    meta = users[uname]
+    if not isinstance(meta, dict):
+        raise ValueError("Geçersiz kullanıcı kaydı")
+
+    if clear_folders:
+        meta.pop("allowed_folders", None)
+    elif allowed_folders is not None:
+        parsed = _parse_acl_list(allowed_folders)
+        if parsed is None:
+            meta.pop("allowed_folders", None)
+        else:
+            meta["allowed_folders"] = parsed
+
+    if clear_tags:
+        meta.pop("allowed_tags", None)
+    elif allowed_tags is not None:
+        parsed = _parse_acl_list(allowed_tags)
+        if parsed is None:
+            meta.pop("allowed_tags", None)
+        else:
+            meta["allowed_tags"] = parsed
+
+    users[uname] = meta
+    save_users(users, path)
+    return user_from_meta(uname, meta)
 
 
 def delete_user(
@@ -180,6 +257,8 @@ def list_users_detail(path: str = USERS_PATH) -> List[dict]:
             {
                 "username": uname,
                 "role": meta.get("role") or "user",
+                "allowed_folders": meta.get("allowed_folders"),
+                "allowed_tags": meta.get("allowed_tags"),
             }
         )
     return out

@@ -5,6 +5,8 @@
   },
   "demo": {
     "password": "demo",
-    "role": "user"
+    "role": "user",
+    "allowed_folders": ["genel", "urun"],
+    "allowed_tags": ["public"]
   }
 }

@@ -81,7 +81,8 @@ docker compose up --build
 - Streaming yanıt
 - Kalıcı sohbet oturumları (yeni / temizle / sil / seç)
 - Opsiyonel çok kullanıcılı giriş (paylaşımlı/kişisel indeks, kullanıcıya özel sohbet)
-- Admin paneli: kullanıcı listele / ekle / sil
+- Admin paneli: kullanıcı listele / ekle / sil / ACL (klasör-etiket)
+- Sohbet dışa aktarma (JSON / Markdown)
 - Eval paneli: `soru | beklenen_kaynak | expect_no_answer(0/1)`
 
 ### Çok kullanıcılı mod
@@ -98,6 +99,7 @@ streamlit run app/ui.py
 - Sohbetler `metadata/chats/<kullanici>/` altında ayrılır
 - Paylaşımlı modda `admin` yükler/siler; `user` varsayılan yalnızca sorgu (`RAG_AUTH_USER_CAN_INGEST=1`)
 - Kişisel modda her kullanıcı kendi dokümanlarını yönetebilir
+- Kullanıcı ACL: `allowed_folders` / `allowed_tags` (`*` veya boş = tümü). Retrieval ve yükleme bu listeyle kısıtlanır.
 
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
@@ -148,5 +150,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli eval` (çıkış kodu 0 = min accuracy sağlandı)
 
 ## Sonraki adaylar
-- Rol bazlı klasör/etiket izinleri
-- Sohbet dışa aktarma (JSON/Markdown)
+- Çok kiracılı (tenant) izolasyon ve audit log
+- Yanıt kalitesi için LLM-as-judge eval
