@@ -59,6 +59,10 @@ python -m rag.cli ingest ./data/notlar.pdf --embedding mini-en --folder hukuk --
 
 # data/ listesi (alt klasörler dahil)
 python -m rag.cli list
+
+# retrieval regression (fixture + cases; hash embedder varsayılan)
+python -m rag.cli eval
+python -m rag.cli eval --embedding hash --output metadata/eval_report.json
 ```
 
 ### Docker
@@ -129,9 +133,16 @@ streamlit run app/ui.py
 ## Testler
 ```bash
 pytest -q
+# yalnızca regression:
+pytest -q tests/test_eval_regression.py
 ```
-Testler model indirmez; FAISS, chunking, hybrid, retrieve, OCR mock, chat store ve CLI parser mantığını doğrular.
+Testler model indirmez; FAISS, chunking, hybrid, retrieve, OCR mock, chat store, auth ve eval regression mantığını doğrular.
+
+### Eval seti
+- `evals/fixtures/`: örnek TXT dokümanlar
+- `evals/cases.json`: pozitif hit@k + negatif no-answer senaryoları
+- CLI: `python -m rag.cli eval` (çıkış kodu 0 = min accuracy sağlandı)
 
 ## Sonraki adaylar
-- Online değerlendirme seti ve otomatik regression
 - Kullanıcıya özel indeks (paylaşımsız) seçeneğinin genişletilmesi
+- Gerçek embedding modeli ile CI’da opsiyonel “slow” eval job

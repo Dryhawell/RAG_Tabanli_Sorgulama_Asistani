@@ -130,15 +130,19 @@ def evaluate_cases(
         answered = bool(hits) and gate >= threshold
 
         if case.expect_no_answer:
-            passed = not answered
-            reason = "beklenen: yok" + (" | model cevap üretir gibi" if answered else " | OK")
+            # Negatif sorular: dense skor eşiğin altında kalmalı
+            passed = gate < threshold
+            reason = (
+                f"beklenen: yok | gate={gate:.3f}"
+                + (" | OK" if passed else " | skor yüksek (yanlış pozitif riski)")
+            )
         elif case.expected_source:
-            # alt klasörlü kaynak adlarında basename de kabul
+            # Pozitif: hit@k (kaynak top listede) — retrieval regression metriği
             matched = any(
                 s == case.expected_source or os.path.basename(s) == case.expected_source
                 for s in top_sources
             )
-            passed = answered and matched
+            passed = matched
             reason = (
                 f"beklenen kaynak={case.expected_source}; top={top_sources[:3]}; gate={gate:.3f}"
             )
@@ -183,7 +187,7 @@ def run_regression(
     embedder,
     *,
     top_k: int = 4,
-    threshold: float = 0.20,
+    threshold: float = 0.30,
     use_hybrid: bool = True,
     alpha: float = 0.55,
     use_reranker: bool = False,

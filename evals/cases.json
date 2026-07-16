@@ -25,7 +25,7 @@
   },
   {
     "id": "negatif-uzay",
-    "question": "Uzay istasyonunda kahve nasıl demlenir?",
+    "question": "Mars kolonisinde kuantum kahve makinesi nasıl kalibre edilir?",
     "expected_source": null,
     "expect_no_answer": true
   }

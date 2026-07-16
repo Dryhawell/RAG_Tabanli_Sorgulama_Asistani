@@ -15,3 +15,6 @@ def test_cli_parser_subcommands():
     assert args.from_data is True
     assert args.folder == "hukuk"
     assert args.tags == "a,b"
+    args = parser.parse_args(["eval", "--embedding", "hash"])
+    assert args.command == "eval"
+    assert args.embedding == "hash"

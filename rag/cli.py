@@ -1,14 +1,16 @@
-"""Komut satırı ingest / rebuild yardımcıları.
+"""Komut satırı ingest / rebuild / eval yardımcıları.
 
 Örnekler:
   python -m rag.cli rebuild
   python -m rag.cli ingest path/to/file.pdf
   python -m rag.cli list
+  python -m rag.cli eval
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -22,8 +24,13 @@ from app.config import (
     MULTILINGUAL_EMBEDDING_MODEL,
 )
 from rag.embed import Embedder, resolve_embedding_model
+from rag.eval import run_regression
+from rag.hash_embed import HashEmbedder
 from rag.index import FaissIndex
 from rag.ingest import ingest_path, list_data_files, rebuild_from_data_dir
+
+DEFAULT_EVAL_FIXTURES = os.path.join("evals", "fixtures")
+DEFAULT_EVAL_CASES = os.path.join("evals", "cases.json")
 
 
 def _ensure_dirs():
@@ -113,12 +120,59 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_eval(args: argparse.Namespace) -> int:
+    """Fixture dokümanları + cases.json ile retrieval regression."""
+    fixture_dir = args.fixtures
+    cases_path = args.cases
+    if not os.path.isdir(fixture_dir):
+        print(f"Fixture klasörü yok: {fixture_dir}", file=sys.stderr)
+        return 2
+    if not os.path.isfile(cases_path):
+        print(f"Cases dosyası yok: {cases_path}", file=sys.stderr)
+        return 2
+
+    if args.embedding == "hash":
+        emb = HashEmbedder(dim=args.hash_dim)
+        print("Embedding: hash-embedder (model indirmez)")
+    else:
+        model = resolve_embedding_model(args.embedding)
+        print(f"Embedding: {model}")
+        emb = Embedder(model_name=model)
+
+    report = run_regression(
+        fixture_dir,
+        cases_path,
+        emb,
+        top_k=args.top_k,
+        threshold=args.threshold,
+        use_hybrid=not args.no_hybrid,
+        min_accuracy=args.min_accuracy,
+    )
+    summary = report["summary"]
+    print(
+        f"Eval: {summary['passed']}/{summary['total']} "
+        f"(accuracy={summary['accuracy']:.2%}, min={summary['min_accuracy']:.2%})"
+    )
+    for r in report["results"]:
+        mark = "GEÇTI" if r["passed"] else "KALDI"
+        cid = r.get("case_id") or "-"
+        print(f"  [{mark}] {cid}: {r['question']} — {r['reason']}")
+
+    if args.output:
+        os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+        with open(args.output, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        print(f"Rapor yazıldı: {args.output}")
+
+    return 0 if summary.get("ok") else 1
+
+
 def _add_embedding_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--embedding",
         default=DEFAULT_EMBEDDING_MODEL,
         help=(
-            "Preset (mini-en / mini-multi) veya model adı. "
+            "Preset (mini-en / mini-multi), 'hash' veya model adı. "
             f"Multilingual varsayılan: {MULTILINGUAL_EMBEDDING_MODEL}"
         ),
     )
@@ -150,6 +204,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Virgülle ayrılmış etiketler (ör. sozlesme,2024)",
     )
     p_ingest.set_defaults(func=cmd_ingest)
+
+    p_eval = sub.add_parser("eval", help="Fixture + cases ile retrieval regression")
+    p_eval.add_argument("--fixtures", default=DEFAULT_EVAL_FIXTURES, help="Fixture klasörü")
+    p_eval.add_argument("--cases", default=DEFAULT_EVAL_CASES, help="cases.json yolu")
+    p_eval.add_argument(
+        "--embedding",
+        default="hash",
+        help="hash (varsayılan, hızlı) | mini-en | mini-multi | model adı",
+    )
+    p_eval.add_argument("--hash-dim", type=int, default=64, help="Hash embedder boyutu")
+    p_eval.add_argument("--top-k", type=int, default=4)
+    p_eval.add_argument("--threshold", type=float, default=0.30)
+    p_eval.add_argument("--min-accuracy", type=float, default=1.0)
+    p_eval.add_argument("--no-hybrid", action="store_true", help="Yalnızca dense retrieval")
+    p_eval.add_argument("--output", default=None, help="JSON rapor çıktı yolu")
+    p_eval.set_defaults(func=cmd_eval)
     return p
 
 

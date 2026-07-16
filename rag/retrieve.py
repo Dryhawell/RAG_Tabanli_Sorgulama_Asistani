@@ -114,13 +114,8 @@ def retrieve(
             top_k=cand,
             alpha=hybrid_alpha,
         )
-        gate = max(
-            dense_hits[0].score if dense_hits else 0.0,
-            hits[0].score if hits else 0.0,
-        )
     else:
         hits = dense_hits
-        gate = dense_hits[0].score if dense_hits else 0.0
 
     filt_kwargs = dict(
         source_filter=source_filter or None,
@@ -130,10 +125,11 @@ def retrieve(
     )
     if source_filter or folder_filter or tag_filter:
         hits = apply_metadata_filters(hits, **filt_kwargs)
-        dense_filtered = apply_metadata_filters(dense_hits, **filt_kwargs)
-        gate = dense_filtered[0].score if dense_filtered else (hits[0].score if hits else 0.0)
-        if use_hybrid and hits:
-            gate = max(gate, hits[0].score)
+        dense_hits = apply_metadata_filters(dense_hits, **filt_kwargs)
+
+    # No-answer eşiği için yalnızca dense (cosine) skoru kullan.
+    # Hybrid füzyon min-max normalize edildiği için her zaman ~1 üretebilir.
+    gate = dense_hits[0].score if dense_hits else 0.0
 
     if not hits or gate < threshold:
         return hits[:top_k], gate
