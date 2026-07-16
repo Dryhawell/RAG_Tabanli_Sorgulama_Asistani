@@ -1,10 +1,11 @@
-"""Komut satırı ingest / rebuild / eval yardımcıları.
+"""Komut satırı ingest / rebuild / eval / judge yardımcıları.
 
 Örnekler:
   python -m rag.cli rebuild
   python -m rag.cli ingest path/to/file.pdf
   python -m rag.cli list
   python -m rag.cli eval
+  python -m rag.cli judge
 """
 
 from __future__ import annotations
@@ -28,9 +29,11 @@ from rag.eval import run_regression
 from rag.hash_embed import HashEmbedder
 from rag.index import FaissIndex
 from rag.ingest import ingest_path, list_data_files, rebuild_from_data_dir
+from rag.judge import run_judge_file
 
 DEFAULT_EVAL_FIXTURES = os.path.join("evals", "fixtures")
 DEFAULT_EVAL_CASES = os.path.join("evals", "cases.json")
+DEFAULT_JUDGE_CASES = os.path.join("evals", "judge_cases.json")
 
 
 def _ensure_dirs():
@@ -167,6 +170,41 @@ def cmd_eval(args: argparse.Namespace) -> int:
     return 0 if summary.get("ok") else 1
 
 
+def cmd_judge(args: argparse.Namespace) -> int:
+    """Yanıt kalitesi: heuristic veya LLM-as-judge."""
+    cases_path = args.cases
+    if not os.path.isfile(cases_path):
+        print(f"Judge cases dosyası yok: {cases_path}", file=sys.stderr)
+        return 2
+
+    report = run_judge_file(
+        cases_path,
+        mode=args.mode,
+        provider=args.provider,
+        model_name=args.model,
+        min_accuracy=args.min_accuracy,
+    )
+    summary = report["summary"]
+    print(
+        f"Judge ({summary.get('mode')}): {summary['passed']}/{summary['total']} "
+        f"(accuracy={summary['accuracy']:.2%}, min={summary['min_accuracy']:.2%})"
+    )
+    for r in report["results"]:
+        mark = "GEÇTI" if r["passed"] else "KALDI"
+        cid = r.get("case_id") or "-"
+        print(
+            f"  [{mark}] {cid}: grounded={r['grounded']} score={r['score']:.2f} — {r['reason']}"
+        )
+
+    if args.output:
+        os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+        with open(args.output, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        print(f"Rapor yazıldı: {args.output}")
+
+    return 0 if summary.get("ok") else 1
+
+
 def _add_embedding_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--embedding",
@@ -220,6 +258,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--no-hybrid", action="store_true", help="Yalnızca dense retrieval")
     p_eval.add_argument("--output", default=None, help="JSON rapor çıktı yolu")
     p_eval.set_defaults(func=cmd_eval)
+
+    p_judge = sub.add_parser("judge", help="Yanıt kalitesi (heuristic / LLM-as-judge)")
+    p_judge.add_argument("--cases", default=DEFAULT_JUDGE_CASES, help="judge_cases.json yolu")
+    p_judge.add_argument(
+        "--mode",
+        choices=["heuristic", "llm"],
+        default="heuristic",
+        help="heuristic: hızlı token overlap; llm: model çağrısı",
+    )
+    p_judge.add_argument("--provider", default="ollama", choices=["ollama", "openai"])
+    p_judge.add_argument("--model", default="phi3:mini", help="LLM model adı (mode=llm)")
+    p_judge.add_argument("--min-accuracy", type=float, default=1.0)
+    p_judge.add_argument("--output", default=None, help="JSON rapor çıktı yolu")
+    p_judge.set_defaults(func=cmd_judge)
     return p
 
 

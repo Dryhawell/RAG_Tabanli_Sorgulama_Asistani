@@ -81,7 +81,7 @@ docker compose up --build
 - Streaming yanıt
 - Kalıcı sohbet oturumları (yeni / temizle / sil / seç)
 - Opsiyonel çok kullanıcılı giriş (paylaşımlı/kişisel indeks, kullanıcıya özel sohbet)
-- Admin paneli: kullanıcı listele / ekle / sil / ACL (klasör-etiket)
+- Admin paneli: kullanıcı listele / ekle / sil / ACL (klasör-etiket) / audit log
 - Sohbet dışa aktarma (JSON / Markdown)
 - Eval paneli: `soru | beklenen_kaynak | expect_no_answer(0/1)`
 
@@ -101,6 +101,17 @@ streamlit run app/ui.py
 - Kişisel modda her kullanıcı kendi dokümanlarını yönetebilir
 - Kullanıcı ACL: `allowed_folders` / `allowed_tags` (`*` veya boş = tümü). Retrieval ve yükleme bu listeyle kısıtlanır.
 
+### Tenant + audit
+```bash
+export RAG_ENABLE_AUTH=1
+export RAG_ENABLE_TENANTS=1
+export RAG_DEFAULT_TENANT=default
+export RAG_ENABLE_AUDIT=1
+```
+- Tenant açıkken data/indeks/metadata kökleri `.../tenants/<tenant_id>/` altına alınır
+- Kullanıcı kaydında `tenant_id` alanı; admin panelinden atanabilir
+- Audit JSONL: login, logout, ingest, delete, rebuild, query, admin işlemleri (`metadata/.../audit.jsonl`)
+
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
 |----------|----------|
@@ -117,6 +128,10 @@ streamlit run app/ui.py
 | `RAG_AUTH_SHARED_INDEX` | Paylaşımlı indeks (1) / kişisel indeks (0) |
 | `RAG_AUTH_USER_CAN_INGEST` | Paylaşımlı modda user yükleme yetkisi (1/0) |
 | `RAG_AUTH_BOOTSTRAP_ADMIN` | `kullanici:parola` ilk admin |
+| `RAG_ENABLE_TENANTS` | Tenant izolasyonu (1/0) |
+| `RAG_DEFAULT_TENANT` | Varsayılan tenant kimliği |
+| `RAG_ENABLE_AUDIT` | Audit log yazımı (1/0) |
+| `RAG_AUDIT_LOG_PATH` | Global audit dosyası (tenant kapalıyken) |
 | `OLLAMA_HOST` | Ollama adresi |
 | `OPENAI_API_KEY` | OpenAI anahtarı |
 
@@ -128,9 +143,9 @@ streamlit run app/ui.py
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
 - `rag/chat_store.py`: kalıcı sohbetler
-- `rag/auth.py`, `rag/workspace.py`: auth + paylaşımlı/kişisel çalışma alanı
+- `rag/auth.py`, `rag/workspace.py`, `rag/audit.py`: auth, tenant workspace, audit log
 - `users.example.json`: örnek kullanıcı şablonu
-- `rag/eval.py`: retrieval smoke eval
+- `rag/eval.py`, `rag/judge.py`: retrieval smoke + yanıt kalitesi judge
 - `rag/llm.py`, `rag/prompt.py`
 - `Dockerfile`, `docker-compose.yml`
 - `indexes/`, `metadata/` (`chats/`, `users.json`, `sources.json` dahil), `data/` (alt klasörler OK): çalışma zamanı (git dışı)
@@ -148,7 +163,9 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - `evals/fixtures/`: örnek TXT dokümanlar
 - `evals/cases.json`: pozitif hit@k + negatif no-answer senaryoları
 - CLI: `python -m rag.cli eval` (çıkış kodu 0 = min accuracy sağlandı)
+- `evals/judge_cases.json`: grounded / hallucination / no-answer örnekleri
+- CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Çok kiracılı (tenant) izolasyon ve audit log
-- Yanıt kalitesi için LLM-as-judge eval
+- Daha zengin observability (metrikler / dashboard)
+- Üretim sınıfı kimlik doğrulama (SSO / OIDC)

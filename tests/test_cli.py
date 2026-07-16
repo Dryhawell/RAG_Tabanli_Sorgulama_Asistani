@@ -18,3 +18,6 @@ def test_cli_parser_subcommands():
     args = parser.parse_args(["eval", "--embedding", "hash"])
     assert args.command == "eval"
     assert args.embedding == "hash"
+    args = parser.parse_args(["judge", "--mode", "heuristic"])
+    assert args.command == "judge"
+    assert args.mode == "heuristic"
