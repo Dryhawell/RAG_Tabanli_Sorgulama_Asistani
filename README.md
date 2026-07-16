@@ -80,7 +80,8 @@ docker compose up --build
 - Cross-encoder reranker anahtarı
 - Streaming yanıt
 - Kalıcı sohbet oturumları (yeni / temizle / sil / seç)
-- Opsiyonel çok kullanıcılı giriş (paylaşımlı indeks, kullanıcıya özel sohbet)
+- Opsiyonel çok kullanıcılı giriş (paylaşımlı/kişisel indeks, kullanıcıya özel sohbet)
+- Admin paneli: kullanıcı listele / ekle / sil
 - Eval paneli: `soru | beklenen_kaynak | expect_no_answer(0/1)`
 
 ### Çok kullanıcılı mod
@@ -134,11 +135,12 @@ streamlit run app/ui.py
 
 ## Testler
 ```bash
-pytest -q
-# yalnızca regression:
-pytest -q tests/test_eval_regression.py
+pytest -q                 # slow testler atlanır
+pytest -q -m "not slow"   # CI ile aynı
+# gerçek MiniLM regression (model indirir):
+RUN_SLOW_EVAL=1 pytest -q -m slow
 ```
-Testler model indirmez; FAISS, chunking, hybrid, retrieve, OCR mock, chat store, auth ve eval regression mantığını doğrular.
+GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile `run_slow_eval` açılabilir.
 
 ### Eval seti
 - `evals/fixtures/`: örnek TXT dokümanlar
@@ -146,5 +148,5 @@ Testler model indirmez; FAISS, chunking, hybrid, retrieve, OCR mock, chat store,
 - CLI: `python -m rag.cli eval` (çıkış kodu 0 = min accuracy sağlandı)
 
 ## Sonraki adaylar
-- Gerçek embedding modeli ile CI’da opsiyonel “slow” eval job
-- Admin paneli (kullanıcı ekleme/silme UI)
+- Rol bazlı klasör/etiket izinleri
+- Sohbet dışa aktarma (JSON/Markdown)

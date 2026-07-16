@@ -150,5 +150,40 @@ def add_user(
     return User(username=uname, role=role)
 
 
+def delete_user(
+    username: str,
+    *,
+    path: str = USERS_PATH,
+    protect_last_admin: bool = True,
+) -> str:
+    """Kullanıcıyı siler; son admin korunur. Dönüş: silinen kullanıcı adı."""
+    users = ensure_users_file(path)
+    uname = _safe_username(username)
+    if uname not in users:
+        raise ValueError("Kullanıcı bulunamadı")
+    role = users[uname].get("role") or "user"
+    if protect_last_admin and role == "admin":
+        admins = [u for u, m in users.items() if (m.get("role") or "user") == "admin"]
+        if len(admins) <= 1:
+            raise ValueError("Son admin kullanıcısı silinemez")
+    del users[uname]
+    save_users(users, path)
+    return uname
+
+
+def list_users_detail(path: str = USERS_PATH) -> List[dict]:
+    users = ensure_users_file(path)
+    out = []
+    for uname in sorted(users.keys()):
+        meta = users[uname] if isinstance(users[uname], dict) else {}
+        out.append(
+            {
+                "username": uname,
+                "role": meta.get("role") or "user",
+            }
+        )
+    return out
+
+
 def auth_enabled() -> bool:
     return bool(ENABLE_AUTH)

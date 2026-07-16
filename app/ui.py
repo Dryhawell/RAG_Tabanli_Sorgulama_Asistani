@@ -28,7 +28,14 @@ from rag.chat_store import (
     load_session,
     save_session,
 )
-from rag.auth import authenticate, auth_enabled, ensure_users_file
+from rag.auth import (
+    add_user,
+    authenticate,
+    auth_enabled,
+    delete_user,
+    ensure_users_file,
+    list_users_detail,
+)
 from rag.workspace import ensure_workspace_dirs, resolve_workspace
 from app.config import (
     DATA_DIR,
@@ -214,6 +221,39 @@ with st.sidebar:
             for k in ("chat_session", "chat_session_id", "messages", "index", "bm25", "bm25_index_id", "workspace_key"):
                 st.session_state.pop(k, None)
             st.rerun()
+
+        if current_user.role == "admin":
+            st.header("Admin")
+            users = list_users_detail()
+            st.caption(f"{len(users)} kullanıcı")
+            for u in users:
+                st.write(f"- `{u['username']}` ({u['role']})")
+
+            with st.expander("Kullanıcı ekle", expanded=False):
+                nu = st.text_input("Yeni kullanıcı adı", key="admin_new_user")
+                npw = st.text_input("Parola", type="password", key="admin_new_pass")
+                nrole = st.selectbox("Rol", options=["user", "admin"], key="admin_new_role")
+                if st.button("Ekle", key="admin_add_btn"):
+                    try:
+                        created = add_user(nu, npw, role=nrole)
+                        st.success(f"Eklendi: {created.username} ({created.role})")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
+
+            with st.expander("Kullanıcı sil", expanded=False):
+                del_opts = [u["username"] for u in users if u["username"] != current_user.username]
+                if not del_opts:
+                    st.caption("Silinebilir başka kullanıcı yok.")
+                else:
+                    victim = st.selectbox("Silinecek", options=del_opts, key="admin_del_user")
+                    if st.button("Sil", key="admin_del_btn"):
+                        try:
+                            deleted = delete_user(victim)
+                            st.success(f"Silindi: {deleted}")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(str(exc))
 
     st.header("Sohbetler")
     sessions = list_sessions(chat_dir=active_chat_dir)
