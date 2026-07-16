@@ -30,12 +30,18 @@ def is_supported_file(path: str) -> bool:
     return ext in SUPPORTED_EXTENSIONS
 
 
-def list_data_files(data_dir: str) -> List[str]:
-    """data_dir altındaki desteklenen dosyaları (alt klasörler dahil) listeler."""
+def list_data_files(data_dir: str, *, skip_user_namespaces: bool = True) -> List[str]:
+    """data_dir altındaki desteklenen dosyaları (alt klasörler dahil) listeler.
+
+    skip_user_namespaces: paylaşımlı data/ altında `users/` kişisel alanlarını atlar.
+    """
     if not os.path.isdir(data_dir):
         return []
     files: List[str] = []
-    for root, _dirs, names in os.walk(data_dir):
+    abs_root = os.path.abspath(data_dir)
+    for root, dirs, names in os.walk(data_dir):
+        if skip_user_namespaces and os.path.abspath(root) == abs_root and "users" in dirs:
+            dirs.remove("users")
         for name in sorted(names):
             path = os.path.join(root, name)
             if os.path.isfile(path) and is_supported_file(path):
@@ -50,6 +56,7 @@ def resolve_source_identity(
     *,
     folder: Optional[str] = None,
     tags: Optional[Sequence[str] | str] = None,
+    meta_path: Optional[str] = None,
 ) -> Tuple[str, str, List[str]]:
     """(source_file, folder, tags) üretir.
 
@@ -60,7 +67,7 @@ def resolve_source_identity(
     derived_folder = normalize_folder(os.path.dirname(source_file))
     folder_n = normalize_folder(folder) if folder is not None else derived_folder
 
-    existing = get_source_meta(source_file)
+    existing = get_source_meta(source_file, path=meta_path)
     tag_list = normalize_tags(tags) if tags is not None else list(existing.get("tags") or [])
     if folder is None and existing.get("folder"):
         # Sidecar klasör bilgisini koru (dosya kökteyse)
@@ -79,13 +86,14 @@ def ingest_path(
     data_dir: str = DATA_DIR,
     folder: Optional[str] = None,
     tags: Optional[Sequence[str] | str] = None,
+    meta_path: Optional[str] = None,
 ) -> Dict:
     """Tek bir dosyayı oku, chunk'la, embed et ve indekse ekle/yenile."""
     if not is_supported_file(path):
         raise ValueError(f"Desteklenmeyen dosya türü: {path}")
 
     source_file, folder_n, tag_list = resolve_source_identity(
-        path, data_dir, folder=folder, tags=tags
+        path, data_dir, folder=folder, tags=tags, meta_path=meta_path
     )
     _, pages = read_document(path)
     chunk_texts, metas = chunk_pages(
@@ -120,7 +128,7 @@ def ingest_path(
     else:
         index.add(vecs, chunk_texts, metas)
     index.embedding_model = embedder.model_name
-    upsert_source_meta(source_file, folder=folder_n, tags=tag_list)
+    upsert_source_meta(source_file, folder=folder_n, tags=tag_list, path=meta_path)
 
     return {
         "source_file": source_file,
@@ -137,6 +145,8 @@ def delete_source(
     source_file: str,
     index: FaissIndex,
     data_dir: str,
+    *,
+    meta_path: Optional[str] = None,
 ) -> Dict:
     """Kaynağı diskten, indeksten ve sidecar meta'dan kaldırır."""
     removed_chunks = index.remove_source(source_file)
@@ -155,7 +165,7 @@ def delete_source(
             except OSError:
                 break
             parent = os.path.dirname(parent)
-    delete_source_meta(source_file)
+    delete_source_meta(source_file, path=meta_path)
     return {
         "source_file": source_file,
         "chunks_removed": removed_chunks,
@@ -183,11 +193,13 @@ def rebuild_from_data_dir(
     *,
     chunk_size_words: int = CHUNK_SIZE_WORDS,
     overlap_ratio: float = CHUNK_OVERLAP_RATIO,
+    meta_path: Optional[str] = None,
+    skip_user_namespaces: bool = True,
 ) -> Tuple[FaissIndex, List[Dict]]:
     """data/ altındaki desteklenen dosyalardan indeksi sıfırdan kurar."""
     index = FaissIndex(dim=embedder.dim, embedding_model=embedder.model_name)
     reports: List[Dict] = []
-    for path in list_data_files(data_dir):
+    for path in list_data_files(data_dir, skip_user_namespaces=skip_user_namespaces):
         try:
             report = ingest_path(
                 path,
@@ -197,6 +209,7 @@ def rebuild_from_data_dir(
                 chunk_size_words=chunk_size_words,
                 overlap_ratio=overlap_ratio,
                 data_dir=data_dir,
+                meta_path=meta_path,
             )
             reports.append(report)
         except Exception as exc:

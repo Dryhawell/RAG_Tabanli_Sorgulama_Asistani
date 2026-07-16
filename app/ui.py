@@ -28,10 +28,9 @@ from rag.chat_store import (
     load_session,
     save_session,
 )
-from rag.auth import authenticate, auth_enabled, ensure_users_file, user_chat_dir
+from rag.auth import authenticate, auth_enabled, ensure_users_file
+from rag.workspace import ensure_workspace_dirs, resolve_workspace
 from app.config import (
-    INDEX_PATH,
-    DOCSTORE_PATH,
     DATA_DIR,
     INDEXES_DIR,
     METADATA_DIR,
@@ -89,8 +88,25 @@ if auth_enabled():
 
     current_user = st.session_state["auth_user"]
 
-active_chat_dir = user_chat_dir(current_user.username) if current_user else CHAT_DIR
+ws = resolve_workspace(current_user)
+ensure_workspace_dirs(ws)
+active_chat_dir = ws.chat_dir
+active_data_dir = ws.data_dir
+active_index_path = ws.index_path
+active_docstore_path = ws.docstore_path
+active_meta_path = ws.source_meta_path
 can_ingest = (not auth_enabled()) or bool(current_user and current_user.can_ingest)
+
+# Kullanıcı/workspace değişince indeks oturumunu yenile
+if st.session_state.get("workspace_key") != ws.key:
+    st.session_state["workspace_key"] = ws.key
+    st.session_state.pop("index", None)
+    st.session_state.pop("bm25", None)
+    st.session_state.pop("bm25_index_id", None)
+    for k in ("chat_session", "chat_session_id", "messages"):
+        # chat zaten kullanıcıya özel; yine de workspace değişiminde temizle
+        if current_user is not None:
+            st.session_state.pop(k, None)
 
 
 def _source_anchor(source_file: str, chunk_id: int) -> str:
@@ -111,10 +127,12 @@ def get_cached_reranker(enabled: bool, model_name: str):
 
 
 @st.cache_resource(show_spinner=False)
-def load_or_create_index(dim: int, embedding_model: str):
-    if os.path.exists(INDEX_PATH) and os.path.exists(DOCSTORE_PATH):
+def load_or_create_index(dim: int, embedding_model: str, index_path: str, docstore_path: str, workspace_key: str):
+    # workspace_key cache ayrımı için (shared vs user:alice)
+    _ = workspace_key
+    if os.path.exists(index_path) and os.path.exists(docstore_path):
         try:
-            loaded = FaissIndex.load(INDEX_PATH, DOCSTORE_PATH)
+            loaded = FaissIndex.load(index_path, docstore_path)
             if loaded.dim == dim and (
                 not loaded.embedding_model or loaded.embedding_model == embedding_model
             ):
@@ -187,11 +205,13 @@ with st.sidebar:
     if current_user:
         st.header("Hesap")
         st.write(f"Kullanıcı: **{current_user.username}** (`{current_user.role}`)")
-        if AUTH_SHARED_INDEX:
+        if ws.shared:
             st.caption("İndeks paylaşımlı (tüm kullanıcılar aynı doküman havuzu).")
+        else:
+            st.caption(f"Kişisel indeks: `{ws.data_dir}`")
         if st.button("Çıkış yap"):
             st.session_state["auth_user"] = None
-            for k in ("chat_session", "chat_session_id", "messages"):
+            for k in ("chat_session", "chat_session_id", "messages", "index", "bm25", "bm25_index_id", "workspace_key"):
                 st.session_state.pop(k, None)
             st.rerun()
 
@@ -244,7 +264,13 @@ with st.sidebar:
 # Session / index
 emb = get_embedder(embedding_model)
 if "index" not in st.session_state:
-    st.session_state["index"] = load_or_create_index(dim=emb.dim, embedding_model=embedding_model)
+    st.session_state["index"] = load_or_create_index(
+        dim=emb.dim,
+        embedding_model=embedding_model,
+        index_path=active_index_path,
+        docstore_path=active_docstore_path,
+        workspace_key=ws.key,
+    )
 
 if "chat_session" not in st.session_state:
     sid = st.session_state.get("chat_session_id")
@@ -284,8 +310,11 @@ if delete_chat:
 
 # Dosya yönetimi
 st.subheader("Dokümanlar")
-if auth_enabled() and AUTH_SHARED_INDEX:
-    st.caption("Paylaşımlı indeks: yüklenen dokümanlar tüm kullanıcıların sorgularına dahil olur.")
+if auth_enabled():
+    if ws.shared:
+        st.caption("Paylaşımlı indeks: yüklenen dokümanlar tüm kullanıcıların sorgularına dahil olur.")
+    else:
+        st.caption("Kişisel indeks: dokümanlarınız yalnızca sizin hesabınızda görünür.")
 caps = []
 if ENABLE_LAYOUT_PDF:
     caps.append("Layout PDF açık: blok okuma sırası + tablolar markdown.")
@@ -316,8 +345,11 @@ else:
 col_a, col_b = st.columns(2)
 with col_a:
     data_files = [
-        os.path.relpath(p, DATA_DIR).replace("\\", "/")
-        for p in list_data_files(DATA_DIR)
+        os.path.relpath(p, active_data_dir).replace("\\", "/")
+        for p in list_data_files(
+            active_data_dir,
+            skip_user_namespaces=ws.shared,
+        )
     ]
     st.markdown("**data/**")
     if data_files:
@@ -352,8 +384,8 @@ if delete_candidates and can_ingest:
     to_delete = st.multiselect("Silinecek dosyalar", options=delete_candidates)
     if st.button("Seçilenleri sil", disabled=not to_delete):
         for name in to_delete:
-            delete_source(name, index, DATA_DIR)
-        index.save(INDEX_PATH, DOCSTORE_PATH)
+            delete_source(name, index, active_data_dir, meta_path=active_meta_path)
+        index.save(active_index_path, active_docstore_path)
         st.session_state["index"] = index
         st.session_state["bm25"] = build_bm25_from_index(index)
         st.success(f"Silindi: {', '.join(to_delete)}")
@@ -394,7 +426,7 @@ if uploaded_files:
     with st.spinner("Dosyalar işleniyor..."):
         reports = []
         for uf in uploaded_files:
-            save_path = ensure_data_path(uf.name, DATA_DIR, folder=folder_n)
+            save_path = ensure_data_path(uf.name, active_data_dir, folder=folder_n)
             with open(save_path, "wb") as f:
                 f.write(uf.getbuffer())
             try:
@@ -406,6 +438,8 @@ if uploaded_files:
                         replace_existing=True,
                         folder=folder_n,
                         tags=tags_n,
+                        data_dir=active_data_dir,
+                        meta_path=active_meta_path,
                     )
                 )
             except Exception as e:
@@ -418,7 +452,7 @@ if uploaded_files:
                         "reason": str(e),
                     }
                 )
-        index.save(INDEX_PATH, DOCSTORE_PATH)
+        index.save(active_index_path, active_docstore_path)
         st.session_state["index"] = index
         st.session_state["bm25"] = build_bm25_from_index(index)
     added = sum(r["chunks_added"] for r in reports)
@@ -438,8 +472,13 @@ if uploaded_files:
 
 if rebuild:
     with st.spinner("İndeks yeniden oluşturuluyor..."):
-        index, reports = rebuild_from_data_dir(DATA_DIR, emb)
-        index.save(INDEX_PATH, DOCSTORE_PATH)
+        index, reports = rebuild_from_data_dir(
+            active_data_dir,
+            emb,
+            meta_path=active_meta_path,
+            skip_user_namespaces=ws.shared,
+        )
+        index.save(active_index_path, active_docstore_path)
         st.session_state["index"] = index
         st.session_state["bm25"] = build_bm25_from_index(index)
     ok = [r for r in reports if not r.get("skipped")]

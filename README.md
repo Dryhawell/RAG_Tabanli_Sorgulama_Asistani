@@ -93,8 +93,10 @@ cp users.example.json metadata/users.json
 streamlit run app/ui.py
 ```
 - İndeks varsayılan olarak **paylaşımlıdır** (`RAG_AUTH_SHARED_INDEX=1`)
+- Kişisel indeks: `RAG_AUTH_SHARED_INDEX=0` → her kullanıcının `data/users/<ad>/`, `indexes/users/<ad>/`, `metadata/users/<ad>/` alanı
 - Sohbetler `metadata/chats/<kullanici>/` altında ayrılır
-- `admin` doküman yükleyebilir/silebilir; `user` varsayılan olarak yalnızca sorgu yapar (`RAG_AUTH_USER_CAN_INGEST=1` ile açılır)
+- Paylaşımlı modda `admin` yükler/siler; `user` varsayılan yalnızca sorgu (`RAG_AUTH_USER_CAN_INGEST=1`)
+- Kişisel modda her kullanıcı kendi dokümanlarını yönetebilir
 
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
@@ -109,8 +111,8 @@ streamlit run app/ui.py
 | `RAG_OCR_LANGS` | Tesseract dil kodları (ör. `tur+eng`) |
 | `RAG_ENABLE_LAYOUT_PDF` | Layout/tablo çıkarımı (1/0) |
 | `RAG_ENABLE_AUTH` | Çok kullanıcılı giriş (1/0) |
-| `RAG_AUTH_SHARED_INDEX` | Paylaşımlı indeks (1/0) |
-| `RAG_AUTH_USER_CAN_INGEST` | user rolünün yükleme yetkisi (1/0) |
+| `RAG_AUTH_SHARED_INDEX` | Paylaşımlı indeks (1) / kişisel indeks (0) |
+| `RAG_AUTH_USER_CAN_INGEST` | Paylaşımlı modda user yükleme yetkisi (1/0) |
 | `RAG_AUTH_BOOTSTRAP_ADMIN` | `kullanici:parola` ilk admin |
 | `OLLAMA_HOST` | Ollama adresi |
 | `OPENAI_API_KEY` | OpenAI anahtarı |
@@ -123,7 +125,7 @@ streamlit run app/ui.py
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
 - `rag/chat_store.py`: kalıcı sohbetler
-- `rag/auth.py`: çok kullanıcılı kimlik doğrulama
+- `rag/auth.py`, `rag/workspace.py`: auth + paylaşımlı/kişisel çalışma alanı
 - `users.example.json`: örnek kullanıcı şablonu
 - `rag/eval.py`: retrieval smoke eval
 - `rag/llm.py`, `rag/prompt.py`
@@ -144,5 +146,5 @@ Testler model indirmez; FAISS, chunking, hybrid, retrieve, OCR mock, chat store,
 - CLI: `python -m rag.cli eval` (çıkış kodu 0 = min accuracy sağlandı)
 
 ## Sonraki adaylar
-- Kullanıcıya özel indeks (paylaşımsız) seçeneğinin genişletilmesi
 - Gerçek embedding modeli ile CI’da opsiyonel “slow” eval job
+- Admin paneli (kullanıcı ekleme/silme UI)

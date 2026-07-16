@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 
 from app.config import (
     AUTH_BOOTSTRAP_ADMIN,
+    AUTH_SHARED_INDEX,
     AUTH_USER_CAN_INGEST,
     CHAT_DIR,
     ENABLE_AUTH,
@@ -27,6 +28,9 @@ class User:
     @property
     def can_ingest(self) -> bool:
         if self.role == "admin":
+            return True
+        # Kişisel indekste her kullanıcı kendi dokümanlarını yönetebilir
+        if not AUTH_SHARED_INDEX:
             return True
         return AUTH_USER_CAN_INGEST
 
