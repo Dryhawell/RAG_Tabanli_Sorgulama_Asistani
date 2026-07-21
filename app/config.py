@@ -28,6 +28,28 @@ AUDIT_LOG_PATH = os.getenv("RAG_AUDIT_LOG_PATH", os.path.join(METADATA_DIR, "aud
 ENABLE_METRICS = os.getenv("RAG_ENABLE_METRICS", "1") not in {"0", "false", "False"}
 METRICS_PATH = os.getenv("RAG_METRICS_PATH", os.path.join(METADATA_DIR, "metrics.jsonl"))
 
+# OIDC / SSO (Authorization Code)
+ENABLE_OIDC = os.getenv("RAG_ENABLE_OIDC", "0") not in {"0", "false", "False"}
+OIDC_ENABLED = ENABLE_OIDC  # alias
+OIDC_ONLY = os.getenv("RAG_OIDC_ONLY", "0") not in {"0", "false", "False"}
+OIDC_ISSUER = os.getenv("RAG_OIDC_ISSUER", "")
+OIDC_CLIENT_ID = os.getenv("RAG_OIDC_CLIENT_ID", "")
+OIDC_CLIENT_SECRET = os.getenv("RAG_OIDC_CLIENT_SECRET", "")
+OIDC_REDIRECT_URI = os.getenv(
+    "RAG_OIDC_REDIRECT_URI",
+    "http://localhost:8501",
+)
+OIDC_SCOPES = os.getenv("RAG_OIDC_SCOPES", "openid profile email")
+OIDC_USERNAME_CLAIM = os.getenv("RAG_OIDC_USERNAME_CLAIM", "preferred_username")
+OIDC_TENANT_CLAIM = os.getenv("RAG_OIDC_TENANT_CLAIM", "tenant_id")
+OIDC_ADMIN_GROUPS = os.getenv("RAG_OIDC_ADMIN_GROUPS", "rag-admins,admin")
+OIDC_DEFAULT_ROLE = os.getenv("RAG_OIDC_DEFAULT_ROLE", "user")
+OIDC_AUTO_PROVISION = os.getenv("RAG_OIDC_AUTO_PROVISION", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+
 # Embedding
 DEFAULT_EMBEDDING_MODEL = os.getenv(
     "RAG_EMBEDDING_MODEL",

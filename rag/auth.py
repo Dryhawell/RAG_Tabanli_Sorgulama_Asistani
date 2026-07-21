@@ -286,9 +286,61 @@ def list_users_detail(path: str = USERS_PATH) -> List[dict]:
                 "tenant_id": meta.get("tenant_id") or DEFAULT_TENANT,
                 "allowed_folders": meta.get("allowed_folders"),
                 "allowed_tags": meta.get("allowed_tags"),
+                "auth_provider": meta.get("auth_provider") or "local",
             }
         )
     return out
+
+
+def upsert_oidc_user(
+    username: str,
+    *,
+    role: str = "user",
+    tenant_id: Optional[str] = None,
+    path: str = USERS_PATH,
+    auto_provision: bool = True,
+    claims: Optional[dict] = None,
+) -> User:
+    """OIDC claims ile kullanıcı oluşturur veya günceller.
+
+    auto_provision=False ve kullanıcı yoksa ValueError.
+    Mevcut kullanıcının ACL alanları korunur; role/tenant OIDC'den güncellenir.
+    """
+    users = ensure_users_file(path)
+    uname = _safe_username(username)
+    if not uname:
+        raise ValueError("Geçersiz kullanıcı adı")
+    if role not in {"admin", "user"}:
+        role = "user"
+    tid = _safe_tenant(tenant_id or DEFAULT_TENANT)
+
+    if uname not in users:
+        if not auto_provision:
+            raise ValueError(
+                f"OIDC kullanıcısı yerelde yok ve otomatik oluşturma kapalı: {uname}"
+            )
+        users[uname] = {
+            # OIDC kullanıcıları parola ile giriş yapmaz; rastgele hash
+            "password_hash": _hash_password(secrets.token_urlsafe(24)),
+            "role": role,
+            "tenant_id": tid,
+            "auth_provider": "oidc",
+        }
+        if claims and claims.get("email"):
+            users[uname]["email"] = str(claims["email"])
+    else:
+        meta = users[uname]
+        if not isinstance(meta, dict):
+            raise ValueError("Geçersiz kullanıcı kaydı")
+        meta["role"] = role
+        meta["tenant_id"] = tid
+        meta["auth_provider"] = "oidc"
+        if claims and claims.get("email"):
+            meta["email"] = str(claims["email"])
+        users[uname] = meta
+
+    save_users(users, path)
+    return user_from_meta(uname, users[uname])
 
 
 def auth_enabled() -> bool:

@@ -81,6 +81,7 @@ docker compose up --build
 - Streaming yanıt
 - Kalıcı sohbet oturumları (yeni / temizle / sil / seç)
 - Opsiyonel çok kullanıcılı giriş (paylaşımlı/kişisel indeks, kullanıcıya özel sohbet)
+- Opsiyonel SSO / OIDC (Authorization Code + PKCE)
 - Admin paneli: kullanıcı listele / ekle / sil / ACL (klasör-etiket) / audit log / metrik dashboard
 - Sohbet dışa aktarma (JSON / Markdown)
 - Eval paneli: `soru | beklenen_kaynak | expect_no_answer(0/1)`
@@ -114,6 +115,25 @@ export RAG_ENABLE_AUDIT=1
 - Metrik JSONL: sorgu gecikmesi, gate skoru, no-answer oranı, ingest/rebuild (`metadata/.../metrics.jsonl`)
 - CLI: `python -m rag.cli stats` veya `python -m rag.cli stats --json`
 
+### SSO / OIDC
+```bash
+export RAG_ENABLE_AUTH=1
+export RAG_ENABLE_OIDC=1
+export RAG_OIDC_ISSUER=https://login.example.com/realms/rag
+export RAG_OIDC_CLIENT_ID=rag-assistant
+export RAG_OIDC_CLIENT_SECRET=...
+export RAG_OIDC_REDIRECT_URI=http://localhost:8501
+# İsteğe bağlı: yalnızca SSO (parola formunu gizle)
+# export RAG_OIDC_ONLY=1
+# Admin grup eşlemesi (IdP groups/roles claim)
+export RAG_OIDC_ADMIN_GROUPS=rag-admins,admin
+streamlit run app/ui.py
+```
+- Authorization Code + PKCE; IdP discovery (`.well-known/openid-configuration`)
+- İlk SSO girişinde kullanıcı otomatik oluşturulur (`RAG_OIDC_AUTO_PROVISION=1`)
+- Rol: admin grupları veya `role` claim; tenant: `tenant_id` claim
+- IdP'de redirect URI olarak Streamlit adresinizi (`http://localhost:8501`) kaydedin
+
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
 |----------|----------|
@@ -136,6 +156,17 @@ export RAG_ENABLE_AUDIT=1
 | `RAG_AUDIT_LOG_PATH` | Global audit dosyası (tenant kapalıyken) |
 | `RAG_ENABLE_METRICS` | Metrik kaydı (1/0) |
 | `RAG_METRICS_PATH` | Global metrics dosyası (tenant kapalıyken) |
+| `RAG_ENABLE_OIDC` | SSO / OIDC girişi (1/0) |
+| `RAG_OIDC_ONLY` | Yalnızca SSO; parola formunu gizle (1/0) |
+| `RAG_OIDC_ISSUER` | IdP issuer URL (ör. Keycloak realm) |
+| `RAG_OIDC_CLIENT_ID` | OIDC client id |
+| `RAG_OIDC_CLIENT_SECRET` | OIDC client secret |
+| `RAG_OIDC_REDIRECT_URI` | Callback (varsayılan `http://localhost:8501`) |
+| `RAG_OIDC_SCOPES` | Scope listesi |
+| `RAG_OIDC_USERNAME_CLAIM` | Kullanıcı adı claim (varsayılan `preferred_username`) |
+| `RAG_OIDC_TENANT_CLAIM` | Tenant claim (varsayılan `tenant_id`) |
+| `RAG_OIDC_ADMIN_GROUPS` | Admin sayılacak gruplar |
+| `RAG_OIDC_AUTO_PROVISION` | İlk SSO'da kullanıcı oluştur (1/0) |
 | `OLLAMA_HOST` | Ollama adresi |
 | `OPENAI_API_KEY` | OpenAI anahtarı |
 
@@ -147,7 +178,7 @@ export RAG_ENABLE_AUDIT=1
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
 - `rag/chat_store.py`: kalıcı sohbetler
-- `rag/auth.py`, `rag/workspace.py`, `rag/audit.py`, `rag/metrics.py`: auth, tenant workspace, audit, metrikler
+- `rag/auth.py`, `rag/oidc.py`, `rag/workspace.py`, `rag/audit.py`, `rag/metrics.py`: auth/SSO, tenant, audit, metrikler
 - `users.example.json`: örnek kullanıcı şablonu
 - `rag/eval.py`, `rag/judge.py`: retrieval smoke + yanıt kalitesi judge
 - `rag/llm.py`, `rag/prompt.py`
@@ -171,5 +202,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Üretim sınıfı kimlik doğrulama (SSO / OIDC)
 - Prometheus/Grafana entegrasyonu (opsiyonel dış metrik sink)
+- JWKS ile id_token imza doğrulama (şu an token endpoint güvenine dayanır)

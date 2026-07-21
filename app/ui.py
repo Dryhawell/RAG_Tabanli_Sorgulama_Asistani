@@ -1,5 +1,6 @@
 import os
 import re
+import secrets
 import time
 import streamlit as st
 import requests
@@ -37,6 +38,7 @@ from rag.auth import (
     ensure_users_file,
     list_users_detail,
     update_user_acl,
+    upsert_oidc_user,
 )
 from rag.acl import (
     can_ingest_to,
@@ -48,6 +50,15 @@ from rag.acl import (
 from rag.export_chat import export_session_json, export_session_markdown
 from rag.audit import read_audit, write_audit
 from rag.metrics import record_metric, summarize_metrics
+from rag.oidc import (
+    OIDCError,
+    build_authorize_url,
+    complete_login,
+    fetch_discovery,
+    generate_pkce_pair,
+    load_oidc_config,
+    oidc_enabled,
+)
 from rag.workspace import ensure_workspace_dirs, resolve_workspace
 from app.config import (
     DATA_DIR,
@@ -59,6 +70,7 @@ from app.config import (
     ENABLE_TENANTS,
     DEFAULT_TENANT,
     ENABLE_METRICS,
+    OIDC_ONLY,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_TOP_K,
     NO_ANSWER_THRESHOLD,
@@ -87,6 +99,68 @@ if auth_enabled():
     if "auth_user" not in st.session_state:
         st.session_state["auth_user"] = None
 
+    # OIDC callback: ?code=&state=
+    if oidc_enabled() and st.session_state["auth_user"] is None:
+        qp = st.query_params
+        code = qp.get("code")
+        state = qp.get("state")
+        if code and state:
+            try:
+                cfg = load_oidc_config()
+                expected_state = st.session_state.get("oidc_state") or ""
+                expected_nonce = st.session_state.get("oidc_nonce")
+                code_verifier = st.session_state.get("oidc_code_verifier")
+                result = complete_login(
+                    cfg,
+                    code=str(code),
+                    expected_state=str(expected_state),
+                    received_state=str(state),
+                    expected_nonce=expected_nonce,
+                    code_verifier=code_verifier,
+                )
+                user = upsert_oidc_user(
+                    result["username"],
+                    role=result["role"],
+                    tenant_id=result["tenant_id"],
+                    auto_provision=cfg.auto_provision,
+                    claims=result.get("claims"),
+                )
+                write_audit(
+                    "login_success",
+                    username=user.username,
+                    tenant_id=user.tenant_id if ENABLE_TENANTS else None,
+                    details={"provider": "oidc", "role": user.role},
+                )
+                st.session_state["auth_user"] = user
+                for k in (
+                    "chat_session",
+                    "chat_session_id",
+                    "messages",
+                    "bm25",
+                    "bm25_index_id",
+                    "oidc_state",
+                    "oidc_nonce",
+                    "oidc_code_verifier",
+                ):
+                    st.session_state.pop(k, None)
+                # callback query parametrelerini temizle
+                try:
+                    st.query_params.clear()
+                except Exception:
+                    pass
+                st.rerun()
+            except (OIDCError, ValueError) as exc:
+                write_audit(
+                    "login_fail",
+                    username=None,
+                    details={"reason": "oidc_error", "error": str(exc)},
+                )
+                st.error(f"SSO girişi başarısız: {exc}")
+                try:
+                    st.query_params.clear()
+                except Exception:
+                    pass
+
     if st.session_state["auth_user"] is None:
         st.subheader("Giriş")
         st.caption(
@@ -95,26 +169,72 @@ if auth_enabled():
         )
         if ENABLE_TENANTS:
             st.caption(f"Tenant izolasyonu açık (varsayılan tenant: `{DEFAULT_TENANT}`).")
-        with st.form("login_form"):
-            lu = st.text_input("Kullanıcı adı")
-            lp = st.text_input("Parola", type="password")
-            submitted = st.form_submit_button("Giriş yap")
-        if submitted:
-            user = authenticate(lu, lp)
-            if user is None:
-                write_audit("login_fail", username=lu, details={"reason": "invalid_credentials"})
-                st.error("Geçersiz kullanıcı adı veya parola.")
-            else:
-                write_audit(
-                    "login_success",
-                    username=user.username,
-                    tenant_id=user.tenant_id if ENABLE_TENANTS else None,
+
+        if oidc_enabled():
+            cfg = load_oidc_config()
+            if not cfg.configured:
+                st.warning(
+                    "OIDC açık ancak `RAG_OIDC_ISSUER` / `RAG_OIDC_CLIENT_ID` / "
+                    "`RAG_OIDC_REDIRECT_URI` eksik."
                 )
-                st.session_state["auth_user"] = user
-                for k in ("chat_session", "chat_session_id", "messages", "bm25", "bm25_index_id"):
-                    st.session_state.pop(k, None)
-                st.rerun()
-        st.info("Örnek: `users.example.json` dosyasını `metadata/users.json` olarak kopyalayın veya `RAG_AUTH_BOOTSTRAP_ADMIN` kullanın.")
+            else:
+                st.markdown("**Kurumsal giriş (SSO / OIDC)**")
+                if st.button("SSO ile giriş yap", type="primary", key="oidc_login_btn"):
+                    try:
+                        disc = fetch_discovery(cfg.issuer)
+                        state = secrets.token_urlsafe(24)
+                        nonce = secrets.token_urlsafe(24)
+                        verifier, challenge = generate_pkce_pair()
+                        st.session_state["oidc_state"] = state
+                        st.session_state["oidc_nonce"] = nonce
+                        st.session_state["oidc_code_verifier"] = verifier
+                        url = build_authorize_url(
+                            disc, cfg, state=state, nonce=nonce, code_challenge=challenge
+                        )
+                        st.markdown(
+                            f'<meta http-equiv="refresh" content="0;url={url}">',
+                            unsafe_allow_html=True,
+                        )
+                        st.link_button("IdP'ye git (yönlendirilmezseniz)", url)
+                        st.stop()
+                    except Exception as exc:
+                        st.error(f"OIDC başlatılamadı: {exc}")
+
+        if not OIDC_ONLY:
+            with st.form("login_form"):
+                lu = st.text_input("Kullanıcı adı")
+                lp = st.text_input("Parola", type="password")
+                submitted = st.form_submit_button("Giriş yap")
+            if submitted:
+                user = authenticate(lu, lp)
+                if user is None:
+                    write_audit(
+                        "login_fail", username=lu, details={"reason": "invalid_credentials"}
+                    )
+                    st.error("Geçersiz kullanıcı adı veya parola.")
+                else:
+                    write_audit(
+                        "login_success",
+                        username=user.username,
+                        tenant_id=user.tenant_id if ENABLE_TENANTS else None,
+                        details={"provider": "local"},
+                    )
+                    st.session_state["auth_user"] = user
+                    for k in (
+                        "chat_session",
+                        "chat_session_id",
+                        "messages",
+                        "bm25",
+                        "bm25_index_id",
+                    ):
+                        st.session_state.pop(k, None)
+                    st.rerun()
+            st.info(
+                "Örnek: `users.example.json` dosyasını `metadata/users.json` olarak "
+                "kopyalayın veya `RAG_AUTH_BOOTSTRAP_ADMIN` kullanın."
+            )
+        elif not oidc_enabled():
+            st.error("`RAG_OIDC_ONLY=1` ama OIDC kapalı. `RAG_ENABLE_OIDC=1` ayarlayın.")
         st.stop()
 
     current_user = st.session_state["auth_user"]
@@ -262,6 +382,8 @@ with st.sidebar:
                 acl_f = u.get("allowed_folders")
                 acl_t = u.get("allowed_tags")
                 acl_txt = f" tenant={u.get('tenant_id') or DEFAULT_TENANT}"
+                if u.get("auth_provider"):
+                    acl_txt += f" auth={u.get('auth_provider')}"
                 if acl_f is not None:
                     acl_txt += f" klasör={acl_f}"
                 if acl_t is not None:
