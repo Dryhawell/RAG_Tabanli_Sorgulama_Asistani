@@ -28,6 +28,7 @@ class WorkspacePaths:
     source_meta_path: str
     chat_dir: str
     audit_path: str
+    metrics_path: str
     shared: bool
     username: Optional[str] = None
     tenant_id: Optional[str] = None
@@ -71,6 +72,7 @@ def resolve_workspace(
     meta_root = _root(METADATA_DIR)
     chat_root = _root(CHAT_DIR)
     audit_path = os.path.join(meta_root, "audit.jsonl")
+    metrics_path = os.path.join(meta_root, "metrics.jsonl")
 
     if user is None or use_shared:
         # Tenant yokken geriye dönük global yollar
@@ -83,6 +85,7 @@ def resolve_workspace(
                 source_meta_path=os.path.join(METADATA_DIR, "sources.json"),
                 chat_dir=user_chat_dir(user.username) if user else CHAT_DIR,
                 audit_path=os.path.join(METADATA_DIR, "audit.jsonl"),
+                metrics_path=os.path.join(METADATA_DIR, "metrics.jsonl"),
                 shared=True,
                 username=user.username if user else None,
                 tenant_id=None,
@@ -95,6 +98,7 @@ def resolve_workspace(
             source_meta_path=os.path.join(meta_root, "sources.json"),
             chat_dir=user_chat_dir(user.username, base=chat_root) if user else chat_root,
             audit_path=audit_path,
+            metrics_path=metrics_path,
             shared=True,
             username=user.username if user else None,
             tenant_id=tenant,
@@ -112,6 +116,7 @@ def resolve_workspace(
         source_meta_path=os.path.join(meta_dir, "sources.json"),
         chat_dir=user_chat_dir(user.username, base=chat_root, tenant_id=None),
         audit_path=audit_path,
+        metrics_path=metrics_path,
         shared=False,
         username=safe,
         tenant_id=tenant,
@@ -125,6 +130,7 @@ def ensure_workspace_dirs(ws: WorkspacePaths) -> None:
         os.path.dirname(ws.docstore_path) or ".",
         os.path.dirname(ws.source_meta_path) or ".",
         os.path.dirname(ws.audit_path) or ".",
+        os.path.dirname(ws.metrics_path) or ".",
         ws.chat_dir,
     }:
         os.makedirs(d, exist_ok=True)

@@ -82,6 +82,7 @@ def test_tenant_shared_paths_isolated(tmp_path, monkeypatch):
     assert "tenants/beta" in beta.data_dir.replace("\\", "/")
     assert acme.index_path != beta.index_path
     assert acme.audit_path != beta.audit_path
+    assert acme.metrics_path != beta.metrics_path
     assert acme.key == "tenant:acme|shared"
     assert beta.key == "tenant:beta|shared"
 

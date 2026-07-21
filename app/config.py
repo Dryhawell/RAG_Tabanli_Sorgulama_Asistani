@@ -24,6 +24,9 @@ DEFAULT_TENANT = os.getenv("RAG_DEFAULT_TENANT", "default")
 # Audit log
 ENABLE_AUDIT = os.getenv("RAG_ENABLE_AUDIT", "1") not in {"0", "false", "False"}
 AUDIT_LOG_PATH = os.getenv("RAG_AUDIT_LOG_PATH", os.path.join(METADATA_DIR, "audit.jsonl"))
+# Metrikler / observability
+ENABLE_METRICS = os.getenv("RAG_ENABLE_METRICS", "1") not in {"0", "false", "False"}
+METRICS_PATH = os.getenv("RAG_METRICS_PATH", os.path.join(METADATA_DIR, "metrics.jsonl"))
 
 # Embedding
 DEFAULT_EMBEDDING_MODEL = os.getenv(

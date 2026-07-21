@@ -21,3 +21,6 @@ def test_cli_parser_subcommands():
     args = parser.parse_args(["judge", "--mode", "heuristic"])
     assert args.command == "judge"
     assert args.mode == "heuristic"
+    args = parser.parse_args(["stats", "--json"])
+    assert args.command == "stats"
+    assert args.json is True

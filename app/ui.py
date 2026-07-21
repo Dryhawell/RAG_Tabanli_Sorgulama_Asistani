@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import streamlit as st
 import requests
 
@@ -46,6 +47,7 @@ from rag.acl import (
 )
 from rag.export_chat import export_session_json, export_session_markdown
 from rag.audit import read_audit, write_audit
+from rag.metrics import record_metric, summarize_metrics
 from rag.workspace import ensure_workspace_dirs, resolve_workspace
 from app.config import (
     DATA_DIR,
@@ -56,6 +58,7 @@ from app.config import (
     AUTH_SHARED_INDEX,
     ENABLE_TENANTS,
     DEFAULT_TENANT,
+    ENABLE_METRICS,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_TOP_K,
     NO_ANSWER_THRESHOLD,
@@ -382,6 +385,33 @@ with st.sidebar:
                             f"{row.get('username') or '-'} · {row.get('details')}"
                         )
 
+            with st.expander("Metrikler (observability)", expanded=False):
+                if not ENABLE_METRICS:
+                    st.caption("Metrikler kapalı (`RAG_ENABLE_METRICS=0`).")
+                else:
+                    summary = summarize_metrics(path=ws.metrics_path)
+                    q = summary["query"]
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Sorgu", q["count"])
+                    c2.metric("No-answer oranı", f"{q['no_answer_rate']:.0%}")
+                    c3.metric("Ort. gate skoru", f"{q['avg_gate_score']:.3f}")
+                    c4.metric("Ort. gecikme (ms)", f"{q['avg_latency_ms']:.0f}")
+                    st.caption(
+                        f"Toplam olay: {summary['total_events']} · "
+                        f"Ingest: {summary['ingest']['count']} "
+                        f"({summary['ingest']['chunks_added']} chunk) · "
+                        f"Rebuild: {summary['rebuild']['count']} · "
+                        f"Silme: {summary['delete']['count']}"
+                    )
+                    if summary["recent"]:
+                        st.markdown("**Son kayıtlar**")
+                        for row in reversed(summary["recent"]):
+                            vals = row.get("values") or {}
+                            st.write(
+                                f"`{row.get('ts')}` · **{row.get('kind')}** · "
+                                f"{row.get('username') or '-'} · {vals}"
+                            )
+
     st.header("Sohbetler")
     sessions = list_sessions(chat_dir=active_chat_dir)
     session_ids = [s["id"] for s in sessions]
@@ -564,6 +594,13 @@ if delete_candidates and can_ingest:
             details={"sources": list(to_delete)},
             path=ws.audit_path,
         )
+        record_metric(
+            "delete",
+            username=current_user.username if current_user else None,
+            tenant_id=ws.tenant_id,
+            values={"sources": len(to_delete)},
+            path=ws.metrics_path,
+        )
         st.success(f"Silindi: {', '.join(to_delete)}")
         st.rerun()
 
@@ -663,6 +700,18 @@ if uploaded_files:
         },
         path=ws.audit_path,
     )
+    record_metric(
+        "ingest",
+        username=current_user.username if current_user else None,
+        tenant_id=ws.tenant_id,
+        values={
+            "files": len(reports),
+            "chunks_added": added,
+            "replaced": replaced,
+            "skipped": skipped,
+        },
+        path=ws.metrics_path,
+    )
     st.success(
         f"İndeks güncellendi: {added} chunk eklendi"
         + (f", {replaced} dosya yenilendi" if replaced else "")
@@ -694,6 +743,13 @@ if rebuild:
         tenant_id=ws.tenant_id,
         details={"files_ok": len(ok), "files_skipped": len(bad), "chunks": index.size},
         path=ws.audit_path,
+    )
+    record_metric(
+        "rebuild",
+        username=current_user.username if current_user else None,
+        tenant_id=ws.tenant_id,
+        values={"files_ok": len(ok), "files_skipped": len(bad), "chunks": index.size},
+        path=ws.metrics_path,
     )
     st.success(f"İndeks yeniden oluşturuldu: {len(ok)} dosya, {index.size} chunk.")
     for r in bad:
@@ -799,6 +855,7 @@ for m in st.session_state["messages"]:
 user_input = st.chat_input("Sorunuzu yazın...", disabled=index_empty)
 
 if user_input:
+    t_start = time.perf_counter()
     user_msg = {"role": "user", "content": user_input}
     st.session_state["messages"].append(user_msg)
     with st.chat_message("user"):
@@ -823,6 +880,8 @@ if user_input:
         acl_user=current_user,
         threshold=NO_ANSWER_THRESHOLD,
     )
+    t_after_retrieval = time.perf_counter()
+    no_answer = not retrieved or gate_score < NO_ANSWER_THRESHOLD
 
     source_payload = []
     for rc in retrieved:
@@ -842,7 +901,7 @@ if user_input:
         )
 
     with st.chat_message("assistant"):
-        if not retrieved or gate_score < NO_ANSWER_THRESHOLD:
+        if no_answer:
             answer = "Bu bilgi dokümanda bulunmamaktadır"
             st.markdown(answer)
         else:
@@ -901,7 +960,26 @@ if user_input:
             "question": user_input[:240],
             "gate_score": round(float(gate_score), 4),
             "n_sources": len(source_payload),
-            "no_answer": not retrieved or gate_score < NO_ANSWER_THRESHOLD,
+            "no_answer": no_answer,
         },
         path=ws.audit_path,
+    )
+    t_end = time.perf_counter()
+    record_metric(
+        "query",
+        username=current_user.username if current_user else None,
+        tenant_id=ws.tenant_id,
+        values={
+            "gate_score": round(float(gate_score), 4),
+            "n_sources": len(source_payload),
+            "no_answer": no_answer,
+            "latency_ms": round((t_end - t_start) * 1000, 1),
+            "retrieval_ms": round((t_after_retrieval - t_start) * 1000, 1),
+            "llm_ms": round((t_end - t_after_retrieval) * 1000, 1) if not no_answer else 0.0,
+            "provider": provider,
+            "model": model_name,
+            "hybrid": use_hybrid,
+            "reranker": use_reranker,
+        },
+        path=ws.metrics_path,
     )

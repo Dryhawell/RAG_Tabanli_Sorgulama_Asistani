@@ -6,6 +6,7 @@
   python -m rag.cli list
   python -m rag.cli eval
   python -m rag.cli judge
+  python -m rag.cli stats
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from app.config import (
     INDEX_PATH,
     INDEXES_DIR,
     METADATA_DIR,
+    METRICS_PATH,
     MULTILINGUAL_EMBEDDING_MODEL,
 )
 from rag.embed import Embedder, resolve_embedding_model
@@ -30,6 +32,7 @@ from rag.hash_embed import HashEmbedder
 from rag.index import FaissIndex
 from rag.ingest import ingest_path, list_data_files, rebuild_from_data_dir
 from rag.judge import run_judge_file
+from rag.metrics import summarize_metrics
 
 DEFAULT_EVAL_FIXTURES = os.path.join("evals", "fixtures")
 DEFAULT_EVAL_CASES = os.path.join("evals", "cases.json")
@@ -205,6 +208,30 @@ def cmd_judge(args: argparse.Namespace) -> int:
     return 0 if summary.get("ok") else 1
 
 
+def cmd_stats(args: argparse.Namespace) -> int:
+    """JSONL metrik özetini yazdırır."""
+    path = args.path or METRICS_PATH
+    summary = summarize_metrics(path=path, limit=args.limit)
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
+
+    q = summary["query"]
+    print(f"Metrik özeti ({path})")
+    print(f"  Toplam olay: {summary['total_events']}")
+    print(f"  Sorgu: {q['count']} (no-answer={q['no_answer_rate']:.0%})")
+    print(f"  Ort. gate={q['avg_gate_score']:.3f}  Ort. gecikme={q['avg_latency_ms']:.0f} ms")
+    print(
+        f"  Ingest: {summary['ingest']['count']} "
+        f"({summary['ingest']['chunks_added']} chunk)  "
+        f"Rebuild: {summary['rebuild']['count']}  "
+        f"Silme: {summary['delete']['count']}"
+    )
+    if summary["by_kind"]:
+        print("  Tür dağılımı:", ", ".join(f"{k}={v}" for k, v in sorted(summary["by_kind"].items())))
+    return 0
+
+
 def _add_embedding_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--embedding",
@@ -272,6 +299,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_judge.add_argument("--min-accuracy", type=float, default=1.0)
     p_judge.add_argument("--output", default=None, help="JSON rapor çıktı yolu")
     p_judge.set_defaults(func=cmd_judge)
+
+    p_stats = sub.add_parser("stats", help="Metrik özeti (JSONL)")
+    p_stats.add_argument("--path", default=None, help=f"metrics.jsonl yolu (varsayılan: {METRICS_PATH})")
+    p_stats.add_argument("--limit", type=int, default=5000, help="Okunacak son kayıt sayısı")
+    p_stats.add_argument("--json", action="store_true", help="JSON çıktı")
+    p_stats.set_defaults(func=cmd_stats)
     return p
 
 

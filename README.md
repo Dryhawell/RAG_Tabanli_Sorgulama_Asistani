@@ -81,7 +81,7 @@ docker compose up --build
 - Streaming yanıt
 - Kalıcı sohbet oturumları (yeni / temizle / sil / seç)
 - Opsiyonel çok kullanıcılı giriş (paylaşımlı/kişisel indeks, kullanıcıya özel sohbet)
-- Admin paneli: kullanıcı listele / ekle / sil / ACL (klasör-etiket) / audit log
+- Admin paneli: kullanıcı listele / ekle / sil / ACL (klasör-etiket) / audit log / metrik dashboard
 - Sohbet dışa aktarma (JSON / Markdown)
 - Eval paneli: `soru | beklenen_kaynak | expect_no_answer(0/1)`
 
@@ -111,6 +111,8 @@ export RAG_ENABLE_AUDIT=1
 - Tenant açıkken data/indeks/metadata kökleri `.../tenants/<tenant_id>/` altına alınır
 - Kullanıcı kaydında `tenant_id` alanı; admin panelinden atanabilir
 - Audit JSONL: login, logout, ingest, delete, rebuild, query, admin işlemleri (`metadata/.../audit.jsonl`)
+- Metrik JSONL: sorgu gecikmesi, gate skoru, no-answer oranı, ingest/rebuild (`metadata/.../metrics.jsonl`)
+- CLI: `python -m rag.cli stats` veya `python -m rag.cli stats --json`
 
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
@@ -132,6 +134,8 @@ export RAG_ENABLE_AUDIT=1
 | `RAG_DEFAULT_TENANT` | Varsayılan tenant kimliği |
 | `RAG_ENABLE_AUDIT` | Audit log yazımı (1/0) |
 | `RAG_AUDIT_LOG_PATH` | Global audit dosyası (tenant kapalıyken) |
+| `RAG_ENABLE_METRICS` | Metrik kaydı (1/0) |
+| `RAG_METRICS_PATH` | Global metrics dosyası (tenant kapalıyken) |
 | `OLLAMA_HOST` | Ollama adresi |
 | `OPENAI_API_KEY` | OpenAI anahtarı |
 
@@ -143,7 +147,7 @@ export RAG_ENABLE_AUDIT=1
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
 - `rag/chat_store.py`: kalıcı sohbetler
-- `rag/auth.py`, `rag/workspace.py`, `rag/audit.py`: auth, tenant workspace, audit log
+- `rag/auth.py`, `rag/workspace.py`, `rag/audit.py`, `rag/metrics.py`: auth, tenant workspace, audit, metrikler
 - `users.example.json`: örnek kullanıcı şablonu
 - `rag/eval.py`, `rag/judge.py`: retrieval smoke + yanıt kalitesi judge
 - `rag/llm.py`, `rag/prompt.py`
@@ -167,5 +171,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Daha zengin observability (metrikler / dashboard)
 - Üretim sınıfı kimlik doğrulama (SSO / OIDC)
+- Prometheus/Grafana entegrasyonu (opsiyonel dış metrik sink)
