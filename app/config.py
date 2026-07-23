@@ -121,3 +121,17 @@ ENABLE_QUERY_REWRITE = os.getenv("RAG_ENABLE_QUERY_REWRITE", "0") not in {
 # none | hyde | expand | hyde+expand
 DEFAULT_QUERY_REWRITE_MODE = os.getenv("RAG_QUERY_REWRITE_MODE", "hyde")
 
+# Agentic araçlar + kaynak vurgulama
+ENABLE_AGENT_TOOLS = os.getenv("RAG_ENABLE_AGENT_TOOLS", "0") not in {
+    "0",
+    "false",
+    "False",
+}
+AGENT_MAX_STEPS = int(os.getenv("RAG_AGENT_MAX_STEPS", "3"))
+ENABLE_SOURCE_HIGHLIGHT = os.getenv("RAG_ENABLE_SOURCE_HIGHLIGHT", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+HIGHLIGHT_MIN_TOKENS = int(os.getenv("RAG_HIGHLIGHT_MIN_TOKENS", "4"))
+

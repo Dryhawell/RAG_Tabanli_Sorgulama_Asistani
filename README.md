@@ -85,6 +85,8 @@ docker compose up --build
 - Sidebar dil seçimi (TR / EN)
 - Sorgu yeniden yazma: HyDE / genişletme
 - Doküman karşılaştırma ve özet paneli
+- Agentic araçlar: hesap makinesi, takvim, web arama
+- Yanıtta kaynak chunk vurgulama (HTML `<mark>`)
 - Admin paneli: kullanıcı listele / ekle / sil / ACL (klasör-etiket) / audit log / metrik dashboard
 - Sohbet dışa aktarma (JSON / Markdown)
 - Eval paneli: `soru | beklenen_kaynak | expect_no_answer(0/1)`
@@ -182,6 +184,15 @@ HyDE: LLM hipotetik paragraf üretir, embedding ile aranır. Expand: alternatif 
 ### Doküman karşılaştır / özetle
 UI'da **Doküman karşılaştır / özetle** panelinden birden fazla kaynak seçip Özetle veya Karşılaştır.
 
+### Araçlar (agent) + kaynak vurgulama
+```bash
+export RAG_ENABLE_AGENT_TOOLS=1
+export RAG_ENABLE_SOURCE_HIGHLIGHT=1
+streamlit run app/ui.py
+```
+- Sidebar’dan araçları açın: hesap makinesi, takvim, DuckDuckGo web arama
+- Yanıt sonrası sarı vurgular kaynak chunk örtüşmelerini gösterir; tıklayınca ilgili kaynağa gider
+
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
 |----------|----------|
@@ -227,6 +238,10 @@ UI'da **Doküman karşılaştır / özetle** panelinden birden fazla kaynak seç
 | `RAG_UI_LANG` | UI dili (`tr` / `en`) |
 | `RAG_ENABLE_QUERY_REWRITE` | HyDE/expand varsayılanını aç (1/0) |
 | `RAG_QUERY_REWRITE_MODE` | `none` / `hyde` / `expand` / `hyde+expand` |
+| `RAG_ENABLE_AGENT_TOOLS` | Hesap/takvim/web araçları (1/0) |
+| `RAG_AGENT_MAX_STEPS` | Agent TOOL_CALL döngü üst sınırı |
+| `RAG_ENABLE_SOURCE_HIGHLIGHT` | Yanıtta kaynak vurgulama (1/0) |
+| `RAG_HIGHLIGHT_MIN_TOKENS` | Vurgu için min ortak token |
 | `OLLAMA_HOST` | Ollama adresi |
 | `OPENAI_API_KEY` | OpenAI anahtarı |
 
@@ -236,6 +251,7 @@ UI'da **Doküman karşılaştır / özetle** panelinden birden fazla kaynak seç
 - `rag/index.py`, `rag/qdrant_index.py`, `rag/store.py`: FAISS / Qdrant vektör deposu
 - `rag/i18n.py`: UI lokalizasyon (TR/EN)
 - `rag/query_rewrite.py`, `rag/compare.py`: HyDE/expand ve çoklu doküman özet/karşılaştırma
+- `rag/tools.py`, `rag/agent.py`, `rag/highlight.py`: araçlar, agent döngüsü, kaynak vurgulama
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -264,5 +280,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Agentic tool-use (web / hesap makinesi / takvim)
-- Streaming token-level kaynak vurgulama
+- Çoklu modal (görüntü / tablo soruları)
+- Daha zengin agent bellek ve planlama

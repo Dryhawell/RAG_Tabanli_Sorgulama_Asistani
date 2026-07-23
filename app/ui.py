@@ -22,6 +22,8 @@ from rag.prompt import build_prompt
 from rag.llm import generate_answer, stream_answer
 from rag.query_rewrite import embed_rewrite, rewrite_query
 from rag.compare import compare_sources, summarize_sources
+from rag.agent import run_agent_loop, run_heuristic_tools, tools_context_block
+from rag.highlight import highlight_answer_html
 from rag.rerank import get_reranker
 from rag.retrieve import retrieve
 from rag.readers import _ocr_available
@@ -92,6 +94,10 @@ from app.config import (
     OPENAI_API_KEY,
     ENABLE_QUERY_REWRITE,
     DEFAULT_QUERY_REWRITE_MODE,
+    ENABLE_AGENT_TOOLS,
+    AGENT_MAX_STEPS,
+    ENABLE_SOURCE_HIGHLIGHT,
+    HIGHLIGHT_MIN_TOKENS,
 )
 
 st.set_page_config(page_title="RAG Not/PDF Asistanı", layout="wide")
@@ -418,6 +424,8 @@ with st.sidebar:
         index=list(rewrite_options.keys()).index(default_rw),
         format_func=lambda k: rewrite_options[k],
     )
+    use_agent_tools = st.checkbox(t("agent_tools"), value=ENABLE_AGENT_TOOLS)
+    use_source_highlight = st.checkbox(t("source_highlight"), value=ENABLE_SOURCE_HIGHLIGHT)
     rebuild = False
     if can_ingest:
         rebuild = st.button(t("rebuild_index"))
@@ -1159,11 +1167,41 @@ if user_input:
         )
 
     with st.chat_message("assistant"):
+        tool_traces = []
+        tools_ctx = ""
+        if use_agent_tools:
+
+            def _agent_gen(prompt: str) -> str:
+                return generate_answer(provider=provider, model_name=model_name, prompt=prompt)
+
+            try:
+                # Önce hızlı heuristic; LLM agent yalnızca ek TOOL_CALL isterse
+                heur = run_heuristic_tools(user_input)
+                tool_traces = list(heur.tool_traces)
+                if heur.tool_traces:
+                    # LLM döngüsü ile zenginleştir (opsiyonel adımlar)
+                    agent = run_agent_loop(
+                        user_input,
+                        _agent_gen,
+                        max_steps=max(1, AGENT_MAX_STEPS),
+                        seed_tools=True,
+                    )
+                    tool_traces = agent.tool_traces
+                    tools_ctx = tools_context_block(tool_traces)
+                    with st.expander(t("tool_traces"), expanded=False):
+                        for tr in tool_traces:
+                            st.write(f"**{tr.get('name')}** → {tr.get('result')}")
+            except Exception as exc:
+                st.warning(f"Araçlar atlandı: {exc}")
+
         if no_answer:
-            answer = t("no_answer")
+            if tools_ctx:
+                answer = tools_ctx + "\n\n" + t("no_answer")
+            else:
+                answer = t("no_answer")
             st.markdown(answer)
         else:
-            prompt = build_prompt(user_input, retrieved)
+            prompt = build_prompt(user_input, retrieved, tools_context=tools_ctx)
             try:
                 if use_stream:
                     answer = st.write_stream(
@@ -1181,11 +1219,28 @@ if user_input:
                 answer = f"LLM çağrısı başarısız: {e}"
                 st.error(answer)
 
+            if use_source_highlight and answer and source_payload:
+                highlighted = highlight_answer_html(
+                    answer,
+                    source_payload,
+                    min_tokens=HIGHLIGHT_MIN_TOKENS,
+                )
+                with st.expander(t("highlighted_answer"), expanded=True):
+                    st.markdown(highlighted, unsafe_allow_html=True)
+                    st.caption(
+                        "Sarı vurgular yanıtın kaynak chunk’larıyla örtüşen kısımlarıdır; "
+                        "tıklayınca ilgili kaynağa gider."
+                        if get_language() == "tr"
+                        else "Yellow marks show overlap with source chunks; click to jump."
+                    )
+
             if source_payload:
                 with st.expander(t("retrieved_sources"), expanded=True):
                     mode = "hybrid" if use_hybrid else "dense"
                     if use_reranker:
                         mode += "+rerank"
+                    if rewrite_mode not in {"none", ""}:
+                        mode += f"+{rewrite_mode}"
                     st.caption(f"Retrieval modu: {mode}")
                     for src in source_payload:
                         st.markdown(
@@ -1203,6 +1258,7 @@ if user_input:
         "role": "assistant",
         "content": answer,
         "sources": source_payload,
+        "tool_traces": tool_traces if use_agent_tools else [],
     }
     st.session_state["messages"].append(assistant_msg)
     st.session_state["chat_session"] = append_messages(

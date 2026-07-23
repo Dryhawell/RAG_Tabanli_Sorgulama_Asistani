@@ -48,6 +48,10 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "summarize_btn": "Özetle",
         "compare_focus": "Karşılaştırma odağı (opsiyonel)",
         "select_sources": "Kaynaklar (en az 2)",
+        "agent_tools": "Araçlar (hesap / takvim / web)",
+        "source_highlight": "Kaynak vurgulama",
+        "tool_traces": "Araç izleri",
+        "highlighted_answer": "Kaynak vurgulu yanıt",
     },
     "en": {
         "app_title": "LLM-Powered PDF / Notes Query Assistant (RAG)",
@@ -90,6 +94,10 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "summarize_btn": "Summarize",
         "compare_focus": "Comparison focus (optional)",
         "select_sources": "Sources (at least 2)",
+        "agent_tools": "Tools (calc / calendar / web)",
+        "source_highlight": "Source highlighting",
+        "tool_traces": "Tool traces",
+        "highlighted_answer": "Answer with source highlights",
     },
 }
 

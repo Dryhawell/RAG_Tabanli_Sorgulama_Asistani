@@ -23,11 +23,20 @@ def render_context(chunks: List[RetrievedChunk]) -> str:
     return "\n".join(parts)
 
 
-def build_prompt(question: str, chunks: List[RetrievedChunk]) -> str:
+def build_prompt(
+    question: str,
+    chunks: List[RetrievedChunk],
+    *,
+    tools_context: str = "",
+) -> str:
     ctx = render_context(chunks)
+    tools_block = ""
+    if tools_context and tools_context.strip():
+        tools_block = f"\nAraç çıktıları (doküman dışı yardımcı bilgi):\n{tools_context.strip()}\n\n"
     prompt = (
         "Sen sadece doküman bağlamına dayalı cevap veren bir asistansın. Kurallara harfiyen uy.\n\n"
         f"Bağlam:\n{ctx}\n\n"
+        f"{tools_block}"
         f"Soru:\n{question}\n\n"
         f"Kurallar:\n{STRICT_RULES_TR}\n\n"
         "Yanıt:\n"
