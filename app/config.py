@@ -49,6 +49,13 @@ OIDC_AUTO_PROVISION = os.getenv("RAG_OIDC_AUTO_PROVISION", "1") not in {
     "false",
     "False",
 }
+# id_token JWKS imza doğrulama (1 = zorunlu)
+OIDC_VERIFY_JWKS = os.getenv("RAG_OIDC_VERIFY_JWKS", "1") not in {"0", "false", "False"}
+
+# Prometheus metrik sink
+ENABLE_PROMETHEUS = os.getenv("RAG_ENABLE_PROMETHEUS", "0") not in {"0", "false", "False"}
+PROMETHEUS_PORT = int(os.getenv("RAG_PROMETHEUS_PORT", "9108"))
+PROMETHEUS_ADDR = os.getenv("RAG_PROMETHEUS_ADDR", "0.0.0.0")
 
 # Embedding
 DEFAULT_EMBEDDING_MODEL = os.getenv(

@@ -1,8 +1,8 @@
 """OIDC Authorization Code akışı (SSO).
 
 Keşif (discovery) → authorize → code exchange → userinfo/id_token claims.
-JWKS imza doğrulaması isteğe bağlı; varsayılan olarak token endpoint'e
-güvenilir (confidential client + TLS).
+id_token JWKS imza doğrulaması varsayılan olarak açıktır
+(`RAG_OIDC_VERIFY_JWKS=1`).
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import json
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import requests
@@ -31,6 +31,7 @@ from app.config import (
     OIDC_SCOPES,
     OIDC_TENANT_CLAIM,
     OIDC_USERNAME_CLAIM,
+    OIDC_VERIFY_JWKS,
 )
 
 
@@ -50,6 +51,7 @@ class OIDCConfig:
     admin_groups: Tuple[str, ...] = ()
     default_role: str = "user"
     auto_provision: bool = True
+    verify_jwks: bool = True
 
     @property
     def configured(self) -> bool:
@@ -77,6 +79,7 @@ def load_oidc_config() -> OIDCConfig:
         admin_groups=groups,
         default_role=OIDC_DEFAULT_ROLE if OIDC_DEFAULT_ROLE in {"admin", "user"} else "user",
         auto_provision=OIDC_AUTO_PROVISION,
+        verify_jwks=OIDC_VERIFY_JWKS,
     )
 
 
@@ -93,6 +96,24 @@ def fetch_discovery(issuer: str, *, session: Optional[requests.Session] = None) 
     for key in ("authorization_endpoint", "token_endpoint"):
         if not data.get(key):
             raise OIDCError(f"Discovery eksik alan: {key}")
+    return data
+
+
+def fetch_jwks(
+    discovery: Dict[str, Any],
+    *,
+    session: Optional[requests.Session] = None,
+) -> Dict[str, Any]:
+    jwks_uri = discovery.get("jwks_uri")
+    if not jwks_uri:
+        raise OIDCError("Discovery'de jwks_uri yok")
+    sess = session or requests
+    resp = sess.get(jwks_uri, timeout=15)
+    if resp.status_code >= 400:
+        raise OIDCError(f"JWKS alınamadı: {resp.status_code}")
+    data = resp.json()
+    if not isinstance(data, dict) or "keys" not in data:
+        raise OIDCError("JWKS yanıtı geçersiz")
     return data
 
 
@@ -156,7 +177,7 @@ def exchange_code(
 
 
 def decode_jwt_payload(token: str) -> Dict[str, Any]:
-    """İmza doğrulamadan JWT payload okur (token endpoint güvenine dayanır)."""
+    """İmza doğrulamadan JWT payload okur."""
     parts = token.split(".")
     if len(parts) < 2:
         raise OIDCError("Geçersiz JWT")
@@ -167,6 +188,79 @@ def decode_jwt_payload(token: str) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise OIDCError("JWT payload obje değil")
     return data
+
+
+def _jwk_to_key(jwk: Dict[str, Any]):
+    try:
+        from jwt.algorithms import RSAAlgorithm
+    except Exception as exc:
+        raise OIDCError(
+            "PyJWT/cryptography gerekli: pip install 'PyJWT[crypto]'"
+        ) from exc
+    kty = jwk.get("kty")
+    if kty != "RSA":
+        raise OIDCError(f"Desteklenmeyen JWK kty: {kty}")
+    return RSAAlgorithm.from_jwk(json.dumps(jwk))
+
+
+def _select_jwk(jwks: Dict[str, Any], token: str) -> Dict[str, Any]:
+    parts = token.split(".")
+    if len(parts) < 2:
+        raise OIDCError("Geçersiz JWT")
+    header_b64 = parts[0]
+    padding = "=" * (-len(header_b64) % 4)
+    header = json.loads(base64.urlsafe_b64decode(header_b64 + padding))
+    kid = header.get("kid")
+    keys: List[Dict[str, Any]] = list(jwks.get("keys") or [])
+    if not keys:
+        raise OIDCError("JWKS boş")
+    if kid:
+        for k in keys:
+            if k.get("kid") == kid:
+                return k
+        raise OIDCError(f"JWKS'te kid bulunamadı: {kid}")
+    # kid yoksa tek anahtar varsa onu kullan
+    if len(keys) == 1:
+        return keys[0]
+    raise OIDCError("JWT kid yok ve JWKS birden fazla anahtar içeriyor")
+
+
+def verify_id_token(
+    token: str,
+    *,
+    cfg: OIDCConfig,
+    jwks: Dict[str, Any],
+    expected_nonce: Optional[str] = None,
+) -> Dict[str, Any]:
+    """JWKS ile id_token imzasını ve iss/aud/exp doğrular."""
+    try:
+        import jwt
+    except Exception as exc:
+        raise OIDCError("PyJWT kurulu değil: pip install 'PyJWT[crypto]'") from exc
+
+    jwk = _select_jwk(jwks, token)
+    key = _jwk_to_key(jwk)
+    alg = jwk.get("alg") or "RS256"
+    try:
+        claims = jwt.decode(
+            token,
+            key=key,
+            algorithms=[alg, "RS256", "RS384", "RS512"],
+            audience=cfg.client_id,
+            issuer=cfg.issuer,
+            options={
+                "require": ["exp", "iss", "aud"],
+                "verify_aud": True,
+                "verify_iss": True,
+                "verify_exp": True,
+            },
+        )
+    except Exception as exc:
+        raise OIDCError(f"id_token doğrulama başarısız: {exc}") from exc
+
+    if expected_nonce and claims.get("nonce") != expected_nonce:
+        raise OIDCError("OIDC nonce uyuşmazlığı")
+    return claims
 
 
 def fetch_userinfo(
@@ -249,6 +343,7 @@ def complete_login(
     expected_nonce: Optional[str] = None,
     code_verifier: Optional[str] = None,
     discovery: Optional[Dict[str, Any]] = None,
+    jwks: Optional[Dict[str, Any]] = None,
     session: Optional[requests.Session] = None,
 ) -> Dict[str, Any]:
     """Code → claims. Dönüş: {username, role, tenant_id, claims, tokens}."""
@@ -264,14 +359,21 @@ def complete_login(
 
     id_claims: Dict[str, Any] = {}
     if tokens.get("id_token"):
-        id_claims = decode_jwt_payload(tokens["id_token"])
-        if expected_nonce:
-            if id_claims.get("nonce") != expected_nonce:
+        if cfg.verify_jwks:
+            keys = jwks or fetch_jwks(disc, session=session)
+            id_claims = verify_id_token(
+                tokens["id_token"],
+                cfg=cfg,
+                jwks=keys,
+                expected_nonce=expected_nonce,
+            )
+        else:
+            id_claims = decode_jwt_payload(tokens["id_token"])
+            if expected_nonce and id_claims.get("nonce") != expected_nonce:
                 raise OIDCError("OIDC nonce uyuşmazlığı")
-        # basit expiry kontrolü
-        exp = id_claims.get("exp")
-        if exp is not None and float(exp) < time.time() - 30:
-            raise OIDCError("id_token süresi dolmuş")
+            exp = id_claims.get("exp")
+            if exp is not None and float(exp) < time.time() - 30:
+                raise OIDCError("id_token süresi dolmuş")
 
     userinfo: Dict[str, Any] = {}
     if disc.get("userinfo_endpoint") and tokens.get("access_token"):

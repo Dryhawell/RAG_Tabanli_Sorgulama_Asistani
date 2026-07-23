@@ -52,6 +52,14 @@ def record_metric(
     with _lock:
         with open(out_path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
+
+    # Opsiyonel Prometheus sink (hata yut — JSONL asıl kaynak)
+    try:
+        from rag.prometheus_sink import observe_metric
+
+        observe_metric(kind, values=values, tenant_id=tenant_id)
+    except Exception:
+        pass
     return record
 
 

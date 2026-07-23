@@ -70,6 +70,8 @@ from app.config import (
     ENABLE_TENANTS,
     DEFAULT_TENANT,
     ENABLE_METRICS,
+    ENABLE_PROMETHEUS,
+    PROMETHEUS_PORT,
     OIDC_ONLY,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_TOP_K,
@@ -88,6 +90,15 @@ from app.config import (
 
 st.set_page_config(page_title="RAG Not/PDF Asistanı", layout="wide")
 st.title("LLM Destekli PDF / Not Sorgulama Asistanı (RAG)")
+
+# Opsiyonel Prometheus scrape endpoint (UI process içinde)
+if ENABLE_PROMETHEUS:
+    try:
+        from rag.prometheus_sink import ensure_prometheus_server
+
+        ensure_prometheus_server()
+    except Exception:
+        pass
 
 for _d in [DATA_DIR, INDEXES_DIR, METADATA_DIR, CHAT_DIR]:
     os.makedirs(_d, exist_ok=True)
@@ -298,6 +309,8 @@ def load_or_create_index(dim: int, embedding_model: str, index_path: str, docsto
 # Sidebar
 with st.sidebar:
     st.header("Ayarlar")
+    if ENABLE_PROMETHEUS:
+        st.caption(f"Prometheus scrape: `:{PROMETHEUS_PORT}/metrics`")
     provider_options = ["ollama", "openai"]
     provider_index = (
         provider_options.index(DEFAULT_LLM_PROVIDER)

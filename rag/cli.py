@@ -7,6 +7,7 @@
   python -m rag.cli eval
   python -m rag.cli judge
   python -m rag.cli stats
+  python -m rag.cli prometheus
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ from app.config import (
     METADATA_DIR,
     METRICS_PATH,
     MULTILINGUAL_EMBEDDING_MODEL,
+    PROMETHEUS_ADDR,
+    PROMETHEUS_PORT,
 )
 from rag.embed import Embedder, resolve_embedding_model
 from rag.eval import run_regression
@@ -33,6 +36,7 @@ from rag.index import FaissIndex
 from rag.ingest import ingest_path, list_data_files, rebuild_from_data_dir
 from rag.judge import run_judge_file
 from rag.metrics import summarize_metrics
+from rag.prometheus_sink import ensure_prometheus_server, prometheus_available, render_prometheus
 
 DEFAULT_EVAL_FIXTURES = os.path.join("evals", "fixtures")
 DEFAULT_EVAL_CASES = os.path.join("evals", "cases.json")
@@ -232,6 +236,37 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_prometheus(args: argparse.Namespace) -> int:
+    """Prometheus /metrics HTTP sunucusunu başlatır veya metrik dump alır."""
+    if not prometheus_available():
+        print(
+            "prometheus_client kurulu değil. pip install prometheus-client",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.dump:
+        sys.stdout.buffer.write(render_prometheus())
+        return 0
+
+    port = args.port or PROMETHEUS_PORT
+    addr = args.addr or PROMETHEUS_ADDR
+    ok = ensure_prometheus_server(port=port, addr=addr, enabled=True)
+    if not ok:
+        print("Prometheus sunucusu başlatılamadı", file=sys.stderr)
+        return 1
+    print(f"Prometheus /metrics dinleniyor: http://{addr}:{port}/metrics")
+    print("Durdurmak için Ctrl+C")
+    try:
+        import time
+
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        print("\nKapatıldı.")
+    return 0
+
+
 def _add_embedding_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--embedding",
@@ -305,6 +340,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_stats.add_argument("--limit", type=int, default=5000, help="Okunacak son kayıt sayısı")
     p_stats.add_argument("--json", action="store_true", help="JSON çıktı")
     p_stats.set_defaults(func=cmd_stats)
+
+    p_prom = sub.add_parser("prometheus", help="Prometheus /metrics sunucusu veya dump")
+    p_prom.add_argument("--port", type=int, default=None, help=f"Port (varsayılan {PROMETHEUS_PORT})")
+    p_prom.add_argument("--addr", default=None, help=f"Bind adresi (varsayılan {PROMETHEUS_ADDR})")
+    p_prom.add_argument(
+        "--dump",
+        action="store_true",
+        help="Sunucu başlatmadan metrikleri stdout'a yaz",
+    )
+    p_prom.set_defaults(func=cmd_prometheus)
     return p
 
 

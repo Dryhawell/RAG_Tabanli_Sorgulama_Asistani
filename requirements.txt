@@ -10,3 +10,5 @@ pydantic
 openai
 requests
 pytest
+PyJWT[crypto]
+prometheus-client

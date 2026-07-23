@@ -133,6 +133,21 @@ streamlit run app/ui.py
 - İlk SSO girişinde kullanıcı otomatik oluşturulur (`RAG_OIDC_AUTO_PROVISION=1`)
 - Rol: admin grupları veya `role` claim; tenant: `tenant_id` claim
 - IdP'de redirect URI olarak Streamlit adresinizi (`http://localhost:8501`) kaydedin
+- `RAG_OIDC_VERIFY_JWKS=1` (varsayılan): id_token JWKS ile doğrulanır
+
+### Prometheus
+```bash
+export RAG_ENABLE_METRICS=1
+export RAG_ENABLE_PROMETHEUS=1
+export RAG_PROMETHEUS_PORT=9108
+# Ayrı süreç:
+python -m rag.cli prometheus
+# veya UI açıkken aynı process içinde /metrics dinlenir
+# Scrape: http://localhost:9108/metrics
+# Dump (sunucusuz):
+python -m rag.cli prometheus --dump
+```
+Grafana'da Prometheus datasource ekleyip `rag_queries_total`, `rag_query_latency_seconds` panelleri kurulabilir.
 
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
@@ -167,6 +182,10 @@ streamlit run app/ui.py
 | `RAG_OIDC_TENANT_CLAIM` | Tenant claim (varsayılan `tenant_id`) |
 | `RAG_OIDC_ADMIN_GROUPS` | Admin sayılacak gruplar |
 | `RAG_OIDC_AUTO_PROVISION` | İlk SSO'da kullanıcı oluştur (1/0) |
+| `RAG_OIDC_VERIFY_JWKS` | id_token JWKS imza doğrulama (1/0, varsayılan 1) |
+| `RAG_ENABLE_PROMETHEUS` | Prometheus sink (1/0) |
+| `RAG_PROMETHEUS_PORT` | /metrics portu (varsayılan 9108) |
+| `RAG_PROMETHEUS_ADDR` | Bind adresi (varsayılan 0.0.0.0) |
 | `OLLAMA_HOST` | Ollama adresi |
 | `OPENAI_API_KEY` | OpenAI anahtarı |
 
@@ -178,7 +197,7 @@ streamlit run app/ui.py
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
 - `rag/chat_store.py`: kalıcı sohbetler
-- `rag/auth.py`, `rag/oidc.py`, `rag/workspace.py`, `rag/audit.py`, `rag/metrics.py`: auth/SSO, tenant, audit, metrikler
+- `rag/auth.py`, `rag/oidc.py`, `rag/workspace.py`, `rag/audit.py`, `rag/metrics.py`, `rag/prometheus_sink.py`
 - `users.example.json`: örnek kullanıcı şablonu
 - `rag/eval.py`, `rag/judge.py`: retrieval smoke + yanıt kalitesi judge
 - `rag/llm.py`, `rag/prompt.py`
@@ -202,5 +221,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Prometheus/Grafana entegrasyonu (opsiyonel dış metrik sink)
-- JWKS ile id_token imza doğrulama (şu an token endpoint güvenine dayanır)
+- Dağıtık indeks / uzak vektör DB (ör. Qdrant)
+- Çok dilli UI ve lokalizasyon

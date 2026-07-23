@@ -81,6 +81,7 @@ def test_complete_login_mocked(monkeypatch):
         redirect_uri="http://localhost:8501",
         admin_groups=("admins",),
         auto_provision=True,
+        verify_jwks=False,
     )
     id_token = _fake_jwt(
         {
@@ -176,3 +177,53 @@ def test_upsert_oidc_user(tmp_path, monkeypatch):
             path=path,
             auto_provision=False,
         )
+
+
+def test_verify_id_token_with_jwks():
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    import jwt
+    from jwt.algorithms import RSAAlgorithm
+
+    from rag.oidc import verify_id_token
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    # JWK üret
+    jwk = json.loads(RSAAlgorithm.to_jwk(public_key))
+    jwk["kid"] = "test-key"
+    jwk["alg"] = "RS256"
+    jwk["use"] = "sig"
+    jwks = {"keys": [jwk]}
+
+    cfg = OIDCConfig(
+        issuer="https://idp.example",
+        client_id="rag-app",
+        client_secret="s",
+        redirect_uri="http://localhost:8501",
+        verify_jwks=True,
+    )
+    payload = {
+        "sub": "1",
+        "preferred_username": "dave",
+        "iss": cfg.issuer,
+        "aud": cfg.client_id,
+        "exp": 9_999_999_999,
+        "iat": 1_700_000_000,
+        "nonce": "n-xyz",
+    }
+    token = jwt.encode(
+        payload,
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "test-key"},
+    )
+    claims = verify_id_token(token, cfg=cfg, jwks=jwks, expected_nonce="n-xyz")
+    assert claims["preferred_username"] == "dave"
+
+    with pytest.raises(OIDCError):
+        verify_id_token(token, cfg=cfg, jwks=jwks, expected_nonce="wrong")
+
+    # bozuk imza
+    bad = token[:-4] + "dead"
+    with pytest.raises(OIDCError):
+        verify_id_token(bad, cfg=cfg, jwks=jwks)
