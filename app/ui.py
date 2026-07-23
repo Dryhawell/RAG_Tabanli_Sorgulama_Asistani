@@ -36,6 +36,13 @@ from rag.vision import (
     merge_image_into_question,
     prioritize_table_chunks,
 )
+from rag.profile_memory import (
+    add_memory,
+    ingest_session_facts,
+    load_profile_memory,
+    memories_context_block,
+    search_memories,
+)
 from rag.rerank import get_reranker
 from rag.retrieve import retrieve
 from rag.readers import _ocr_available
@@ -114,6 +121,12 @@ from app.config import (
     ENABLE_AGENT_PLANNER,
     ENABLE_TABLE_BOOST,
     ENABLE_IMAGE_OCR,
+    ENABLE_VISION_LLM,
+    DEFAULT_VISION_OPENAI_MODEL,
+    DEFAULT_VISION_OLLAMA_MODEL,
+    ENABLE_PROFILE_MEMORY,
+    PROFILE_MEMORY_TOP_K,
+    PROFILE_MEMORY_MIN_SCORE,
 )
 
 st.set_page_config(page_title="RAG Not/PDF Asistanı", layout="wide")
@@ -444,6 +457,8 @@ with st.sidebar:
     use_source_highlight = st.checkbox(t("source_highlight"), value=ENABLE_SOURCE_HIGHLIGHT)
     use_agent_memory = st.checkbox(t("agent_memory"), value=ENABLE_AGENT_MEMORY)
     use_agent_planner = st.checkbox(t("agent_planner"), value=ENABLE_AGENT_PLANNER)
+    use_vision_llm = st.checkbox(t("vision_llm"), value=ENABLE_VISION_LLM)
+    use_profile_memory = st.checkbox(t("profile_memory"), value=ENABLE_PROFILE_MEMORY)
     rebuild = False
     if can_ingest:
         rebuild = st.button(t("rebuild_index"))
@@ -1136,11 +1151,23 @@ if user_input:
     image_ctx = ""
     if user_image is not None:
         try:
-            image_ctx = image_query_context(user_image.getvalue(), user_image.name)
+            vision_model = (
+                DEFAULT_VISION_OPENAI_MODEL
+                if provider == "openai"
+                else DEFAULT_VISION_OLLAMA_MODEL
+            )
+            image_ctx = image_query_context(
+                user_image.getvalue(),
+                user_image.name,
+                question=user_input,
+                use_vision_llm=use_vision_llm,
+                vision_provider=provider,
+                vision_model=vision_model,
+            )
             effective_question = merge_image_into_question(user_input, image_ctx)
             st.caption(image_ctx[:240] + ("…" if len(image_ctx) > 240 else ""))
         except Exception as exc:
-            st.warning(f"Görüntü OCR atlandı: {exc}")
+            st.warning(f"Görüntü OCR/Vision atlandı: {exc}")
 
     user_msg = {"role": "user", "content": user_input}
     if image_ctx:
@@ -1216,6 +1243,29 @@ if user_input:
         memory = load_memory_from_session(st.session_state.get("chat_session"))
         if use_agent_memory and memory.context_block():
             tools_ctx = (tools_ctx + "\n" + memory.context_block()).strip()
+
+        # Uzun vadeli profil belleği
+        profile_hits = []
+        if use_profile_memory:
+            uname = current_user.username if current_user else "local"
+            try:
+                pstore = load_profile_memory(uname)
+                profile_hits = search_memories(
+                    pstore,
+                    effective_question,
+                    emb,
+                    top_k=PROFILE_MEMORY_TOP_K,
+                    min_score=PROFILE_MEMORY_MIN_SCORE,
+                )
+                if profile_hits:
+                    tools_ctx = (
+                        tools_ctx + "\n" + memories_context_block(profile_hits)
+                    ).strip()
+                    with st.expander(t("profile_hits"), expanded=False):
+                        for hit in profile_hits:
+                            st.write(f"- ({hit.kind}, {hit.score:.2f}) {hit.text}")
+            except Exception as exc:
+                st.caption(f"Profil belleği atlandı: {exc}")
 
         if use_agent_tools or use_agent_planner:
 
@@ -1348,6 +1398,14 @@ if user_input:
         st.session_state["chat_session"] = save_memory_to_session(
             dict(st.session_state["chat_session"]), memory
         )
+        # Kısa bellek olgularını uzun vadeli profile yaz
+        if use_profile_memory and memory.facts:
+            try:
+                uname = current_user.username if current_user else "local"
+                pstore = load_profile_memory(uname)
+                ingest_session_facts(pstore, memory.facts, embedder=emb, kind="fact")
+            except Exception:
+                pass
     st.session_state["chat_session"] = append_messages(
         st.session_state["chat_session"],
         [user_msg, assistant_msg],

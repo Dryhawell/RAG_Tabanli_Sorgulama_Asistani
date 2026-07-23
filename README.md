@@ -88,6 +88,7 @@ docker compose up --build
 - Agentic araçlar: hesap makinesi, takvim, web arama
 - Yanıtta kaynak chunk vurgulama (HTML `<mark>`)
 - Multimodal: görüntü OCR + tablo sorusu boost; agent bellek/planlama
+- Vision-LLM (GPT-4o / LLaVA) ve uzun vadeli vektör profil belleği
 - Admin paneli: kullanıcı listele / ekle / sil / ACL (klasör-etiket) / audit log / metrik dashboard
 - Sohbet dışa aktarma (JSON / Markdown)
 - Eval paneli: `soru | beklenen_kaynak | expect_no_answer(0/1)`
@@ -206,6 +207,23 @@ export RAG_ENABLE_AGENT_PLANNER=1
 - Tablo sorularında `[Tablo]` chunk’ları öne alınır
 - Agent belleği oturumda saklanır; planlı agent adım adım TOOL_CALL üretir
 
+### Vision-LLM + uzun vadeli profil belleği
+```bash
+# OpenAI:
+export RAG_ENABLE_VISION_LLM=1
+export RAG_VISION_OPENAI_MODEL=gpt-4o-mini
+export OPENAI_API_KEY=...
+# veya Ollama LLaVA:
+# export RAG_LLM_PROVIDER=ollama
+# export RAG_VISION_OLLAMA_MODEL=llava
+
+export RAG_ENABLE_PROFILE_MEMORY=1
+streamlit run app/ui.py
+```
+- Vision açıksa görüntü GPT-4o/LLaVA ile yorumlanır; OCR yedek kalır
+- Profil belleği: `metadata/profiles/<user>/long_memory.json` (embedding araması)
+- Oturum olguları otomatik uzun vadeli belleğe taşınır
+
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
 |----------|----------|
@@ -259,6 +277,12 @@ export RAG_ENABLE_AGENT_PLANNER=1
 | `RAG_ENABLE_TABLE_BOOST` | Tablo sorularında chunk önceliği (1/0) |
 | `RAG_ENABLE_AGENT_MEMORY` | Oturum agent belleği (1/0) |
 | `RAG_ENABLE_AGENT_PLANNER` | Çok adımlı planlı agent (1/0) |
+| `RAG_ENABLE_VISION_LLM` | GPT-4o / LLaVA görüntü anlama (1/0) |
+| `RAG_VISION_OPENAI_MODEL` | Vision OpenAI modeli |
+| `RAG_VISION_OLLAMA_MODEL` | Vision Ollama modeli (llava) |
+| `RAG_ENABLE_PROFILE_MEMORY` | Uzun vadeli vektör bellek (1/0) |
+| `RAG_PROFILE_MEMORY_TOP_K` | Profil bellek retrieval k |
+| `RAG_PROFILE_MEMORY_MIN_SCORE` | Profil bellek skor eşiği |
 | `OLLAMA_HOST` | Ollama adresi |
 | `OPENAI_API_KEY` | OpenAI anahtarı |
 
@@ -269,7 +293,7 @@ export RAG_ENABLE_AGENT_PLANNER=1
 - `rag/i18n.py`: UI lokalizasyon (TR/EN)
 - `rag/query_rewrite.py`, `rag/compare.py`: HyDE/expand ve çoklu doküman özet/karşılaştırma
 - `rag/tools.py`, `rag/agent.py`, `rag/highlight.py`: araçlar, agent döngüsü, kaynak vurgulama
-- `rag/vision.py`, `rag/memory.py`, `rag/planner.py`: multimodal, bellek, planlama
+- `rag/vision.py`, `rag/vision_llm.py`, `rag/memory.py`, `rag/planner.py`, `rag/profile_memory.py`
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -298,5 +322,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Gerçek vision-LLM (LLaVA / GPT-4o) ile görüntü anlama
-- Uzun vadeli vektör bellek (kullanıcı profili)
+- Gerçek zamanlı işbirlikçi düzenleme / paylaşım linkleri
+- Fine-tuned domain embedding

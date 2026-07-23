@@ -151,3 +151,17 @@ ENABLE_AGENT_PLANNER = os.getenv("RAG_ENABLE_AGENT_PLANNER", "0") not in {
     "False",
 }
 
+# Vision-LLM (GPT-4o / LLaVA)
+ENABLE_VISION_LLM = os.getenv("RAG_ENABLE_VISION_LLM", "0") not in {"0", "false", "False"}
+DEFAULT_VISION_OPENAI_MODEL = os.getenv("RAG_VISION_OPENAI_MODEL", "gpt-4o-mini")
+DEFAULT_VISION_OLLAMA_MODEL = os.getenv("RAG_VISION_OLLAMA_MODEL", "llava")
+
+# Uzun vadeli vektör bellek (kullanıcı profili)
+ENABLE_PROFILE_MEMORY = os.getenv("RAG_ENABLE_PROFILE_MEMORY", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+PROFILE_MEMORY_TOP_K = int(os.getenv("RAG_PROFILE_MEMORY_TOP_K", "4"))
+PROFILE_MEMORY_MIN_SCORE = float(os.getenv("RAG_PROFILE_MEMORY_MIN_SCORE", "0.28"))
+

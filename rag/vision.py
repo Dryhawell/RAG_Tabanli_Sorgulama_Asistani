@@ -60,15 +60,52 @@ def ocr_image_file(path: str, *, langs: str = OCR_LANGS) -> str:
         return ocr_image_bytes(f.read(), langs=langs, filename=os.path.basename(path))
 
 
-def image_query_context(data: bytes, filename: str = "image.png") -> str:
-    """Soru ile birlikte kullanılacak OCR bağlamı."""
+def image_query_context(
+    data: bytes,
+    filename: str = "image.png",
+    *,
+    question: str = "",
+    use_vision_llm: bool = False,
+    vision_provider: str = "openai",
+    vision_model: Optional[str] = None,
+) -> str:
+    """Soru ile birlikte kullanılacak görüntü bağlamı.
+
+    use_vision_llm=True ise GPT-4o / LLaVA; aksi halde OCR.
+    Vision başarısız olursa OCR'ye düşer.
+    """
+    parts: List[str] = []
+    if use_vision_llm:
+        try:
+            from rag.vision_llm import describe_image
+
+            desc = describe_image(
+                data,
+                question=question,
+                provider=vision_provider if vision_provider in {"openai", "ollama"} else "openai",
+                model=vision_model,
+                filename=filename,
+            )
+            if desc:
+                parts.append(f"[Vision-LLM: {filename}]\n{desc}")
+        except Exception as exc:
+            parts.append(f"[Vision-LLM atlandı: {exc}]")
+
     try:
         text = ocr_image_bytes(data, filename=filename)
     except Exception as exc:
-        return f"[Görüntü OCR başarısız: {exc}]"
-    if not text:
+        text = ""
+        if not parts:
+            return f"[Görüntü OCR başarısız: {exc}]"
+        parts.append(f"[OCR atlandı: {exc}]")
+        return "\n\n".join(parts)
+
+    if text:
+        parts.append(f"[Görüntü OCR: {filename}]\n{text}")
+    elif not parts:
         return f"[Görüntü: {filename} — OCR metni yok veya Tesseract kurulu değil]"
-    return f"[Görüntü OCR: {filename}]\n{text}"
+
+    return "\n\n".join(parts)
 
 
 def chunk_has_table(chunk: RetrievedChunk) -> bool:

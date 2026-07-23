@@ -56,6 +56,9 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "agent_planner": "Planlı agent",
         "agent_plan": "Plan",
         "upload_image_q": "Soru için görüntü (OCR)",
+        "vision_llm": "Vision-LLM (GPT-4o / LLaVA)",
+        "profile_memory": "Uzun vadeli bellek",
+        "profile_hits": "Profil belleği eşleşmeleri",
     },
     "en": {
         "app_title": "LLM-Powered PDF / Notes Query Assistant (RAG)",
@@ -106,6 +109,9 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "agent_planner": "Planned agent",
         "agent_plan": "Plan",
         "upload_image_q": "Image for question (OCR)",
+        "vision_llm": "Vision-LLM (GPT-4o / LLaVA)",
+        "profile_memory": "Long-term memory",
+        "profile_hits": "Profile memory hits",
     },
 }
 
