@@ -83,6 +83,8 @@ docker compose up --build
 - Opsiyonel çok kullanıcılı giriş (paylaşımlı/kişisel indeks, kullanıcıya özel sohbet)
 - Opsiyonel SSO / OIDC (Authorization Code + PKCE)
 - Sidebar dil seçimi (TR / EN)
+- Sorgu yeniden yazma: HyDE / genişletme
+- Doküman karşılaştırma ve özet paneli
 - Admin paneli: kullanıcı listele / ekle / sil / ACL (klasör-etiket) / audit log / metrik dashboard
 - Sohbet dışa aktarma (JSON / Markdown)
 - Eval paneli: `soru | beklenen_kaynak | expect_no_answer(0/1)`
@@ -169,6 +171,17 @@ FAISS varsayılandır. Qdrant açıkken hybrid BM25 hâlâ yerel docstore üzeri
 ### UI dili
 Sidebar'dan **Dil / Language** seçin (`tr` / `en`) veya `RAG_UI_LANG=en`.
 
+### HyDE / sorgu yeniden yazma
+Sidebar → **Sorgu yeniden yazma**: `HyDE`, `Genişlet` veya ikisi.
+```bash
+export RAG_ENABLE_QUERY_REWRITE=1
+export RAG_QUERY_REWRITE_MODE=hyde   # none | hyde | expand | hyde+expand
+```
+HyDE: LLM hipotetik paragraf üretir, embedding ile aranır. Expand: alternatif soru ifadeleri BM25/vektöre eklenir.
+
+### Doküman karşılaştır / özetle
+UI'da **Doküman karşılaştır / özetle** panelinden birden fazla kaynak seçip Özetle veya Karşılaştır.
+
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
 |----------|----------|
@@ -212,6 +225,8 @@ Sidebar'dan **Dil / Language** seçin (`tr` / `en`) veya `RAG_UI_LANG=en`.
 | `RAG_QDRANT_COLLECTION` | Collection adı |
 | `RAG_QDRANT_API_KEY` | Opsiyonel API anahtarı |
 | `RAG_UI_LANG` | UI dili (`tr` / `en`) |
+| `RAG_ENABLE_QUERY_REWRITE` | HyDE/expand varsayılanını aç (1/0) |
+| `RAG_QUERY_REWRITE_MODE` | `none` / `hyde` / `expand` / `hyde+expand` |
 | `OLLAMA_HOST` | Ollama adresi |
 | `OPENAI_API_KEY` | OpenAI anahtarı |
 
@@ -220,6 +235,7 @@ Sidebar'dan **Dil / Language** seçin (`tr` / `en`) veya `RAG_UI_LANG=en`.
 - `app/config.py`: merkezi ayarlar
 - `rag/index.py`, `rag/qdrant_index.py`, `rag/store.py`: FAISS / Qdrant vektör deposu
 - `rag/i18n.py`: UI lokalizasyon (TR/EN)
+- `rag/query_rewrite.py`, `rag/compare.py`: HyDE/expand ve çoklu doküman özet/karşılaştırma
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -248,5 +264,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Gelişmiş sorgu yeniden yazma / HyDE
-- Çoklu doküman karşılaştırma ve özetleme paneli
+- Agentic tool-use (web / hesap makinesi / takvim)
+- Streaming token-level kaynak vurgulama

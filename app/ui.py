@@ -20,6 +20,8 @@ from rag.meta_store import normalize_folder, normalize_tags
 from rag.eval import EvalCase, evaluate_cases, summarize
 from rag.prompt import build_prompt
 from rag.llm import generate_answer, stream_answer
+from rag.query_rewrite import embed_rewrite, rewrite_query
+from rag.compare import compare_sources, summarize_sources
 from rag.rerank import get_reranker
 from rag.retrieve import retrieve
 from rag.readers import _ocr_available
@@ -88,6 +90,8 @@ from app.config import (
     DEFAULT_OPENAI_MODEL,
     OLLAMA_HOST,
     OPENAI_API_KEY,
+    ENABLE_QUERY_REWRITE,
+    DEFAULT_QUERY_REWRITE_MODE,
 )
 
 st.set_page_config(page_title="RAG Not/PDF Asistanı", layout="wide")
@@ -399,6 +403,21 @@ with st.sidebar:
     if use_reranker:
         st.caption(f"Model: {DEFAULT_RERANKER_MODEL}")
     use_stream = st.checkbox(t("stream_answer"), value=True)
+    rewrite_options = {
+        "none": t("rewrite_none"),
+        "hyde": t("rewrite_hyde"),
+        "expand": t("rewrite_expand"),
+        "hyde+expand": t("rewrite_both"),
+    }
+    default_rw = DEFAULT_QUERY_REWRITE_MODE if ENABLE_QUERY_REWRITE else "none"
+    if default_rw not in rewrite_options:
+        default_rw = "hyde" if ENABLE_QUERY_REWRITE else "none"
+    rewrite_mode = st.selectbox(
+        t("query_rewrite"),
+        options=list(rewrite_options.keys()),
+        index=list(rewrite_options.keys()).index(default_rw),
+        format_func=lambda k: rewrite_options[k],
+    )
     rebuild = False
     if can_ingest:
         rebuild = st.button(t("rebuild_index"))
@@ -942,6 +961,53 @@ if index_empty:
 elif index.list_sources():
     st.caption(f"İndeksteki kaynaklar: {', '.join(index.list_sources())} ({index.size} chunk)")
 
+with st.expander(t("compare_panel"), expanded=False):
+    src_opts = index.list_sources()
+    cmp_sources = st.multiselect(
+        t("select_sources"),
+        options=src_opts,
+        default=src_opts[:2] if len(src_opts) >= 2 else src_opts,
+        key="compare_sources",
+    )
+    cmp_focus = st.text_input(t("compare_focus"), value="", key="compare_focus")
+    c_sum, c_cmp = st.columns(2)
+    with c_sum:
+        do_summarize = st.button(t("summarize_btn"), disabled=not cmp_sources or index_empty)
+    with c_cmp:
+        do_compare = st.button(
+            t("compare_btn"),
+            disabled=len(cmp_sources) < 2 or index_empty,
+        )
+    if do_summarize and cmp_sources:
+        with st.spinner("Özetleniyor..."):
+
+            def _gen(prompt: str) -> str:
+                return generate_answer(provider=provider, model_name=model_name, prompt=prompt)
+
+            try:
+                summaries = summarize_sources(index, cmp_sources, _gen)
+                for name, text in summaries.items():
+                    st.markdown(f"**{name}**")
+                    st.write(text)
+            except Exception as exc:
+                st.error(str(exc))
+    if do_compare and len(cmp_sources) >= 2:
+        with st.spinner("Karşılaştırılıyor..."):
+
+            def _gen2(prompt: str) -> str:
+                return generate_answer(provider=provider, model_name=model_name, prompt=prompt)
+
+            try:
+                result = compare_sources(
+                    index,
+                    cmp_sources,
+                    _gen2,
+                    focus=cmp_focus or "Ana noktaları ve farkları karşılaştır",
+                )
+                st.markdown(result)
+            except Exception as exc:
+                st.error(str(exc))
+
 with st.expander("Eval paneli (retrieval smoke)"):
     st.caption(
         "Her satır: soru | beklenen_kaynak | expect_no_answer(0/1). "
@@ -1036,12 +1102,29 @@ if user_input:
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    qvec = emb.encode([user_input])
+    rewrite = rewrite_query(user_input, mode="none")
+    if rewrite_mode not in {"none", ""}:
+
+        def _rw_gen(prompt: str) -> str:
+            return generate_answer(provider=provider, model_name=model_name, prompt=prompt)
+
+        try:
+            rewrite = rewrite_query(user_input, mode=rewrite_mode, generate_fn=_rw_gen)
+            if rewrite.hypothetical:
+                st.caption(f"HyDE: {rewrite.hypothetical[:180]}…")
+            elif rewrite.expansions:
+                st.caption("Expand: " + " | ".join(rewrite.expansions[:2]))
+        except Exception as exc:
+            st.warning(f"Sorgu yeniden yazma atlandı: {exc}")
+            rewrite = rewrite_query(user_input, mode="none")
+
+    qvec = embed_rewrite(emb, rewrite)
+    bm25_q = rewrite.bm25_query or user_input
     reranker = get_cached_reranker(use_reranker, DEFAULT_RERANKER_MODEL)
     retrieved, gate_score = retrieve(
         index,
         qvec,
-        user_input,
+        bm25_q,
         bm25=st.session_state["bm25"],
         top_k=top_k,
         use_hybrid=use_hybrid,

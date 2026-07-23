@@ -112,3 +112,12 @@ LAYOUT_TABLE_MIN_ROWS = int(os.getenv("RAG_LAYOUT_TABLE_MIN_ROWS", "2"))
 # Desteklenen dosya uzantıları
 SUPPORTED_EXTENSIONS = {".pdf", ".txt"}
 
+# Sorgu yeniden yazma / HyDE
+ENABLE_QUERY_REWRITE = os.getenv("RAG_ENABLE_QUERY_REWRITE", "0") not in {
+    "0",
+    "false",
+    "False",
+}
+# none | hyde | expand | hyde+expand
+DEFAULT_QUERY_REWRITE_MODE = os.getenv("RAG_QUERY_REWRITE_MODE", "hyde")
+
