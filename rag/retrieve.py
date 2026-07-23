@@ -15,7 +15,6 @@ from app.config import (
 from rag.acl import filter_chunks
 from rag.auth import User
 from rag.hybrid import BM25Index, hybrid_search
-from rag.index import FaissIndex
 from rag.meta_store import normalize_folder, normalize_tags
 from rag.rerank import LexicalReranker, rerank_chunks
 from rag.types import RetrievedChunk
@@ -75,7 +74,7 @@ def apply_metadata_filters(
 
 
 def retrieve(
-    index: FaissIndex,
+    index,
     query_vec: np.ndarray,
     query_text: str,
     *,

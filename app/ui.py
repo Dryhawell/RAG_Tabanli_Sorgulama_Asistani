@@ -7,7 +7,6 @@ import requests
 
 from rag.embed import EMBEDDING_PRESETS, Embedder, preset_for_model, resolve_embedding_model
 from rag.hybrid import build_bm25_from_index
-from rag.index import FaissIndex
 from rag.ingest import (
     delete_source,
     ensure_data_path,
@@ -15,6 +14,8 @@ from rag.ingest import (
     list_data_files,
     rebuild_from_data_dir,
 )
+from rag.i18n import SUPPORTED_LANGS, get_language, set_language, t
+from rag.store import create_index, load_index, vector_backend
 from rag.meta_store import normalize_folder, normalize_tags
 from rag.eval import EvalCase, evaluate_cases, summarize
 from rag.prompt import build_prompt
@@ -73,6 +74,7 @@ from app.config import (
     ENABLE_PROMETHEUS,
     PROMETHEUS_PORT,
     OIDC_ONLY,
+    DEFAULT_UI_LANG,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_TOP_K,
     NO_ANSWER_THRESHOLD,
@@ -89,7 +91,11 @@ from app.config import (
 )
 
 st.set_page_config(page_title="RAG Not/PDF Asistanı", layout="wide")
-st.title("LLM Destekli PDF / Not Sorgulama Asistanı (RAG)")
+
+if "ui_lang" not in st.session_state:
+    st.session_state["ui_lang"] = DEFAULT_UI_LANG if DEFAULT_UI_LANG in SUPPORTED_LANGS else "tr"
+set_language(st.session_state["ui_lang"])
+st.title(t("app_title"))
 
 # Opsiyonel Prometheus scrape endpoint (UI process içinde)
 if ENABLE_PROMETHEUS:
@@ -173,10 +179,12 @@ if auth_enabled():
                     pass
 
     if st.session_state["auth_user"] is None:
-        st.subheader("Giriş")
+        st.subheader(t("login"))
         st.caption(
             "Çok kullanıcılı mod açık. Sohbet geçmişi kullanıcıya özeldir; "
             "indeks paylaşımlı veya kişisel olabilir."
+            if get_language() == "tr"
+            else "Multi-user mode is on. Chat history is per user; the index may be shared or private."
         )
         if ENABLE_TENANTS:
             st.caption(f"Tenant izolasyonu açık (varsayılan tenant: `{DEFAULT_TENANT}`).")
@@ -189,8 +197,8 @@ if auth_enabled():
                     "`RAG_OIDC_REDIRECT_URI` eksik."
                 )
             else:
-                st.markdown("**Kurumsal giriş (SSO / OIDC)**")
-                if st.button("SSO ile giriş yap", type="primary", key="oidc_login_btn"):
+                st.markdown("**Kurumsal giriş (SSO / OIDC)**" if get_language() == "tr" else "**Enterprise login (SSO / OIDC)**")
+                if st.button(t("sso_login"), type="primary", key="oidc_login_btn"):
                     try:
                         disc = fetch_discovery(cfg.issuer)
                         state = secrets.token_urlsafe(24)
@@ -213,16 +221,16 @@ if auth_enabled():
 
         if not OIDC_ONLY:
             with st.form("login_form"):
-                lu = st.text_input("Kullanıcı adı")
-                lp = st.text_input("Parola", type="password")
-                submitted = st.form_submit_button("Giriş yap")
+                lu = st.text_input(t("username"))
+                lp = st.text_input(t("password"), type="password")
+                submitted = st.form_submit_button(t("login_btn"))
             if submitted:
                 user = authenticate(lu, lp)
                 if user is None:
                     write_audit(
                         "login_fail", username=lu, details={"reason": "invalid_credentials"}
                     )
-                    st.error("Geçersiz kullanıcı adı veya parola.")
+                    st.error(t("invalid_credentials"))
                 else:
                     write_audit(
                         "login_success",
@@ -289,26 +297,57 @@ def get_cached_reranker(enabled: bool, model_name: str):
 
 
 @st.cache_resource(show_spinner=False)
-def load_or_create_index(dim: int, embedding_model: str, index_path: str, docstore_path: str, workspace_key: str):
-    # workspace_key cache ayrımı için (shared vs user:alice)
-    _ = workspace_key
-    if os.path.exists(index_path) and os.path.exists(docstore_path):
-        try:
-            loaded = FaissIndex.load(index_path, docstore_path)
+def load_or_create_index(
+    dim: int,
+    embedding_model: str,
+    index_path: str,
+    docstore_path: str,
+    workspace_key: str,
+    backend: str,
+):
+    # workspace_key + backend cache ayrımı için
+    _ = (workspace_key, backend)
+    try:
+        if os.path.exists(docstore_path) or (
+            backend == "faiss" and os.path.exists(index_path) and os.path.exists(docstore_path)
+        ):
+            loaded = load_index(
+                index_path,
+                docstore_path,
+                backend=backend,
+                dim=dim,
+                embedding_model=embedding_model,
+            )
             if loaded.dim == dim and (
                 not loaded.embedding_model or loaded.embedding_model == embedding_model
             ):
                 if not loaded.embedding_model:
                     loaded.embedding_model = embedding_model
-                return loaded
-        except Exception:
-            pass
-    return FaissIndex(dim=dim, embedding_model=embedding_model)
+                if loaded.size > 0 or os.path.exists(docstore_path):
+                    return loaded
+    except Exception:
+        pass
+    return create_index(dim=dim, embedding_model=embedding_model, backend=backend)
 
 
 # Sidebar
 with st.sidebar:
-    st.header("Ayarlar")
+    st.header(t("settings"))
+    lang_choice = st.selectbox(
+        t("language"),
+        options=list(SUPPORTED_LANGS),
+        index=list(SUPPORTED_LANGS).index(get_language())
+        if get_language() in SUPPORTED_LANGS
+        else 0,
+        format_func=lambda c: "Türkçe" if c == "tr" else "English",
+        key="ui_lang_select",
+    )
+    if lang_choice != st.session_state.get("ui_lang"):
+        st.session_state["ui_lang"] = lang_choice
+        set_language(lang_choice)
+        st.rerun()
+    set_language(st.session_state["ui_lang"])
+    st.caption(f"{t('vector_backend')}: `{vector_backend()}`")
     if ENABLE_PROMETHEUS:
         st.caption(f"Prometheus scrape: `:{PROMETHEUS_PORT}/metrics`")
     provider_options = ["ollama", "openai"]
@@ -347,7 +386,7 @@ with st.sidebar:
     st.caption(embedding_model)
 
     top_k = st.slider("Top‑K", min_value=3, max_value=10, value=DEFAULT_TOP_K)
-    use_hybrid = st.checkbox("Hybrid arama (BM25 + vektör)", value=True)
+    use_hybrid = st.checkbox(t("hybrid_search"), value=True)
     hybrid_alpha = st.slider(
         "Hybrid α (vektör ağırlığı)",
         min_value=0.0,
@@ -356,18 +395,18 @@ with st.sidebar:
         step=0.05,
         disabled=not use_hybrid,
     )
-    use_reranker = st.checkbox("Reranker (cross-encoder)", value=ENABLE_RERANKER)
+    use_reranker = st.checkbox(t("reranker"), value=ENABLE_RERANKER)
     if use_reranker:
         st.caption(f"Model: {DEFAULT_RERANKER_MODEL}")
-    use_stream = st.checkbox("Yanıtı stream et", value=True)
+    use_stream = st.checkbox(t("stream_answer"), value=True)
     rebuild = False
     if can_ingest:
-        rebuild = st.button("İndeksi Yeniden Oluştur")
+        rebuild = st.button(t("rebuild_index"))
     else:
         st.caption("İndeks yönetimi için admin yetkisi gerekir.")
 
     if current_user:
-        st.header("Hesap")
+        st.header(t("account"))
         st.write(f"Kullanıcı: **{current_user.username}** (`{current_user.role}`)")
         if ENABLE_TENANTS:
             st.caption(f"Tenant: `{current_user.tenant_id}`")
@@ -375,7 +414,7 @@ with st.sidebar:
             st.caption("İndeks paylaşımlı (aynı tenant içindeki kullanıcılar).")
         else:
             st.caption(f"Kişisel indeks: `{ws.data_dir}`")
-        if st.button("Çıkış yap"):
+        if st.button(t("logout")):
             write_audit(
                 "logout",
                 username=current_user.username,
@@ -388,7 +427,7 @@ with st.sidebar:
             st.rerun()
 
         if current_user.role == "admin":
-            st.header("Admin")
+            st.header(t("admin"))
             users = list_users_detail()
             st.caption(f"{len(users)} kullanıcı")
             for u in users:
@@ -547,7 +586,7 @@ with st.sidebar:
                                 f"{row.get('username') or '-'} · {vals}"
                             )
 
-    st.header("Sohbetler")
+    st.header(t("chats"))
     sessions = list_sessions(chat_dir=active_chat_dir)
     session_ids = [s["id"] for s in sessions]
     labels = {
@@ -587,11 +626,11 @@ with st.sidebar:
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        new_chat = st.button("Yeni", use_container_width=True)
+        new_chat = st.button(t("new_chat"), use_container_width=True)
     with c2:
-        clear_chat = st.button("Temizle", use_container_width=True)
+        clear_chat = st.button(t("clear_chat"), use_container_width=True)
     with c3:
-        delete_chat = st.button("Sil", use_container_width=True)
+        delete_chat = st.button(t("delete"), use_container_width=True)
 
     # Dışa aktarma mevcut oturum üzerinden (session yüklendikten sonra da çalışır)
 
@@ -604,6 +643,7 @@ if "index" not in st.session_state:
         index_path=active_index_path,
         docstore_path=active_docstore_path,
         workspace_key=ws.key,
+        backend=vector_backend(),
     )
 
 if "chat_session" not in st.session_state:
@@ -614,7 +654,7 @@ if "chat_session" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state["messages"] = list(st.session_state["chat_session"].get("messages") or [])
 
-index: FaissIndex = st.session_state["index"]
+index = st.session_state["index"]
 if index.embedding_model and index.embedding_model != embedding_model and index.size > 0:
     st.warning(
         "Seçili embedding modeli mevcut indeksten farklı. "
@@ -643,7 +683,7 @@ if delete_chat:
     st.rerun()
 
 # Dosya yönetimi
-st.subheader("Dokümanlar")
+st.subheader(t("documents"))
 if auth_enabled():
     if ws.shared:
         st.caption("Paylaşımlı indeks: yüklenen dokümanlar tüm kullanıcıların sorgularına dahil olur.")
@@ -669,7 +709,7 @@ if can_ingest:
     )
     upload_tags = st.text_input("Etiketler (virgülle)", value="", placeholder="ör. sözleşme, 2024")
     uploaded_files = st.file_uploader(
-        "PDF veya TXT dosyaları yükleyin",
+        t("upload_files"),
         type=["pdf", "txt"],
         accept_multiple_files=True,
     )
@@ -898,7 +938,7 @@ if "bm25" not in st.session_state or st.session_state.get("bm25_index_id") != id
 
 index_empty = index.size == 0
 if index_empty:
-    st.info("İndeks boş. Soru sorabilmek için önce dosya yükleyin veya indeksi yeniden oluşturun.")
+    st.info(t("index_empty"))
 elif index.list_sources():
     st.caption(f"İndeksteki kaynaklar: {', '.join(index.list_sources())} ({index.size} chunk)")
 
@@ -962,7 +1002,7 @@ export_session["messages"] = list(st.session_state.get("messages") or [])
 ex1, ex2 = st.columns(2)
 with ex1:
     st.download_button(
-        "Sohbeti JSON indir",
+        t("export_json"),
         data=export_session_json(export_session),
         file_name=f"sohbet-{export_session.get('id') or 'oturum'}.json",
         mime="application/json",
@@ -970,7 +1010,7 @@ with ex1:
     )
 with ex2:
     st.download_button(
-        "Sohbeti Markdown indir",
+        t("export_md"),
         data=export_session_markdown(export_session),
         file_name=f"sohbet-{export_session.get('id') or 'oturum'}.md",
         mime="text/markdown",
@@ -981,13 +1021,13 @@ for m in st.session_state["messages"]:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
         if m.get("sources"):
-            with st.expander("Kaynaklar"):
+            with st.expander(t("sources")):
                 for src in m["sources"]:
                     st.markdown(
                         f"- [{src['label']}](#{src['anchor']}) — skor {src['score']:.3f}"
                     )
 
-user_input = st.chat_input("Sorunuzu yazın...", disabled=index_empty)
+user_input = st.chat_input(t("ask_placeholder"), disabled=index_empty)
 
 if user_input:
     t_start = time.perf_counter()
@@ -1037,7 +1077,7 @@ if user_input:
 
     with st.chat_message("assistant"):
         if no_answer:
-            answer = "Bu bilgi dokümanda bulunmamaktadır"
+            answer = t("no_answer")
             st.markdown(answer)
         else:
             prompt = build_prompt(user_input, retrieved)
@@ -1059,7 +1099,7 @@ if user_input:
                 st.error(answer)
 
             if source_payload:
-                with st.expander("Alınan kaynaklar / chunk’lar", expanded=True):
+                with st.expander(t("retrieved_sources"), expanded=True):
                     mode = "hybrid" if use_hybrid else "dense"
                     if use_reranker:
                         mode += "+rerank"

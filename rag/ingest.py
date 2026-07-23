@@ -14,6 +14,7 @@ from app.config import (
 from rag.chunking import chunk_pages
 from rag.embed import Embedder
 from rag.index import FaissIndex
+from rag.store import create_index
 from rag.meta_store import (
     delete_source_meta,
     get_source_meta,
@@ -197,7 +198,7 @@ def rebuild_from_data_dir(
     skip_user_namespaces: bool = True,
 ) -> Tuple[FaissIndex, List[Dict]]:
     """data/ altındaki desteklenen dosyalardan indeksi sıfırdan kurar."""
-    index = FaissIndex(dim=embedder.dim, embedding_model=embedder.model_name)
+    index = create_index(dim=embedder.dim, embedding_model=embedder.model_name)
     reports: List[Dict] = []
     for path in list_data_files(data_dir, skip_user_namespaces=skip_user_namespaces):
         try:

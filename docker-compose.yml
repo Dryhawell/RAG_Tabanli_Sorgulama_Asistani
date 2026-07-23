@@ -11,5 +11,21 @@ services:
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - RAG_EMBEDDING_MODEL=${RAG_EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+      - RAG_VECTOR_BACKEND=${RAG_VECTOR_BACKEND:-faiss}
+      - RAG_QDRANT_URL=${RAG_QDRANT_URL:-}
+      - RAG_UI_LANG=${RAG_UI_LANG:-tr}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.2
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    profiles:
+      - qdrant
+
+volumes:
+  qdrant_data:

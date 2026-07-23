@@ -32,11 +32,11 @@ from app.config import (
 from rag.embed import Embedder, resolve_embedding_model
 from rag.eval import run_regression
 from rag.hash_embed import HashEmbedder
-from rag.index import FaissIndex
 from rag.ingest import ingest_path, list_data_files, rebuild_from_data_dir
 from rag.judge import run_judge_file
 from rag.metrics import summarize_metrics
 from rag.prometheus_sink import ensure_prometheus_server, prometheus_available, render_prometheus
+from rag.store import create_index, load_index
 
 DEFAULT_EVAL_FIXTURES = os.path.join("evals", "fixtures")
 DEFAULT_EVAL_CASES = os.path.join("evals", "cases.json")
@@ -48,19 +48,23 @@ def _ensure_dirs():
         os.makedirs(d, exist_ok=True)
 
 
-def _load_index(dim: int, embedding_model: str) -> FaissIndex:
-    if os.path.exists(INDEX_PATH) and os.path.exists(DOCSTORE_PATH):
-        try:
-            idx = FaissIndex.load(INDEX_PATH, DOCSTORE_PATH)
-            if idx.dim == dim and (
-                not idx.embedding_model or idx.embedding_model == embedding_model
-            ):
-                if not idx.embedding_model:
-                    idx.embedding_model = embedding_model
-                return idx
-        except Exception as exc:
-            print(f"Mevcut indeks yüklenemedi, yeni oluşturulacak: {exc}", file=sys.stderr)
-    return FaissIndex(dim=dim, embedding_model=embedding_model)
+def _load_index(dim: int, embedding_model: str):
+    try:
+        idx = load_index(
+            INDEX_PATH,
+            DOCSTORE_PATH,
+            dim=dim,
+            embedding_model=embedding_model,
+        )
+        if idx.dim == dim and (
+            not idx.embedding_model or idx.embedding_model == embedding_model
+        ):
+            if not idx.embedding_model:
+                idx.embedding_model = embedding_model
+            return idx
+    except Exception as exc:
+        print(f"Mevcut indeks yüklenemedi, yeni oluşturulacak: {exc}", file=sys.stderr)
+    return create_index(dim=dim, embedding_model=embedding_model)
 
 
 def cmd_list(_: argparse.Namespace) -> int:

@@ -57,6 +57,16 @@ ENABLE_PROMETHEUS = os.getenv("RAG_ENABLE_PROMETHEUS", "0") not in {"0", "false"
 PROMETHEUS_PORT = int(os.getenv("RAG_PROMETHEUS_PORT", "9108"))
 PROMETHEUS_ADDR = os.getenv("RAG_PROMETHEUS_ADDR", "0.0.0.0")
 
+# Vektör deposu: faiss (varsayılan) | qdrant
+VECTOR_BACKEND = os.getenv("RAG_VECTOR_BACKEND", "faiss").strip().lower()
+QDRANT_URL = os.getenv("RAG_QDRANT_URL", "")  # örn. http://localhost:6333
+QDRANT_PATH = os.getenv("RAG_QDRANT_PATH", os.path.join(INDEXES_DIR, "qdrant_local"))
+QDRANT_API_KEY = os.getenv("RAG_QDRANT_API_KEY", "")
+QDRANT_COLLECTION = os.getenv("RAG_QDRANT_COLLECTION", "rag_chunks")
+
+# UI dili: tr | en
+DEFAULT_UI_LANG = os.getenv("RAG_UI_LANG", "tr").strip().lower()
+
 # Embedding
 DEFAULT_EMBEDDING_MODEL = os.getenv(
     "RAG_EMBEDDING_MODEL",

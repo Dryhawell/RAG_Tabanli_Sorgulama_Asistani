@@ -82,6 +82,7 @@ docker compose up --build
 - Kalıcı sohbet oturumları (yeni / temizle / sil / seç)
 - Opsiyonel çok kullanıcılı giriş (paylaşımlı/kişisel indeks, kullanıcıya özel sohbet)
 - Opsiyonel SSO / OIDC (Authorization Code + PKCE)
+- Sidebar dil seçimi (TR / EN)
 - Admin paneli: kullanıcı listele / ekle / sil / ACL (klasör-etiket) / audit log / metrik dashboard
 - Sohbet dışa aktarma (JSON / Markdown)
 - Eval paneli: `soru | beklenen_kaynak | expect_no_answer(0/1)`
@@ -149,6 +150,25 @@ python -m rag.cli prometheus --dump
 ```
 Grafana'da Prometheus datasource ekleyip `rag_queries_total`, `rag_query_latency_seconds` panelleri kurulabilir.
 
+### Qdrant (uzak / dağıtık vektör DB)
+```bash
+# Yerel gömülü (sunucusuz):
+export RAG_VECTOR_BACKEND=qdrant
+export RAG_QDRANT_PATH=indexes/qdrant_local
+# veya uzak:
+# export RAG_QDRANT_URL=http://localhost:6333
+# export RAG_QDRANT_COLLECTION=rag_chunks
+streamlit run app/ui.py
+
+# Docker ile Qdrant:
+docker compose --profile qdrant up -d qdrant
+export RAG_VECTOR_BACKEND=qdrant RAG_QDRANT_URL=http://localhost:6333
+```
+FAISS varsayılandır. Qdrant açıkken hybrid BM25 hâlâ yerel docstore üzerinden çalışır.
+
+### UI dili
+Sidebar'dan **Dil / Language** seçin (`tr` / `en`) veya `RAG_UI_LANG=en`.
+
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
 |----------|----------|
@@ -186,13 +206,20 @@ Grafana'da Prometheus datasource ekleyip `rag_queries_total`, `rag_query_latency
 | `RAG_ENABLE_PROMETHEUS` | Prometheus sink (1/0) |
 | `RAG_PROMETHEUS_PORT` | /metrics portu (varsayılan 9108) |
 | `RAG_PROMETHEUS_ADDR` | Bind adresi (varsayılan 0.0.0.0) |
+| `RAG_VECTOR_BACKEND` | `faiss` (varsayılan) veya `qdrant` |
+| `RAG_QDRANT_URL` | Uzak Qdrant HTTP URL |
+| `RAG_QDRANT_PATH` | Yerel gömülü Qdrant dizini |
+| `RAG_QDRANT_COLLECTION` | Collection adı |
+| `RAG_QDRANT_API_KEY` | Opsiyonel API anahtarı |
+| `RAG_UI_LANG` | UI dili (`tr` / `en`) |
 | `OLLAMA_HOST` | Ollama adresi |
 | `OPENAI_API_KEY` | OpenAI anahtarı |
 
 ## Dosya Yapısı
 - `app/ui.py`: Streamlit arayüzü
 - `app/config.py`: merkezi ayarlar
-- `rag/readers.py`, `rag/pdf_layout.py`, `chunking.py`, `embed.py`, `index.py`
+- `rag/index.py`, `rag/qdrant_index.py`, `rag/store.py`: FAISS / Qdrant vektör deposu
+- `rag/i18n.py`: UI lokalizasyon (TR/EN)
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -221,5 +248,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Dağıtık indeks / uzak vektör DB (ör. Qdrant)
-- Çok dilli UI ve lokalizasyon
+- Gelişmiş sorgu yeniden yazma / HyDE
+- Çoklu doküman karşılaştırma ve özetleme paneli

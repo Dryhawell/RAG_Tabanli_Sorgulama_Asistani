@@ -12,3 +12,4 @@ requests
 pytest
 PyJWT[crypto]
 prometheus-client
+qdrant-client
