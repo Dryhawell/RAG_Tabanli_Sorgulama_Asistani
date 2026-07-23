@@ -87,6 +87,7 @@ docker compose up --build
 - Doküman karşılaştırma ve özet paneli
 - Agentic araçlar: hesap makinesi, takvim, web arama
 - Yanıtta kaynak chunk vurgulama (HTML `<mark>`)
+- Multimodal: görüntü OCR + tablo sorusu boost; agent bellek/planlama
 - Admin paneli: kullanıcı listele / ekle / sil / ACL (klasör-etiket) / audit log / metrik dashboard
 - Sohbet dışa aktarma (JSON / Markdown)
 - Eval paneli: `soru | beklenen_kaynak | expect_no_answer(0/1)`
@@ -193,6 +194,18 @@ streamlit run app/ui.py
 - Sidebar’dan araçları açın: hesap makinesi, takvim, DuckDuckGo web arama
 - Yanıt sonrası sarı vurgular kaynak chunk örtüşmelerini gösterir; tıklayınca ilgili kaynağa gider
 
+### Multimodal + bellek/plan
+```bash
+export RAG_ENABLE_IMAGE_OCR=1
+export RAG_ENABLE_TABLE_BOOST=1
+export RAG_ENABLE_AGENT_MEMORY=1
+export RAG_ENABLE_AGENT_PLANNER=1
+```
+- PNG/JPG indekslenebilir (OCR → metin chunk)
+- Sohbette görüntü yükleyip soru sorabilirsiniz
+- Tablo sorularında `[Tablo]` chunk’ları öne alınır
+- Agent belleği oturumda saklanır; planlı agent adım adım TOOL_CALL üretir
+
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
 |----------|----------|
@@ -242,6 +255,10 @@ streamlit run app/ui.py
 | `RAG_AGENT_MAX_STEPS` | Agent TOOL_CALL döngü üst sınırı |
 | `RAG_ENABLE_SOURCE_HIGHLIGHT` | Yanıtta kaynak vurgulama (1/0) |
 | `RAG_HIGHLIGHT_MIN_TOKENS` | Vurgu için min ortak token |
+| `RAG_ENABLE_IMAGE_OCR` | Görüntü OCR (1/0) |
+| `RAG_ENABLE_TABLE_BOOST` | Tablo sorularında chunk önceliği (1/0) |
+| `RAG_ENABLE_AGENT_MEMORY` | Oturum agent belleği (1/0) |
+| `RAG_ENABLE_AGENT_PLANNER` | Çok adımlı planlı agent (1/0) |
 | `OLLAMA_HOST` | Ollama adresi |
 | `OPENAI_API_KEY` | OpenAI anahtarı |
 
@@ -252,6 +269,7 @@ streamlit run app/ui.py
 - `rag/i18n.py`: UI lokalizasyon (TR/EN)
 - `rag/query_rewrite.py`, `rag/compare.py`: HyDE/expand ve çoklu doküman özet/karşılaştırma
 - `rag/tools.py`, `rag/agent.py`, `rag/highlight.py`: araçlar, agent döngüsü, kaynak vurgulama
+- `rag/vision.py`, `rag/memory.py`, `rag/planner.py`: multimodal, bellek, planlama
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -280,5 +298,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Çoklu modal (görüntü / tablo soruları)
-- Daha zengin agent bellek ve planlama
+- Gerçek vision-LLM (LLaVA / GPT-4o) ile görüntü anlama
+- Uzun vadeli vektör bellek (kullanıcı profili)

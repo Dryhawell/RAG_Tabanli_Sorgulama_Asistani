@@ -110,7 +110,11 @@ ENABLE_LAYOUT_PDF = os.getenv("RAG_ENABLE_LAYOUT_PDF", "1") not in {"0", "false"
 LAYOUT_TABLE_MIN_ROWS = int(os.getenv("RAG_LAYOUT_TABLE_MIN_ROWS", "2"))
 
 # Desteklenen dosya uzantıları
-SUPPORTED_EXTENSIONS = {".pdf", ".txt"}
+SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}
+
+# Multimodal
+ENABLE_IMAGE_OCR = os.getenv("RAG_ENABLE_IMAGE_OCR", "1") not in {"0", "false", "False"}
+ENABLE_TABLE_BOOST = os.getenv("RAG_ENABLE_TABLE_BOOST", "1") not in {"0", "false", "False"}
 
 # Sorgu yeniden yazma / HyDE
 ENABLE_QUERY_REWRITE = os.getenv("RAG_ENABLE_QUERY_REWRITE", "0") not in {
@@ -134,4 +138,16 @@ ENABLE_SOURCE_HIGHLIGHT = os.getenv("RAG_ENABLE_SOURCE_HIGHLIGHT", "1") not in {
     "False",
 }
 HIGHLIGHT_MIN_TOKENS = int(os.getenv("RAG_HIGHLIGHT_MIN_TOKENS", "4"))
+
+# Agent bellek / planlama
+ENABLE_AGENT_MEMORY = os.getenv("RAG_ENABLE_AGENT_MEMORY", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+ENABLE_AGENT_PLANNER = os.getenv("RAG_ENABLE_AGENT_PLANNER", "0") not in {
+    "0",
+    "false",
+    "False",
+}
 

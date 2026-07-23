@@ -24,6 +24,18 @@ from rag.query_rewrite import embed_rewrite, rewrite_query
 from rag.compare import compare_sources, summarize_sources
 from rag.agent import run_agent_loop, run_heuristic_tools, tools_context_block
 from rag.highlight import highlight_answer_html
+from rag.memory import (
+    load_memory_from_session,
+    save_memory_to_session,
+    update_memory_after_turn,
+)
+from rag.planner import run_planned_agent
+from rag.vision import (
+    image_query_context,
+    is_table_question,
+    merge_image_into_question,
+    prioritize_table_chunks,
+)
 from rag.rerank import get_reranker
 from rag.retrieve import retrieve
 from rag.readers import _ocr_available
@@ -98,6 +110,10 @@ from app.config import (
     AGENT_MAX_STEPS,
     ENABLE_SOURCE_HIGHLIGHT,
     HIGHLIGHT_MIN_TOKENS,
+    ENABLE_AGENT_MEMORY,
+    ENABLE_AGENT_PLANNER,
+    ENABLE_TABLE_BOOST,
+    ENABLE_IMAGE_OCR,
 )
 
 st.set_page_config(page_title="RAG Not/PDF Asistanı", layout="wide")
@@ -426,6 +442,8 @@ with st.sidebar:
     )
     use_agent_tools = st.checkbox(t("agent_tools"), value=ENABLE_AGENT_TOOLS)
     use_source_highlight = st.checkbox(t("source_highlight"), value=ENABLE_SOURCE_HIGHLIGHT)
+    use_agent_memory = st.checkbox(t("agent_memory"), value=ENABLE_AGENT_MEMORY)
+    use_agent_planner = st.checkbox(t("agent_planner"), value=ENABLE_AGENT_PLANNER)
     rebuild = False
     if can_ingest:
         rebuild = st.button(t("rebuild_index"))
@@ -737,7 +755,7 @@ if can_ingest:
     upload_tags = st.text_input("Etiketler (virgülle)", value="", placeholder="ör. sözleşme, 2024")
     uploaded_files = st.file_uploader(
         t("upload_files"),
-        type=["pdf", "txt"],
+        type=["pdf", "txt", "png", "jpg", "jpeg", "webp"],
         accept_multiple_files=True,
     )
 else:
@@ -1101,33 +1119,56 @@ for m in st.session_state["messages"]:
                         f"- [{src['label']}](#{src['anchor']}) — skor {src['score']:.3f}"
                     )
 
+user_image = None
+if ENABLE_IMAGE_OCR:
+    user_image = st.file_uploader(
+        t("upload_image_q"),
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=False,
+        key="chat_image_upload",
+    )
+
 user_input = st.chat_input(t("ask_placeholder"), disabled=index_empty)
 
 if user_input:
     t_start = time.perf_counter()
+    effective_question = user_input
+    image_ctx = ""
+    if user_image is not None:
+        try:
+            image_ctx = image_query_context(user_image.getvalue(), user_image.name)
+            effective_question = merge_image_into_question(user_input, image_ctx)
+            st.caption(image_ctx[:240] + ("…" if len(image_ctx) > 240 else ""))
+        except Exception as exc:
+            st.warning(f"Görüntü OCR atlandı: {exc}")
+
     user_msg = {"role": "user", "content": user_input}
+    if image_ctx:
+        user_msg["image_ocr"] = image_ctx[:2000]
     st.session_state["messages"].append(user_msg)
     with st.chat_message("user"):
         st.markdown(user_input)
+        if user_image is not None:
+            st.image(user_image, caption=user_image.name, width=280)
 
-    rewrite = rewrite_query(user_input, mode="none")
+    rewrite = rewrite_query(effective_question, mode="none")
     if rewrite_mode not in {"none", ""}:
 
         def _rw_gen(prompt: str) -> str:
             return generate_answer(provider=provider, model_name=model_name, prompt=prompt)
 
         try:
-            rewrite = rewrite_query(user_input, mode=rewrite_mode, generate_fn=_rw_gen)
+            rewrite = rewrite_query(effective_question, mode=rewrite_mode, generate_fn=_rw_gen)
             if rewrite.hypothetical:
                 st.caption(f"HyDE: {rewrite.hypothetical[:180]}…")
             elif rewrite.expansions:
                 st.caption("Expand: " + " | ".join(rewrite.expansions[:2]))
         except Exception as exc:
             st.warning(f"Sorgu yeniden yazma atlandı: {exc}")
-            rewrite = rewrite_query(user_input, mode="none")
+            rewrite = rewrite_query(effective_question, mode="none")
 
     qvec = embed_rewrite(emb, rewrite)
-    bm25_q = rewrite.bm25_query or user_input
+    bm25_q = rewrite.bm25_query or effective_question
     reranker = get_cached_reranker(use_reranker, DEFAULT_RERANKER_MODEL)
     retrieved, gate_score = retrieve(
         index,
@@ -1146,6 +1187,8 @@ if user_input:
         acl_user=current_user,
         threshold=NO_ANSWER_THRESHOLD,
     )
+    if ENABLE_TABLE_BOOST:
+        retrieved = prioritize_table_chunks(retrieved, question=effective_question)
     t_after_retrieval = time.perf_counter()
     no_answer = not retrieved or gate_score < NO_ANSWER_THRESHOLD
 
@@ -1169,30 +1212,59 @@ if user_input:
     with st.chat_message("assistant"):
         tool_traces = []
         tools_ctx = ""
-        if use_agent_tools:
+        plan_steps = []
+        memory = load_memory_from_session(st.session_state.get("chat_session"))
+        if use_agent_memory and memory.context_block():
+            tools_ctx = (tools_ctx + "\n" + memory.context_block()).strip()
+
+        if use_agent_tools or use_agent_planner:
 
             def _agent_gen(prompt: str) -> str:
                 return generate_answer(provider=provider, model_name=model_name, prompt=prompt)
 
             try:
-                # Önce hızlı heuristic; LLM agent yalnızca ek TOOL_CALL isterse
-                heur = run_heuristic_tools(user_input)
-                tool_traces = list(heur.tool_traces)
-                if heur.tool_traces:
-                    # LLM döngüsü ile zenginleştir (opsiyonel adımlar)
-                    agent = run_agent_loop(
-                        user_input,
+                if use_agent_planner:
+                    planned = run_planned_agent(
+                        effective_question,
                         _agent_gen,
-                        max_steps=max(1, AGENT_MAX_STEPS),
-                        seed_tools=True,
+                        memory=memory if use_agent_memory else None,
+                        max_steps=max(2, AGENT_MAX_STEPS),
+                        use_llm_plan=True,
                     )
-                    tool_traces = agent.tool_traces
-                    tools_ctx = tools_context_block(tool_traces)
-                    with st.expander(t("tool_traces"), expanded=False):
-                        for tr in tool_traces:
-                            st.write(f"**{tr.get('name')}** → {tr.get('result')}")
+                    plan_steps = planned.plan
+                    tool_traces = list(planned.tool_traces)
+                    tools_ctx = (
+                        tools_context_block(tool_traces)
+                        + ("\n" + memory.context_block() if use_agent_memory else "")
+                    ).strip()
+                    if plan_steps:
+                        with st.expander(t("agent_plan"), expanded=False):
+                            for i, step in enumerate(plan_steps, 1):
+                                st.write(f"{i}. {step}")
+                    if tool_traces:
+                        with st.expander(t("tool_traces"), expanded=False):
+                            for tr in tool_traces:
+                                st.write(f"**{tr.get('name')}** → {tr.get('result')}")
+                elif use_agent_tools:
+                    heur = run_heuristic_tools(effective_question)
+                    tool_traces = list(heur.tool_traces)
+                    if heur.tool_traces:
+                        agent = run_agent_loop(
+                            effective_question,
+                            _agent_gen,
+                            max_steps=max(1, AGENT_MAX_STEPS),
+                            seed_tools=True,
+                        )
+                        tool_traces = agent.tool_traces
+                        tools_ctx = (
+                            tools_context_block(tool_traces)
+                            + ("\n" + memory.context_block() if use_agent_memory else "")
+                        ).strip()
+                        with st.expander(t("tool_traces"), expanded=False):
+                            for tr in tool_traces:
+                                st.write(f"**{tr.get('name')}** → {tr.get('result')}")
             except Exception as exc:
-                st.warning(f"Araçlar atlandı: {exc}")
+                st.warning(f"Araçlar/plan atlandı: {exc}")
 
         if no_answer:
             if tools_ctx:
@@ -1201,7 +1273,7 @@ if user_input:
                 answer = t("no_answer")
             st.markdown(answer)
         else:
-            prompt = build_prompt(user_input, retrieved, tools_context=tools_ctx)
+            prompt = build_prompt(effective_question, retrieved, tools_context=tools_ctx)
             try:
                 if use_stream:
                     answer = st.write_stream(
@@ -1241,6 +1313,8 @@ if user_input:
                         mode += "+rerank"
                     if rewrite_mode not in {"none", ""}:
                         mode += f"+{rewrite_mode}"
+                    if is_table_question(effective_question):
+                        mode += "+table"
                     st.caption(f"Retrieval modu: {mode}")
                     for src in source_payload:
                         st.markdown(
@@ -1258,9 +1332,22 @@ if user_input:
         "role": "assistant",
         "content": answer,
         "sources": source_payload,
-        "tool_traces": tool_traces if use_agent_tools else [],
+        "tool_traces": tool_traces if (use_agent_tools or use_agent_planner) else [],
+        "plan": plan_steps,
     }
     st.session_state["messages"].append(assistant_msg)
+    if use_agent_memory:
+        memory = update_memory_after_turn(
+            memory,
+            messages=st.session_state["messages"],
+            plan=plan_steps or None,
+            note=None,
+            generate_fn=None,
+            refresh_summary=False,
+        )
+        st.session_state["chat_session"] = save_memory_to_session(
+            dict(st.session_state["chat_session"]), memory
+        )
     st.session_state["chat_session"] = append_messages(
         st.session_state["chat_session"],
         [user_msg, assistant_msg],

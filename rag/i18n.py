@@ -52,6 +52,10 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "source_highlight": "Kaynak vurgulama",
         "tool_traces": "Araç izleri",
         "highlighted_answer": "Kaynak vurgulu yanıt",
+        "agent_memory": "Agent belleği",
+        "agent_planner": "Planlı agent",
+        "agent_plan": "Plan",
+        "upload_image_q": "Soru için görüntü (OCR)",
     },
     "en": {
         "app_title": "LLM-Powered PDF / Notes Query Assistant (RAG)",
@@ -98,6 +102,10 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "source_highlight": "Source highlighting",
         "tool_traces": "Tool traces",
         "highlighted_answer": "Answer with source highlights",
+        "agent_memory": "Agent memory",
+        "agent_planner": "Planned agent",
+        "agent_plan": "Plan",
+        "upload_image_q": "Image for question (OCR)",
     },
 }
 

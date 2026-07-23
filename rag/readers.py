@@ -106,6 +106,19 @@ def read_txt(path: str) -> List[str]:
     return [text]
 
 
+def read_image(path: str, enable_ocr: bool = ENABLE_OCR) -> List[str]:
+    """Görüntüyü OCR ile tek sayfa metne çevirir."""
+    if not enable_ocr:
+        return [""]
+    from rag.vision import ocr_image_file
+
+    try:
+        text = ocr_image_file(path)
+    except Exception as exc:
+        text = f"[OCR hatası: {exc}]"
+    return [text or ""]
+
+
 def read_document(
     path: str,
     enable_ocr: bool = ENABLE_OCR,
@@ -120,6 +133,8 @@ def read_document(
         pages = read_pdf(path, enable_ocr=enable_ocr, enable_layout=enable_layout)
     elif ext == ".txt":
         pages = read_txt(path)
+    elif ext in {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}:
+        pages = read_image(path, enable_ocr=enable_ocr)
     else:
         raise ValueError(f"Desteklenmeyen dosya türü: {ext}")
     return name, pages
