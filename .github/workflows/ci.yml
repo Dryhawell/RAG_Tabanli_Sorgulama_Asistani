@@ -28,6 +28,11 @@ jobs:
           pip install -r requirements.txt
       - name: Fast tests
         run: pytest -q -m "not slow"
+      - name: Embed pairs smoke
+        run: |
+          python -m rag.cli embed-pipeline --pairs-only \
+            --pairs metadata/embed_pairs.jsonl \
+            --report metadata/embed_pipeline_report.json
 
   slow-eval:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_slow_eval }}

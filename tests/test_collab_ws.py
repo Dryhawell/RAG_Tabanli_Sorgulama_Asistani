@@ -13,6 +13,7 @@ from rag.collab_ws import _serve, websockets_available
 @pytest.mark.skipif(not websockets_available(), reason="websockets yok")
 def test_collab_ws_join_and_edit(tmp_path, monkeypatch):
     monkeypatch.setattr("rag.collab_notes.METADATA_DIR", str(tmp_path))
+    monkeypatch.setattr("rag.collab_crdt.METADATA_DIR", str(tmp_path))
     port = 18766
     workspace = "ws-test-room"
 

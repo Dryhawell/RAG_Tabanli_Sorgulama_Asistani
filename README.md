@@ -266,9 +266,21 @@ python -m rag.cli collab-serve --port 8765
 python -m rag.cli embed-pairs --output metadata/embed_pairs.jsonl
 python -m rag.cli embed-train --embedding mini-multi --pairs metadata/embed_pairs.jsonl --epochs 2
 python -m rag.cli embed-eval --embedding mini-multi --finetuned models/embed-finetuned
+# Tam döngü (pairs + train + eval):
+python -m rag.cli embed-pipeline --embedding mini-en --output models/ci-embed-finetuned
 export RAG_DOMAIN_EMBEDDING_MODEL=models/embed-finetuned
 export RAG_ENABLE_DOMAIN_EMBEDDING=1
 ```
+- GitHub Actions: `embed-finetune.yml` (haftalık schedule + workflow_dispatch)
+- CI fast job: `embed-pipeline --pairs-only` smoke
+
+### CRDT işbirlikçi not
+```bash
+export RAG_ENABLE_COLLAB_CRDT=1
+export RAG_ENABLE_COLLAB_WS=1
+```
+- RGA-tarzı CRDT: eşzamanlı düzenlemeler otomatik birleşir (`rag/collab_crdt.py`)
+- WebSocket: `edit` veya `crdt_ops` mesajları
 
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
@@ -336,7 +348,8 @@ export RAG_ENABLE_DOMAIN_EMBEDDING=1
 | `RAG_ENABLE_COLLAB_WS` | İşbirlikçi WebSocket sunucusu (1/0) |
 | `RAG_COLLAB_WS_PORT` | WebSocket portu (varsayılan 8765) |
 | `RAG_COLLAB_WS_PUBLIC_HOST` | UI’da gösterilen WS host |
-| `RAG_EMBED_FINETUNE_OUTPUT_DIR` | Fine-tuned model çıktı dizini |
+| `RAG_ENABLE_COLLAB_CRDT` | CRDT birleştirme (1/0, varsayılan açık) |
+| `RAG_EMBED_PIPELINE_REPORT_PATH` | Pipeline JSON rapor yolu |
 | `RAG_DOMAIN_EMBEDDING_MODEL` | Domain/fine-tuned embedding model yolu veya Hub adı |
 | `RAG_ENABLE_DOMAIN_EMBEDDING` | Domain embedding varsayılan preset (1/0) |
 | `OLLAMA_HOST` | Ollama adresi |
@@ -350,7 +363,7 @@ export RAG_ENABLE_DOMAIN_EMBEDDING=1
 - `rag/query_rewrite.py`, `rag/compare.py`: HyDE/expand ve çoklu doküman özet/karşılaştırma
 - `rag/tools.py`, `rag/agent.py`, `rag/highlight.py`: araçlar, agent döngüsü, kaynak vurgulama
 - `rag/vision.py`, `rag/vision_llm.py`, `rag/memory.py`, `rag/planner.py`, `rag/profile_memory.py`
-- `rag/share_links.py`, `rag/collab_notes.py`, `rag/collab_ws.py`
+- `rag/share_links.py`, `rag/collab_notes.py`, `rag/collab_ws.py`, `rag/collab_crdt.py`
 - `rag/embed_finetune.py`
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
@@ -380,5 +393,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- CRDT tabanlı çoklu düzenleyici (tam çakışma birleştirme)
-- Otomatik embedding eğitim döngüsü (CI’da periyodik fine-tune)
+- Tam CRDT istemci bileşeni (Streamlit custom component)
+- Otomatik domain veri toplama → sürekli embedding iyileştirme

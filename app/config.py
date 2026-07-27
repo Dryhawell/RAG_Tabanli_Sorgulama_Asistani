@@ -186,9 +186,18 @@ ENABLE_COLLAB_WS = os.getenv("RAG_ENABLE_COLLAB_WS", "0") not in {
 COLLAB_WS_HOST = os.getenv("RAG_COLLAB_WS_HOST", "0.0.0.0")
 COLLAB_WS_PORT = int(os.getenv("RAG_COLLAB_WS_PORT", "8765"))
 COLLAB_WS_PUBLIC_HOST = os.getenv("RAG_COLLAB_WS_PUBLIC_HOST", "localhost")
+ENABLE_COLLAB_CRDT = os.getenv("RAG_ENABLE_COLLAB_CRDT", "1") not in {
+    "0",
+    "false",
+    "False",
+}
 EMBED_FINETUNE_OUTPUT_DIR = os.getenv(
     "RAG_EMBED_FINETUNE_OUTPUT_DIR",
     os.path.join("models", "embed-finetuned"),
+)
+EMBED_PIPELINE_REPORT_PATH = os.getenv(
+    "RAG_EMBED_PIPELINE_REPORT_PATH",
+    os.path.join(METADATA_DIR, "embed_pipeline_report.json"),
 )
 
 # Domain / fine-tuned embedding (yerel veya Hub model yolu)

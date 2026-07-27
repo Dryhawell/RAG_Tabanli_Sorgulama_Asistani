@@ -29,6 +29,7 @@ from app.config import (
     PROMETHEUS_ADDR,
     PROMETHEUS_PORT,
     EMBED_FINETUNE_OUTPUT_DIR,
+    EMBED_PIPELINE_REPORT_PATH,
     COLLAB_WS_HOST,
     COLLAB_WS_PORT,
 )
@@ -44,6 +45,7 @@ from rag.embed_finetune import (
     compare_embedding_models,
     export_pairs_jsonl,
     load_pairs_jsonl,
+    run_embed_pipeline,
     train_embedding_model,
 )
 from rag.collab_ws import ensure_collab_ws_server, run_collab_ws_server, websockets_available
@@ -334,6 +336,50 @@ def cmd_embed_eval(args: argparse.Namespace) -> int:
     return 0 if report.get("improved") else 1
 
 
+def cmd_embed_pipeline(args: argparse.Namespace) -> int:
+    fixture_dir = args.fixtures
+    cases_path = args.cases
+    if not os.path.isdir(fixture_dir):
+        print(f"Fixture klasörü yok: {fixture_dir}", file=sys.stderr)
+        return 2
+    if not os.path.isfile(cases_path):
+        print(f"Cases dosyası yok: {cases_path}", file=sys.stderr)
+        return 2
+    pairs_path = args.pairs or DEFAULT_EMBED_PAIRS
+    out_dir = args.output or EMBED_FINETUNE_OUTPUT_DIR
+    report_path = args.report or EMBED_PIPELINE_REPORT_PATH
+    try:
+        report = run_embed_pipeline(
+            fixture_dir=fixture_dir,
+            cases_path=cases_path,
+            pairs_path=pairs_path,
+            output_dir=out_dir,
+            report_path=report_path,
+            embedding=args.embedding,
+            finetuned_dir=args.finetuned_dir,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            top_k=args.top_k,
+            threshold=args.threshold,
+            use_hybrid=not args.no_hybrid,
+            min_accuracy=args.min_accuracy,
+            train=not args.pairs_only,
+            hard_negatives=args.hard_negatives,
+        )
+    except Exception as exc:
+        print(f"Pipeline hatası: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"Pipeline: pairs={report['pairs_count']} train={not args.pairs_only} "
+        f"ok={report.get('ok')}"
+    )
+    if report.get("compare"):
+        c = report["compare"]
+        print(f"Delta accuracy: {c.get('delta_accuracy', 0):+.2%}")
+    print(f"Rapor: {report_path}")
+    return 0 if report.get("ok") else 1
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     """JSONL metrik özetini yazdırır."""
     path = args.path or METRICS_PATH
@@ -508,6 +554,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_emeval.add_argument("--no-hybrid", action="store_true")
     p_emeval.add_argument("--output", default=None, help="JSON rapor")
     p_emeval.set_defaults(func=cmd_embed_eval)
+
+    p_pipe = sub.add_parser("embed-pipeline", help="Pairs + train + eval tam döngü")
+    _add_embedding_arg(p_pipe)
+    p_pipe.add_argument("--fixtures", default=DEFAULT_EVAL_FIXTURES)
+    p_pipe.add_argument("--cases", default=DEFAULT_EVAL_CASES)
+    p_pipe.add_argument("--pairs", default=None, help="JSONL çift çıktısı")
+    p_pipe.add_argument("--output", default=None, help="Model çıktı dizini")
+    p_pipe.add_argument("--finetuned-dir", default=None, help="Eğitilmiş model dizini (override)")
+    p_pipe.add_argument("--report", default=None, help="JSON pipeline raporu")
+    p_pipe.add_argument("--epochs", type=int, default=1)
+    p_pipe.add_argument("--batch-size", type=int, default=8)
+    p_pipe.add_argument("--top-k", type=int, default=4)
+    p_pipe.add_argument("--threshold", type=float, default=0.30)
+    p_pipe.add_argument("--min-accuracy", type=float, default=0.0)
+    p_pipe.add_argument("--no-hybrid", action="store_true")
+    p_pipe.add_argument(
+        "--pairs-only",
+        action="store_true",
+        help="Yalnızca çift üret (eğitim/eval atla)",
+    )
+    p_pipe.add_argument("--hard-negatives", action="store_true")
+    p_pipe.set_defaults(func=cmd_embed_pipeline)
     return p
 
 

@@ -179,6 +179,77 @@ def compare_embedding_models(
     }
 
 
+def run_embed_pipeline(
+    *,
+    fixture_dir: str,
+    cases_path: str,
+    pairs_path: str,
+    output_dir: str,
+    report_path: Optional[str] = None,
+    embedding: str = "mini-en",
+    finetuned_dir: Optional[str] = None,
+    epochs: int = 1,
+    batch_size: int = 8,
+    top_k: int = 4,
+    threshold: float = 0.30,
+    use_hybrid: bool = True,
+    min_accuracy: float = 0.0,
+    train: bool = True,
+    hard_negatives: bool = False,
+) -> Dict[str, Any]:
+    """Pairs → train → eval tek adımda; CI ve periyodik döngü için."""
+    from datetime import datetime, timezone
+
+    pairs = build_pairs_from_eval(
+        cases_path,
+        fixture_dir,
+        include_hard_negatives=hard_negatives,
+    )
+    if not pairs:
+        raise ValueError("Eğitim çifti üretilemedi")
+
+    export_pairs_jsonl(pairs, pairs_path)
+    out_dir = finetuned_dir or output_dir
+    compare: Optional[Dict[str, Any]] = None
+    trained_path: Optional[str] = None
+
+    if train:
+        trained_path = train_embedding_model(
+            embedding,
+            pairs_path,
+            out_dir,
+            epochs=epochs,
+            batch_size=batch_size,
+        )
+        compare = compare_embedding_models(
+            embedding,
+            trained_path,
+            fixture_dir,
+            cases_path,
+            top_k=top_k,
+            threshold=threshold,
+            use_hybrid=use_hybrid,
+            min_accuracy=min_accuracy,
+        )
+
+    report: Dict[str, Any] = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "pairs_path": pairs_path,
+        "pairs_count": len(pairs),
+        "embedding": embedding,
+        "output_dir": out_dir,
+        "trained_path": trained_path,
+        "epochs": epochs if train else 0,
+        "compare": compare,
+        "ok": True if not train else bool(compare and compare.get("improved")),
+    }
+    if report_path:
+        os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+    return report
+
+
 def pipeline_report_dict(
     pairs: Sequence[Dict[str, Any]],
     compare: Optional[Dict[str, Any]] = None,

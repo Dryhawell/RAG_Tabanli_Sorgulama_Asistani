@@ -88,6 +88,7 @@ from rag.share_links import (
     revoke_share_link,
 )
 from rag.collab_notes import load_note, save_note
+from rag.collab_crdt import apply_text_edit, load_crdt
 from rag.collab_ws import ensure_collab_ws_server, websockets_available
 from rag.audit import read_audit, write_audit
 from rag.metrics import record_metric, summarize_metrics
@@ -152,6 +153,7 @@ from app.config import (
     COLLAB_WS_HOST,
     COLLAB_WS_PORT,
     COLLAB_WS_PUBLIC_HOST,
+    ENABLE_COLLAB_CRDT,
 )
 
 st.set_page_config(page_title="RAG Not/PDF Asistanı", layout="wide")
@@ -802,15 +804,27 @@ with st.sidebar:
 
     if ENABLE_COLLAB_NOTES:
         with st.expander(t("collab_note"), expanded=False):
-            _note = load_note(ws.key)
+            if ENABLE_COLLAB_CRDT:
+                _crdt = load_crdt(ws.key)
+                _note_content = _crdt.materialize()
+                _note_revision = _crdt.revision
+                _note_user = _crdt.updated_by
+                _note_ts = _crdt.updated_at
+                st.caption(t("collab_crdt_on"))
+            else:
+                _legacy = load_note(ws.key)
+                _note_content = _legacy.content
+                _note_revision = _legacy.revision
+                _note_user = _legacy.updated_by
+                _note_ts = _legacy.updated_at
             if f"collab_revision_{ws.key}" not in st.session_state:
-                st.session_state[f"collab_revision_{ws.key}"] = _note.revision
-            if _note.updated_by or _note.updated_at:
+                st.session_state[f"collab_revision_{ws.key}"] = _note_revision
+            if _note_user or _note_ts:
                 st.caption(
                     t(
                         "collab_updated",
-                        user=_note.updated_by or "-",
-                        ts=_note.updated_at or "-",
+                        user=_note_user or "-",
+                        ts=_note_ts or "-",
                     )
                 )
             if ENABLE_COLLAB_WS and websockets_available():
@@ -823,42 +837,61 @@ with st.sidebar:
                     ),
                     language="json",
                 )
-            _polled = load_note(ws.key)
-            if _polled.revision > st.session_state.get(f"collab_revision_{ws.key}", 0):
+            if ENABLE_COLLAB_CRDT:
+                _polled = load_crdt(ws.key)
+                _poll_rev = _polled.revision
+                _poll_content = _polled.materialize()
+            else:
+                _polled = load_note(ws.key)
+                _poll_rev = _polled.revision
+                _poll_content = _polled.content
+            if _poll_rev > st.session_state.get(f"collab_revision_{ws.key}", 0):
                 st.info(t("collab_remote_update"))
             if st.button(
                 t("collab_refresh"),
                 use_container_width=True,
                 key=f"collab_refresh_{ws.key}",
             ):
-                _ref = load_note(ws.key)
-                st.session_state[f"collab_revision_{ws.key}"] = _ref.revision
+                st.session_state[f"collab_revision_{ws.key}"] = _poll_rev
                 st.rerun()
             _collab_text = st.text_area(
                 "collab",
-                value=_note.content,
+                value=_note_content,
                 height=120,
                 label_visibility="collapsed",
                 key=f"collab_text_{ws.key}",
             )
             if st.button(t("collab_save"), use_container_width=True, key=f"collab_save_{ws.key}"):
-                try:
-                    _saved = save_note(
-                        ws.key,
-                        _collab_text,
-                        username=current_user.username if current_user else None,
-                        expected_revision=st.session_state.get(f"collab_revision_{ws.key}"),
-                    )
+                uname = current_user.username if current_user else None
+                if ENABLE_COLLAB_CRDT:
+                    _saved = apply_text_edit(ws.key, _collab_text, author=uname)
                     st.session_state[f"collab_revision_{ws.key}"] = _saved.revision
                     write_audit(
-                        "collab_note_save",
-                        username=current_user.username if current_user else None,
+                        "collab_crdt_save",
+                        username=uname,
                         tenant_id=ws.tenant_id if ENABLE_TENANTS else None,
                         details={"workspace": ws.key, "revision": _saved.revision},
                     )
-                    st.success("Kaydedildi")
-                except ValueError:
-                    st.warning(t("collab_conflict"))
+                    st.success("Kaydedildi (CRDT birleştirme)")
+                    st.rerun()
+                else:
+                    try:
+                        _saved = save_note(
+                            ws.key,
+                            _collab_text,
+                            username=uname,
+                            expected_revision=st.session_state.get(f"collab_revision_{ws.key}"),
+                        )
+                        st.session_state[f"collab_revision_{ws.key}"] = _saved.revision
+                        write_audit(
+                            "collab_note_save",
+                            username=uname,
+                            tenant_id=ws.tenant_id if ENABLE_TENANTS else None,
+                            details={"workspace": ws.key, "revision": _saved.revision},
+                        )
+                        st.success("Kaydedildi")
+                    except ValueError:
+                        st.warning(t("collab_conflict"))
 
     # Dışa aktarma mevcut oturum üzerinden (session yüklendikten sonra da çalışır)
 

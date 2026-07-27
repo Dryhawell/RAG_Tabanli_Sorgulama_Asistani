@@ -10,6 +10,14 @@ from typing import Any, Dict, Optional, Set
 
 from rag.collab_notes import load_note, save_note
 
+try:
+    from app.config import ENABLE_COLLAB_CRDT
+except ImportError:
+    ENABLE_COLLAB_CRDT = True
+
+if ENABLE_COLLAB_CRDT:
+    from rag.collab_crdt import apply_text_edit, load_crdt, merge_remote_ops
+
 _ws_started = False
 _ws_lock = threading.Lock()
 
@@ -72,20 +80,56 @@ async def _handle_client(websocket) -> None:
                 username = data.get("username")
                 room = _room(workspace_key)
                 room.clients.add(websocket)
-                note = load_note(workspace_key)
+                if ENABLE_COLLAB_CRDT:
+                    crdt = load_crdt(workspace_key)
+                    content = crdt.materialize()
+                    revision = crdt.revision
+                else:
+                    note = load_note(workspace_key)
+                    content = note.content
+                    revision = note.revision
                 await websocket.send(
                     json.dumps(
                         {
                             "op": "snapshot",
                             "workspace_key": workspace_key,
-                            "revision": note.revision,
-                            "content": note.content,
-                            "updated_at": note.updated_at,
-                            "updated_by": note.updated_by,
+                            "revision": revision,
+                            "content": content,
+                            "crdt": ENABLE_COLLAB_CRDT,
                         },
                         ensure_ascii=False,
                     )
                 )
+                continue
+
+            if op == "crdt_ops":
+                if not workspace_key:
+                    await websocket.send(
+                        json.dumps({"op": "error", "message": "Önce join gönderin"})
+                    )
+                    continue
+                if not ENABLE_COLLAB_CRDT:
+                    await websocket.send(
+                        json.dumps({"op": "error", "message": "CRDT kapalı"})
+                    )
+                    continue
+                ops = data.get("ops") or []
+                user = data.get("username") or username
+                saved = merge_remote_ops(
+                    workspace_key,
+                    ops,
+                    author=user,
+                )
+                payload = {
+                    "op": "sync",
+                    "workspace_key": workspace_key,
+                    "revision": saved.revision,
+                    "content": saved.materialize(),
+                    "updated_by": saved.updated_by,
+                    "crdt": True,
+                }
+                await websocket.send(json.dumps(payload, ensure_ascii=False))
+                await _broadcast(workspace_key, payload, exclude=websocket)
                 continue
 
             if op == "edit":
@@ -97,6 +141,23 @@ async def _handle_client(websocket) -> None:
                 content = str(data.get("content") or "")
                 expected = data.get("revision")
                 user = data.get("username") or username
+                if ENABLE_COLLAB_CRDT:
+                    saved_crdt = apply_text_edit(
+                        workspace_key,
+                        content,
+                        author=user,
+                    )
+                    payload = {
+                        "op": "sync",
+                        "workspace_key": workspace_key,
+                        "revision": saved_crdt.revision,
+                        "content": saved_crdt.materialize(),
+                        "updated_by": saved_crdt.updated_by,
+                        "crdt": True,
+                    }
+                    await websocket.send(json.dumps(payload, ensure_ascii=False))
+                    await _broadcast(workspace_key, payload, exclude=websocket)
+                    continue
                 try:
                     saved = save_note(
                         workspace_key,
