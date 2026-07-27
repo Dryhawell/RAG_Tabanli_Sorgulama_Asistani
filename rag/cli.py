@@ -32,6 +32,10 @@ from app.config import (
     EMBED_PIPELINE_REPORT_PATH,
     COLLAB_WS_HOST,
     COLLAB_WS_PORT,
+    DOMAIN_PAIRS_PATH,
+    DOMAIN_COLLECT_MIN_GATE,
+    CHAT_DIR,
+    AUDIT_LOG_PATH,
 )
 from rag.embed import Embedder, resolve_embedding_model
 from rag.eval import run_regression
@@ -48,6 +52,7 @@ from rag.embed_finetune import (
     run_embed_pipeline,
     train_embedding_model,
 )
+from rag.domain_collect import collect_and_save
 from rag.collab_ws import ensure_collab_ws_server, run_collab_ws_server, websockets_available
 from rag.store import create_index, load_index
 
@@ -365,6 +370,7 @@ def cmd_embed_pipeline(args: argparse.Namespace) -> int:
             min_accuracy=args.min_accuracy,
             train=not args.pairs_only,
             hard_negatives=args.hard_negatives,
+            collected_pairs_path=args.collected_pairs,
         )
     except Exception as exc:
         print(f"Pipeline hatası: {exc}", file=sys.stderr)
@@ -378,6 +384,25 @@ def cmd_embed_pipeline(args: argparse.Namespace) -> int:
         print(f"Delta accuracy: {c.get('delta_accuracy', 0):+.2%}")
     print(f"Rapor: {report_path}")
     return 0 if report.get("ok") else 1
+
+
+def cmd_domain_collect(args: argparse.Namespace) -> int:
+    chat_root = args.chats or CHAT_DIR
+    audit_path = args.audit or AUDIT_LOG_PATH
+    metrics_path = args.metrics or METRICS_PATH
+    output = args.output or DOMAIN_PAIRS_PATH
+    summary = collect_and_save(
+        output,
+        chat_root=chat_root if args.from_chats else None,
+        audit_path=audit_path if args.from_audit else None,
+        metrics_path=metrics_path if args.from_metrics else None,
+        min_gate_score=args.min_gate,
+    )
+    print(
+        f"Domain toplama: collected={summary['collected']} "
+        f"added={summary['added']} total={summary['total']} -> {summary['output']}"
+    )
+    return 0
 
 
 def cmd_stats(args: argparse.Namespace) -> int:
@@ -575,7 +600,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Yalnızca çift üret (eğitim/eval atla)",
     )
     p_pipe.add_argument("--hard-negatives", action="store_true")
+    p_pipe.add_argument(
+        "--collected-pairs",
+        default=None,
+        help="Domain toplama JSONL (eval çiftleriyle birleştirilir)",
+    )
     p_pipe.set_defaults(func=cmd_embed_pipeline)
+
+    p_dom = sub.add_parser("domain-collect", help="Sohbet/audit/metrikten domain çiftleri topla")
+    p_dom.add_argument("--output", default=None, help="JSONL çıktı yolu")
+    p_dom.add_argument("--chats", default=None, help="Sohbet kök dizini")
+    p_dom.add_argument("--audit", default=None, help="audit.jsonl yolu")
+    p_dom.add_argument("--metrics", default=None, help="metrics.jsonl yolu")
+    p_dom.add_argument("--min-gate", type=float, default=DOMAIN_COLLECT_MIN_GATE)
+    p_dom.add_argument("--from-chats", action="store_true", default=True)
+    p_dom.add_argument("--no-chats", dest="from_chats", action="store_false")
+    p_dom.add_argument("--from-audit", action="store_true", default=True)
+    p_dom.add_argument("--no-audit", dest="from_audit", action="store_false")
+    p_dom.add_argument("--from-metrics", action="store_true", default=True)
+    p_dom.add_argument("--no-metrics", dest="from_metrics", action="store_false")
+    p_dom.set_defaults(func=cmd_domain_collect)
     return p
 
 

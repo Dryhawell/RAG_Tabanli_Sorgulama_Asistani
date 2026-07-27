@@ -278,9 +278,20 @@ export RAG_ENABLE_DOMAIN_EMBEDDING=1
 ```bash
 export RAG_ENABLE_COLLAB_CRDT=1
 export RAG_ENABLE_COLLAB_WS=1
+export RAG_ENABLE_COLLAB_LIVE_EDITOR=1
 ```
 - RGA-tarzı CRDT: eşzamanlı düzenlemeler otomatik birleşir (`rag/collab_crdt.py`)
+- **Canlı düzenleyici**: gömülü WebSocket istemcisi (`rag/collab_component.py`)
 - WebSocket: `edit` veya `crdt_ops` mesajları
+
+### Otomatik domain veri toplama
+```bash
+export RAG_ENABLE_DOMAIN_COLLECT=1
+python -m rag.cli domain-collect --output metadata/domain_training/pairs.jsonl
+python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pairs.jsonl
+```
+- Sohbet / audit / metriklerden (soru, chunk) çiftleri
+- Başarılı sorgular canlı olarak `metadata/domain_training/pairs.jsonl` dosyasına eklenir
 
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
@@ -349,6 +360,10 @@ export RAG_ENABLE_COLLAB_WS=1
 | `RAG_COLLAB_WS_PORT` | WebSocket portu (varsayılan 8765) |
 | `RAG_COLLAB_WS_PUBLIC_HOST` | UI’da gösterilen WS host |
 | `RAG_ENABLE_COLLAB_CRDT` | CRDT birleştirme (1/0, varsayılan açık) |
+| `RAG_ENABLE_COLLAB_LIVE_EDITOR` | Canlı WebSocket düzenleyici (1/0) |
+| `RAG_ENABLE_DOMAIN_COLLECT` | Canlı sorgulardan domain çift toplama (1/0) |
+| `RAG_DOMAIN_PAIRS_PATH` | Toplanan domain çiftleri JSONL |
+| `RAG_DOMAIN_COLLECT_MIN_GATE` | Toplama için min gate skoru |
 | `RAG_EMBED_PIPELINE_REPORT_PATH` | Pipeline JSON rapor yolu |
 | `RAG_DOMAIN_EMBEDDING_MODEL` | Domain/fine-tuned embedding model yolu veya Hub adı |
 | `RAG_ENABLE_DOMAIN_EMBEDDING` | Domain embedding varsayılan preset (1/0) |
@@ -363,8 +378,8 @@ export RAG_ENABLE_COLLAB_WS=1
 - `rag/query_rewrite.py`, `rag/compare.py`: HyDE/expand ve çoklu doküman özet/karşılaştırma
 - `rag/tools.py`, `rag/agent.py`, `rag/highlight.py`: araçlar, agent döngüsü, kaynak vurgulama
 - `rag/vision.py`, `rag/vision_llm.py`, `rag/memory.py`, `rag/planner.py`, `rag/profile_memory.py`
-- `rag/share_links.py`, `rag/collab_notes.py`, `rag/collab_ws.py`, `rag/collab_crdt.py`
-- `rag/embed_finetune.py`
+- `rag/share_links.py`, `rag/collab_notes.py`, `rag/collab_ws.py`, `rag/collab_crdt.py`, `rag/collab_component.py`
+- `rag/embed_finetune.py`, `rag/domain_collect.py`
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -393,5 +408,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Tam CRDT istemci bileşeni (Streamlit custom component)
-- Otomatik domain veri toplama → sürekli embedding iyileştirme
+- Federated / çok tenant embedding eğitim havuzu
+- Gömülü CRDT düzenleyicide imleç ve presence göstergesi

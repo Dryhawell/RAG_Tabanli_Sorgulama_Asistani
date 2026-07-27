@@ -208,3 +208,20 @@ ENABLE_DOMAIN_EMBEDDING = os.getenv("RAG_ENABLE_DOMAIN_EMBEDDING", "0") not in {
     "False",
 }
 
+# Otomatik domain veri toplama
+ENABLE_DOMAIN_COLLECT = os.getenv("RAG_ENABLE_DOMAIN_COLLECT", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+DOMAIN_PAIRS_PATH = os.getenv(
+    "RAG_DOMAIN_PAIRS_PATH",
+    os.path.join(METADATA_DIR, "domain_training", "pairs.jsonl"),
+)
+DOMAIN_COLLECT_MIN_GATE = float(os.getenv("RAG_DOMAIN_COLLECT_MIN_GATE", "0.35"))
+ENABLE_COLLAB_LIVE_EDITOR = os.getenv("RAG_ENABLE_COLLAB_LIVE_EDITOR", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+

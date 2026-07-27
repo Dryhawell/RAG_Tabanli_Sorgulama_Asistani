@@ -196,15 +196,20 @@ def run_embed_pipeline(
     min_accuracy: float = 0.0,
     train: bool = True,
     hard_negatives: bool = False,
+    collected_pairs_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Pairs → train → eval tek adımda; CI ve periyodik döngü için."""
     from datetime import datetime, timezone
+
+    from rag.domain_collect import load_domain_pairs, merge_pairs
 
     pairs = build_pairs_from_eval(
         cases_path,
         fixture_dir,
         include_hard_negatives=hard_negatives,
     )
+    if collected_pairs_path and os.path.isfile(collected_pairs_path):
+        pairs = merge_pairs(pairs, load_domain_pairs(collected_pairs_path))
     if not pairs:
         raise ValueError("Eğitim çifti üretilemedi")
 
@@ -241,6 +246,7 @@ def run_embed_pipeline(
         "trained_path": trained_path,
         "epochs": epochs if train else 0,
         "compare": compare,
+        "collected_pairs_path": collected_pairs_path,
         "ok": True if not train else bool(compare and compare.get("improved")),
     }
     if report_path:

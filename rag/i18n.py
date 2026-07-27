@@ -72,6 +72,7 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "collab_remote_update": "Uzaktan güncelleme algılandı — Yenile ile çekin.",
         "collab_refresh": "Notu yenile",
         "collab_crdt_on": "CRDT birleştirme açık — eşzamanlı düzenlemeler otomatik birleşir",
+        "collab_live_editor": "Canlı CRDT düzenleyici (WebSocket)",
     },
     "en": {
         "app_title": "LLM-Powered PDF / Notes Query Assistant (RAG)",
@@ -138,6 +139,7 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "collab_remote_update": "Remote update detected — pull with Refresh.",
         "collab_refresh": "Refresh note",
         "collab_crdt_on": "CRDT merge enabled — concurrent edits auto-merge",
+        "collab_live_editor": "Live CRDT editor (WebSocket)",
     },
 }
 

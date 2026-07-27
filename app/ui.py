@@ -89,6 +89,7 @@ from rag.share_links import (
 )
 from rag.collab_notes import load_note, save_note
 from rag.collab_crdt import apply_text_edit, load_crdt
+from rag.collab_component import render_collab_live_editor
 from rag.collab_ws import ensure_collab_ws_server, websockets_available
 from rag.audit import read_audit, write_audit
 from rag.metrics import record_metric, summarize_metrics
@@ -154,6 +155,10 @@ from app.config import (
     COLLAB_WS_PORT,
     COLLAB_WS_PUBLIC_HOST,
     ENABLE_COLLAB_CRDT,
+    ENABLE_COLLAB_LIVE_EDITOR,
+    ENABLE_DOMAIN_COLLECT,
+    DOMAIN_PAIRS_PATH,
+    DOMAIN_COLLECT_MIN_GATE,
 )
 
 st.set_page_config(page_title="RAG Not/PDF Asistanı", layout="wide")
@@ -830,13 +835,24 @@ with st.sidebar:
             if ENABLE_COLLAB_WS and websockets_available():
                 _ws_url = f"ws://{COLLAB_WS_PUBLIC_HOST}:{COLLAB_WS_PORT}"
                 st.caption(t("collab_ws_url", url=_ws_url))
-                st.code(
-                    json.dumps(
-                        {"op": "join", "workspace_key": ws.key, "username": "alice"},
-                        ensure_ascii=False,
-                    ),
-                    language="json",
-                )
+                if ENABLE_COLLAB_LIVE_EDITOR:
+                    st.caption(t("collab_live_editor"))
+                    _uname = current_user.username if current_user else "local"
+                    render_collab_live_editor(
+                        ws_url=_ws_url,
+                        workspace_key=ws.key,
+                        username=_uname,
+                        initial_content=_note_content,
+                        revision=_note_revision,
+                    )
+                else:
+                    st.code(
+                        json.dumps(
+                            {"op": "join", "workspace_key": ws.key, "username": "alice"},
+                            ensure_ascii=False,
+                        ),
+                        language="json",
+                    )
             if ENABLE_COLLAB_CRDT:
                 _polled = load_crdt(ws.key)
                 _poll_rev = _polled.revision
@@ -1621,6 +1637,8 @@ if user_input:
             "gate_score": round(float(gate_score), 4),
             "n_sources": len(source_payload),
             "no_answer": no_answer,
+            "top_source": source_payload[0].get("source_file") if source_payload else None,
+            "top_chunk": (source_payload[0].get("text") or "")[:900] if source_payload else None,
         },
         path=ws.audit_path,
     )
@@ -1640,6 +1658,27 @@ if user_input:
             "model": model_name,
             "hybrid": use_hybrid,
             "reranker": use_reranker,
+            "question": user_input[:500],
+            "top_source": source_payload[0].get("source_file") if source_payload else None,
+            "top_chunk": (source_payload[0].get("text") or "")[:900] if source_payload else None,
         },
         path=ws.metrics_path,
     )
+    if ENABLE_DOMAIN_COLLECT and source_payload and not no_answer:
+        try:
+            from rag.domain_collect import append_domain_pairs
+
+            append_domain_pairs(
+                [
+                    {
+                        "anchor": user_input.strip(),
+                        "positive": (source_payload[0].get("text") or "")[:900],
+                        "source": "live_query",
+                        "gate_score": float(gate_score),
+                        "source_file": source_payload[0].get("source_file"),
+                    }
+                ],
+                DOMAIN_PAIRS_PATH,
+            )
+        except Exception:
+            pass
