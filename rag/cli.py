@@ -43,6 +43,11 @@ from app.config import (
     FEDERATED_DP_CLIP,
     FEDERATED_SECRET,
     ENABLE_FEDERATED_PRIVACY,
+    DP_TRAIN_OUTPUT_DIR,
+    DP_TRAIN_NOISE,
+    DP_TRAIN_MAX_GRAD_NORM,
+    DP_TRAIN_DELTA,
+    DP_TRAIN_USE_OPACUS,
 )
 from rag.embed import Embedder, resolve_embedding_model
 from rag.eval import run_regression
@@ -62,6 +67,7 @@ from rag.embed_finetune import (
 from rag.domain_collect import collect_and_save
 from rag.federated_pool import build_federated_pool, aggregate_federated_pairs
 from rag.privacy_federated import build_private_federated_pool
+from rag.dp_train import opacus_available, train_embedding_model_dp
 from rag.collab_ws import ensure_collab_ws_server, run_collab_ws_server, websockets_available
 from rag.store import create_index, load_index
 
@@ -461,6 +467,42 @@ def cmd_privacy_pool(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_dp_train(args: argparse.Namespace) -> int:
+    pairs_path = args.pairs or DEFAULT_EMBED_PAIRS
+    if not os.path.isfile(pairs_path):
+        # eval'den üret
+        from rag.embed_finetune import build_pairs_from_eval, export_pairs_jsonl
+
+        pairs = build_pairs_from_eval(DEFAULT_EVAL_CASES, DEFAULT_EVAL_FIXTURES)
+        export_pairs_jsonl(pairs, pairs_path)
+        print(f"Pairs üretildi: {len(pairs)} -> {pairs_path}")
+    out_dir = args.output or DP_TRAIN_OUTPUT_DIR
+    use_opacus = args.opacus if args.opacus is not None else DP_TRAIN_USE_OPACUS
+    if use_opacus and not opacus_available():
+        print("Opacus yok; manuel DP-SGD fallback kullanılacak.", file=sys.stderr)
+        use_opacus = False
+    try:
+        report = train_embedding_model_dp(
+            args.embedding,
+            pairs_path,
+            out_dir,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            noise_multiplier=args.noise,
+            max_grad_norm=args.clip,
+            delta=args.delta,
+            use_opacus=use_opacus,
+        )
+    except Exception as exc:
+        print(f"DP eğitim hatası: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"DP-SGD: steps={report['steps']} ε≈{report['epsilon']:.3f} "
+        f"opacus={report['used_opacus']} -> {report['weights']}"
+    )
+    return 0
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     """JSONL metrik özetini yazdırır."""
     path = args.path or METRICS_PATH
@@ -695,6 +737,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Metin çiftlerini yazma (yalnızca DP aggregate meta)",
     )
     p_priv.set_defaults(func=cmd_privacy_pool)
+
+    p_dp = sub.add_parser("dp-train", help="Opacus / DP-SGD ile embedding eğitimi")
+    _add_embedding_arg(p_dp)
+    p_dp.add_argument("--pairs", default=None, help="JSONL çift dosyası")
+    p_dp.add_argument("--output", default=None, help="Model çıktı dizini")
+    p_dp.add_argument("--epochs", type=int, default=2)
+    p_dp.add_argument("--batch-size", type=int, default=4)
+    p_dp.add_argument("--noise", type=float, default=DP_TRAIN_NOISE)
+    p_dp.add_argument("--clip", type=float, default=DP_TRAIN_MAX_GRAD_NORM)
+    p_dp.add_argument("--delta", type=float, default=DP_TRAIN_DELTA)
+    p_dp.add_argument(
+        "--opacus",
+        dest="opacus",
+        action="store_true",
+        default=None,
+        help="Opacus PrivacyEngine kullan",
+    )
+    p_dp.add_argument(
+        "--no-opacus",
+        dest="opacus",
+        action="store_false",
+        help="Manuel DP-SGD fallback",
+    )
+    p_dp.set_defaults(func=cmd_dp_train)
 
     p_dom = sub.add_parser("domain-collect", help="Sohbet/audit/metrikten domain çiftleri topla")
     p_dom.add_argument("--output", default=None, help="JSONL çıktı yolu")

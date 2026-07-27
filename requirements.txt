@@ -14,4 +14,4 @@ PyJWT[crypto]
 prometheus-client
 Pillow
 pytesseract
-websockets
+opacus>=1.4; python_version>='3.9'

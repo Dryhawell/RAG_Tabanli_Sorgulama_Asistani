@@ -20,3 +20,6 @@ def test_collab_editor_html_includes_ws_url():
     assert "presence_join" in html or "presence_update" in html
     assert "op: \"cursor\"" in html or 'op: "cursor"' in html
     assert "caretCoordsAt" in html
+    assert "sendUndoRedo" in html
+    assert 'op: "undo"' in html or "sendUndoRedo(\"undo\")" in html
+    assert "opacity:0.22" in html  # selection highlight

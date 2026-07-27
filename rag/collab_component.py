@@ -108,6 +108,28 @@ _COLLAB_EDITOR_HTML = """
     Object.keys(peers).forEach(function(name) {
       if (name === USERNAME) return;
       const p = peers[name];
+      const start = Math.min(p.cursor || 0, p.selection_end != null ? p.selection_end : (p.cursor || 0));
+      const end = Math.max(p.cursor || 0, p.selection_end != null ? p.selection_end : (p.cursor || 0));
+      if (end > start) {
+        // selection highlight: satır satır yaklaşık kutular
+        for (let i = start; i < end; i++) {
+          const c = caretCoordsAt(i);
+          const n = caretCoordsAt(i + 1);
+          const hl = document.createElement("div");
+          const w = Math.max(4, (n.left - c.left) || 8);
+          hl.style.cssText = [
+            "position:absolute",
+            "top:" + c.top + "px",
+            "left:" + c.left + "px",
+            "width:" + w + "px",
+            "height:1.2em",
+            "background:" + (p.color || "#e74c3c"),
+            "opacity:0.22",
+            "z-index:3"
+          ].join(";");
+          cursorsEl.appendChild(hl);
+        }
+      }
       const pos = caretCoordsAt(p.cursor || 0);
       const caret = document.createElement("div");
       caret.style.cssText = [
@@ -155,15 +177,38 @@ _COLLAB_EDITOR_HTML = """
     renderPresence();
   }
 
+  function getSelectionOffsets() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) {
+      const p = getCaretOffset();
+      return {start: p, end: p};
+    }
+    const r0 = sel.getRangeAt(0);
+    const preStart = r0.cloneRange();
+    preStart.selectNodeContents(editor);
+    preStart.setEnd(r0.startContainer, r0.startOffset);
+    const start = preStart.toString().length;
+    const preEnd = r0.cloneRange();
+    preEnd.selectNodeContents(editor);
+    preEnd.setEnd(r0.endContainer, r0.endOffset);
+    const end = preEnd.toString().length;
+    return {start: start, end: end};
+  }
+
   function sendCursor() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const pos = getCaretOffset();
+    const sel = getSelectionOffsets();
     ws.send(JSON.stringify({
       op: "cursor",
-      cursor: pos,
-      selection_end: pos,
+      cursor: sel.start,
+      selection_end: sel.end,
       username: USERNAME
     }));
+  }
+
+  function sendUndoRedo(kind) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({op: kind, username: USERNAME}));
   }
 
   function connect() {
@@ -226,6 +271,18 @@ _COLLAB_EDITOR_HTML = """
       if (cursorTimer) clearTimeout(cursorTimer);
       cursorTimer = setTimeout(sendCursor, 80);
     });
+  });
+  editor.addEventListener("keydown", function(e) {
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && !e.shiftKey && (e.key === "z" || e.key === "Z")) {
+      e.preventDefault();
+      sendUndoRedo("undo");
+      return;
+    }
+    if (mod && ((e.key === "y" || e.key === "Y") || (e.shiftKey && (e.key === "z" || e.key === "Z")))) {
+      e.preventDefault();
+      sendUndoRedo("redo");
+    }
   });
   window.addEventListener("resize", renderCursorOverlay);
 

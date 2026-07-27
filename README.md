@@ -285,6 +285,7 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - Sohbet / audit / metriklerden (soru, chunk) çiftleri; tenant bazlı `metadata/tenants/<id>/domain_training/`
 - Federated havuz: tüm tenant çiftlerini tek JSONL'de birleştirir
 - **Privacy pool**: DP-SGD lite (clip + Gaussian) + secure aggregation PoC
+- **DP-SGD eğitim**: `python -m rag.cli dp-train --no-opacus` (Opacus varsa `--opacus`)
 
 ### CRDT işbirlikçi not
 ```bash
@@ -293,8 +294,9 @@ export RAG_ENABLE_COLLAB_WS=1
 export RAG_ENABLE_COLLAB_LIVE_EDITOR=1
 ```
 - RGA-tarzı CRDT: eşzamanlı düzenlemeler otomatik birleşir (`rag/collab_crdt.py`)
-- **Canlı düzenleyici**: contenteditable + görsel remote imleç overlay (`rag/collab_component.py`)
-- WebSocket: `edit` / `crdt_ops` / `cursor` / presence
+- **Canlı düzenleyici**: contenteditable + görsel remote imleç/selection overlay
+- Undo/redo: Ctrl+Z / Ctrl+Y (WebSocket `undo`/`redo`) + UI butonları
+- WebSocket: `edit` / `crdt_ops` / `cursor` / presence / undo / redo
 
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
@@ -374,6 +376,12 @@ export RAG_ENABLE_COLLAB_LIVE_EDITOR=1
 | `RAG_FEDERATED_DP_CLIP` | DP L2 clip norm |
 | `RAG_FEDERATED_SECRET` | Secure aggregation secret |
 | `RAG_PRIVATE_FEDERATED_POOL_PATH` | Private federated pool çıktısı |
+| `RAG_ENABLE_DP_TRAIN` | DP-SGD eğitim (1/0) |
+| `RAG_DP_TRAIN_OUTPUT_DIR` | DP model çıktı dizini |
+| `RAG_DP_TRAIN_NOISE` | DP-SGD noise multiplier |
+| `RAG_DP_TRAIN_MAX_GRAD_NORM` | DP-SGD max grad norm |
+| `RAG_DP_TRAIN_DELTA` | DP delta |
+| `RAG_DP_TRAIN_USE_OPACUS` | Opacus PrivacyEngine (1/0) |
 | `RAG_EMBED_PIPELINE_REPORT_PATH` | Pipeline JSON rapor yolu |
 | `RAG_DOMAIN_EMBEDDING_MODEL` | Domain/fine-tuned embedding model yolu veya Hub adı |
 | `RAG_ENABLE_DOMAIN_EMBEDDING` | Domain embedding varsayılan preset (1/0) |
@@ -389,7 +397,7 @@ export RAG_ENABLE_COLLAB_LIVE_EDITOR=1
 - `rag/tools.py`, `rag/agent.py`, `rag/highlight.py`: araçlar, agent döngüsü, kaynak vurgulama
 - `rag/vision.py`, `rag/vision_llm.py`, `rag/memory.py`, `rag/planner.py`, `rag/profile_memory.py`
 - `rag/share_links.py`, `rag/collab_notes.py`, `rag/collab_ws.py`, `rag/collab_crdt.py`, `rag/collab_component.py`
-- `rag/embed_finetune.py`, `rag/domain_collect.py`, `rag/federated_pool.py`, `rag/privacy_federated.py`, `rag/collab_presence.py`
+- `rag/embed_finetune.py`, `rag/domain_collect.py`, `rag/federated_pool.py`, `rag/privacy_federated.py`, `rag/dp_train.py`, `rag/collab_presence.py`, `rag/collab_undo.py`
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -418,5 +426,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Opacus / resmi DP-SGD ile model eğitimi
-- CRDT selection highlight ve undo stack
+- Tam SentenceTransformer + Opacus fine-tune (büyük model)
+- CRDT operational transform ile pasting/IME desteği

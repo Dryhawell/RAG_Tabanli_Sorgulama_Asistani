@@ -88,7 +88,8 @@ from rag.share_links import (
     revoke_share_link,
 )
 from rag.collab_notes import load_note, save_note
-from rag.collab_crdt import apply_text_edit, load_crdt
+from rag.collab_crdt import load_crdt
+from rag.collab_undo import apply_text_edit_with_undo, redo_edit, undo_edit
 from rag.collab_component import render_collab_live_editor
 from rag.collab_ws import ensure_collab_ws_server, websockets_available
 from rag.audit import read_audit, write_audit
@@ -880,7 +881,7 @@ with st.sidebar:
             if st.button(t("collab_save"), use_container_width=True, key=f"collab_save_{ws.key}"):
                 uname = current_user.username if current_user else None
                 if ENABLE_COLLAB_CRDT:
-                    _saved = apply_text_edit(ws.key, _collab_text, author=uname)
+                    _saved = apply_text_edit_with_undo(ws.key, _collab_text, author=uname)
                     st.session_state[f"collab_revision_{ws.key}"] = _saved.revision
                     write_audit(
                         "collab_crdt_save",
@@ -908,6 +909,18 @@ with st.sidebar:
                         st.success("Kaydedildi")
                     except ValueError:
                         st.warning(t("collab_conflict"))
+            if ENABLE_COLLAB_CRDT:
+                uc1, uc2 = st.columns(2)
+                with uc1:
+                    if st.button(t("collab_undo"), use_container_width=True, key=f"collab_undo_{ws.key}"):
+                        _u = undo_edit(ws.key, author=current_user.username if current_user else None)
+                        st.session_state[f"collab_revision_{ws.key}"] = _u.revision
+                        st.rerun()
+                with uc2:
+                    if st.button(t("collab_redo"), use_container_width=True, key=f"collab_redo_{ws.key}"):
+                        _r = redo_edit(ws.key, author=current_user.username if current_user else None)
+                        st.session_state[f"collab_revision_{ws.key}"] = _r.revision
+                        st.rerun()
 
     # Dışa aktarma mevcut oturum üzerinden (session yüklendikten sonra da çalışır)
 

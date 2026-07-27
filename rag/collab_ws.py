@@ -24,6 +24,11 @@ except ImportError:
 
 if ENABLE_COLLAB_CRDT:
     from rag.collab_crdt import apply_text_edit, load_crdt, merge_remote_ops
+    from rag.collab_undo import apply_text_edit_with_undo, redo_edit, undo_edit
+else:
+    apply_text_edit_with_undo = None  # type: ignore
+    redo_edit = None  # type: ignore
+    undo_edit = None  # type: ignore
 
 _ws_started = False
 _ws_lock = threading.Lock()
@@ -134,6 +139,30 @@ async def _handle_client(websocket) -> None:
                     )
                 continue
 
+            if op in {"undo", "redo"} and ENABLE_COLLAB_CRDT:
+                if not workspace_key:
+                    await websocket.send(
+                        json.dumps({"op": "error", "message": "Önce join gönderin"})
+                    )
+                    continue
+                user = data.get("username") or username
+                if op == "undo":
+                    saved_crdt = undo_edit(workspace_key, author=user)
+                else:
+                    saved_crdt = redo_edit(workspace_key, author=user)
+                payload = {
+                    "op": "sync",
+                    "workspace_key": workspace_key,
+                    "revision": saved_crdt.revision,
+                    "content": saved_crdt.materialize(),
+                    "updated_by": saved_crdt.updated_by,
+                    "crdt": True,
+                    "via": op,
+                }
+                await websocket.send(json.dumps(payload, ensure_ascii=False))
+                await _broadcast(workspace_key, payload, exclude=websocket)
+                continue
+
             if op == "crdt_ops":
                 if not workspace_key:
                     await websocket.send(
@@ -174,7 +203,7 @@ async def _handle_client(websocket) -> None:
                 expected = data.get("revision")
                 user = data.get("username") or username
                 if ENABLE_COLLAB_CRDT:
-                    saved_crdt = apply_text_edit(
+                    saved_crdt = apply_text_edit_with_undo(
                         workspace_key,
                         content,
                         author=user,

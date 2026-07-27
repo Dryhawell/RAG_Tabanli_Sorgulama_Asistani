@@ -251,3 +251,18 @@ PRIVATE_FEDERATED_POOL_PATH = os.getenv(
     os.path.join(METADATA_DIR, "federated", "private_training_pool.jsonl"),
 )
 
+# Opacus / DP-SGD eğitim
+ENABLE_DP_TRAIN = os.getenv("RAG_ENABLE_DP_TRAIN", "1") not in {"0", "false", "False"}
+DP_TRAIN_OUTPUT_DIR = os.getenv(
+    "RAG_DP_TRAIN_OUTPUT_DIR",
+    os.path.join("models", "dp-embed"),
+)
+DP_TRAIN_NOISE = float(os.getenv("RAG_DP_TRAIN_NOISE", "1.0"))
+DP_TRAIN_MAX_GRAD_NORM = float(os.getenv("RAG_DP_TRAIN_MAX_GRAD_NORM", "1.0"))
+DP_TRAIN_DELTA = float(os.getenv("RAG_DP_TRAIN_DELTA", "1e-5"))
+DP_TRAIN_USE_OPACUS = os.getenv("RAG_DP_TRAIN_USE_OPACUS", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+
