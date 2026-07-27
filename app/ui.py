@@ -1666,8 +1666,10 @@ if user_input:
     )
     if ENABLE_DOMAIN_COLLECT and source_payload and not no_answer:
         try:
-            from rag.domain_collect import append_domain_pairs
+            from rag.domain_collect import append_domain_pairs, domain_pairs_path_for_tenant
 
+            tenant_id = ws.tenant_id if ENABLE_TENANTS else None
+            pairs_path = domain_pairs_path_for_tenant(tenant_id)
             append_domain_pairs(
                 [
                     {
@@ -1676,9 +1678,10 @@ if user_input:
                         "source": "live_query",
                         "gate_score": float(gate_score),
                         "source_file": source_payload[0].get("source_file"),
+                        "tenant_id": tenant_id or "global",
                     }
                 ],
-                DOMAIN_PAIRS_PATH,
+                pairs_path,
             )
         except Exception:
             pass

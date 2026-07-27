@@ -11,6 +11,17 @@ from app.config import METADATA_DIR
 DEFAULT_DOMAIN_PAIRS_PATH = os.path.join(METADATA_DIR, "domain_training", "pairs.jsonl")
 
 
+def domain_pairs_path_for_tenant(
+    tenant_id: Optional[str] = None,
+    base: Optional[str] = None,
+) -> str:
+    root = base or METADATA_DIR
+    tid = (tenant_id or "").strip().lower()
+    if tid and tid not in {"default", "global"}:
+        return os.path.join(root, "tenants", tid, "domain_training", "pairs.jsonl")
+    return os.path.join(root, "domain_training", "pairs.jsonl")
+
+
 def _norm_anchor(text: str) -> str:
     return (text or "").strip().lower()
 

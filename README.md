@@ -288,10 +288,11 @@ export RAG_ENABLE_COLLAB_LIVE_EDITOR=1
 ```bash
 export RAG_ENABLE_DOMAIN_COLLECT=1
 python -m rag.cli domain-collect --output metadata/domain_training/pairs.jsonl
-python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pairs.jsonl
+python -m rag.cli federated-pool --output metadata/federated/training_pool.jsonl
+python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pairs.jsonl --federated-pool metadata/federated/training_pool.jsonl
 ```
-- Sohbet / audit / metriklerden (soru, chunk) çiftleri
-- Başarılı sorgular canlı olarak `metadata/domain_training/pairs.jsonl` dosyasına eklenir
+- Sohbet / audit / metriklerden (soru, chunk) çiftleri; tenant bazlı `metadata/tenants/<id>/domain_training/`
+- Federated havuz: tüm tenant çiftlerini tek JSONL'de birleştirir
 
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
@@ -364,6 +365,8 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 | `RAG_ENABLE_DOMAIN_COLLECT` | Canlı sorgulardan domain çift toplama (1/0) |
 | `RAG_DOMAIN_PAIRS_PATH` | Toplanan domain çiftleri JSONL |
 | `RAG_DOMAIN_COLLECT_MIN_GATE` | Toplama için min gate skoru |
+| `RAG_FEDERATED_POOL_PATH` | Federated tenant eğitim havuzu JSONL |
+| `RAG_FEDERATED_MIN_PER_TENANT` | Havuza dahil min çift / tenant |
 | `RAG_EMBED_PIPELINE_REPORT_PATH` | Pipeline JSON rapor yolu |
 | `RAG_DOMAIN_EMBEDDING_MODEL` | Domain/fine-tuned embedding model yolu veya Hub adı |
 | `RAG_ENABLE_DOMAIN_EMBEDDING` | Domain embedding varsayılan preset (1/0) |
@@ -379,7 +382,7 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - `rag/tools.py`, `rag/agent.py`, `rag/highlight.py`: araçlar, agent döngüsü, kaynak vurgulama
 - `rag/vision.py`, `rag/vision_llm.py`, `rag/memory.py`, `rag/planner.py`, `rag/profile_memory.py`
 - `rag/share_links.py`, `rag/collab_notes.py`, `rag/collab_ws.py`, `rag/collab_crdt.py`, `rag/collab_component.py`
-- `rag/embed_finetune.py`, `rag/domain_collect.py`
+- `rag/embed_finetune.py`, `rag/domain_collect.py`, `rag/federated_pool.py`, `rag/collab_presence.py`
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -408,5 +411,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Federated / çok tenant embedding eğitim havuzu
-- Gömülü CRDT düzenleyicide imleç ve presence göstergesi
+- Cross-tenant embedding privacy (DP-SGD / şifreli aggregation)
+- CRDT düzenleyicide görsel imleç overlay (contenteditable)

@@ -225,3 +225,15 @@ ENABLE_COLLAB_LIVE_EDITOR = os.getenv("RAG_ENABLE_COLLAB_LIVE_EDITOR", "1") not 
     "False",
 }
 
+# Federated embedding havuzu
+ENABLE_FEDERATED_POOL = os.getenv("RAG_ENABLE_FEDERATED_POOL", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+FEDERATED_POOL_PATH = os.getenv(
+    "RAG_FEDERATED_POOL_PATH",
+    os.path.join(METADATA_DIR, "federated", "training_pool.jsonl"),
+)
+FEDERATED_MIN_PER_TENANT = int(os.getenv("RAG_FEDERATED_MIN_PER_TENANT", "0"))
+

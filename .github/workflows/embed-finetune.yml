@@ -42,6 +42,7 @@ jobs:
         run: |
           set -e
           python -m rag.cli domain-collect --output metadata/domain_training/pairs.jsonl || true
+          python -m rag.cli federated-pool --output metadata/federated/training_pool.jsonl || true
           if [ "$PAIRS_ONLY" = "true" ]; then
             python -m rag.cli embed-pipeline --pairs-only \
               --pairs metadata/embed_pairs.jsonl \
@@ -52,6 +53,7 @@ jobs:
               --epochs "${{ inputs.epochs || '1' }}" \
               --output models/ci-embed-finetuned \
               --collected-pairs metadata/domain_training/pairs.jsonl \
+              --federated-pool metadata/federated/training_pool.jsonl \
               --report metadata/embed_pipeline_report.json \
               --min-accuracy 0.0
           fi

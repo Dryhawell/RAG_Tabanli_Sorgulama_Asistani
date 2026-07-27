@@ -9,6 +9,13 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Set
 
 from rag.collab_notes import load_note, save_note
+from rag.collab_presence import (
+    bind_client,
+    presence_entry,
+    presence_list,
+    release_client,
+    update_cursor,
+)
 
 try:
     from app.config import ENABLE_COLLAB_CRDT
@@ -80,6 +87,7 @@ async def _handle_client(websocket) -> None:
                 username = data.get("username")
                 room = _room(workspace_key)
                 room.clients.add(websocket)
+                meta = bind_client(websocket, workspace_key, username)
                 if ENABLE_COLLAB_CRDT:
                     crdt = load_crdt(workspace_key)
                     content = crdt.materialize()
@@ -96,10 +104,34 @@ async def _handle_client(websocket) -> None:
                             "revision": revision,
                             "content": content,
                             "crdt": ENABLE_COLLAB_CRDT,
+                            "presence": presence_list(room.clients),
                         },
                         ensure_ascii=False,
                     )
                 )
+                await _broadcast(
+                    workspace_key,
+                    {"op": "presence_join", "user": presence_entry(meta)},
+                    exclude=websocket,
+                )
+                continue
+
+            if op == "cursor":
+                if not workspace_key:
+                    continue
+                pos = int(data.get("cursor") or data.get("pos") or 0)
+                sel_end = data.get("selection_end")
+                updated = update_cursor(
+                    websocket,
+                    cursor=pos,
+                    selection_end=int(sel_end) if sel_end is not None else None,
+                )
+                if updated:
+                    await _broadcast(
+                        workspace_key,
+                        {"op": "presence_update", "user": presence_entry(updated)},
+                        exclude=websocket,
+                    )
                 continue
 
             if op == "crdt_ops":
@@ -202,7 +234,17 @@ async def _handle_client(websocket) -> None:
             )
     finally:
         if workspace_key:
-            _room(workspace_key).clients.discard(websocket)
+            room = _room(workspace_key)
+            room.clients.discard(websocket)
+            released = release_client(websocket)
+            if released:
+                try:
+                    await _broadcast(
+                        workspace_key,
+                        {"op": "presence_leave", "user": presence_entry(released)},
+                    )
+                except Exception:
+                    pass
 
 
 async def _serve(host: str, port: int) -> None:
