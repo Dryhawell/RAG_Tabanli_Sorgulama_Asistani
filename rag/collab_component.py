@@ -1,4 +1,4 @@
-"""Streamlit gömülü CRDT canlı düzenleyici (WebSocket istemcisi)."""
+"""Streamlit gömülü CRDT canlı düzenleyici (contenteditable + imleç overlay)."""
 
 from __future__ import annotations
 
@@ -15,9 +15,10 @@ def _js_str(value: Optional[str]) -> str:
 _COLLAB_EDITOR_HTML = """
 <div style="font-family: system-ui, sans-serif;">
   <div id="collab-presence" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;font-size:12px;"></div>
-  <div style="position:relative;">
-    <textarea id="collab-editor" style="width:100%;height:170px;padding:8px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box;"></textarea>
-    <div id="collab-cursors" style="position:absolute;left:8px;top:8px;pointer-events:none;font-size:11px;line-height:1.4;"></div>
+  <div id="editor-wrap" style="position:relative;border:1px solid #ccc;border-radius:6px;min-height:170px;background:#fff;">
+    <div id="collab-editor" contenteditable="true" spellcheck="false"
+      style="width:100%;min-height:170px;padding:10px 12px;box-sizing:border-box;outline:none;white-space:pre-wrap;word-break:break-word;line-height:1.5;font-size:14px;font-family:ui-monospace,Menlo,monospace;"></div>
+    <div id="collab-cursors" style="position:absolute;inset:0;pointer-events:none;overflow:hidden;"></div>
   </div>
   <div id="collab-status" style="font-size:12px;color:#555;margin-top:6px;">Bağlanıyor…</div>
 </div>
@@ -27,7 +28,8 @@ _COLLAB_EDITOR_HTML = """
   const WORKSPACE = __WORKSPACE__;
   const USERNAME = __USERNAME__;
   const INITIAL = __INITIAL__;
-  const textarea = document.getElementById("collab-editor");
+  const editor = document.getElementById("collab-editor");
+  const wrap = document.getElementById("editor-wrap");
   const status = document.getElementById("collab-status");
   const presenceEl = document.getElementById("collab-presence");
   const cursorsEl = document.getElementById("collab-cursors");
@@ -38,8 +40,48 @@ _COLLAB_EDITOR_HTML = """
   let cursorTimer = null;
   const peers = {};
 
-  function setStatus(msg) {
-    status.textContent = msg;
+  function setStatus(msg) { status.textContent = msg; }
+
+  function getText() {
+    return editor.innerText.replace(/\\r/g, "");
+  }
+
+  function setText(t) {
+    editor.innerText = t || "";
+  }
+
+  function getCaretOffset() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return 0;
+    const range = sel.getRangeAt(0);
+    const pre = range.cloneRange();
+    pre.selectNodeContents(editor);
+    pre.setEnd(range.startContainer, range.startOffset);
+    return pre.toString().length;
+  }
+
+  function caretCoordsAt(offset) {
+    const text = getText();
+    const safe = Math.max(0, Math.min(offset, text.length));
+    // Mirror ölçümü
+    const mirror = document.createElement("div");
+    const style = window.getComputedStyle(editor);
+    mirror.style.cssText = [
+      "position:absolute", "visibility:hidden", "white-space:pre-wrap", "word-break:break-word",
+      "left:0", "top:0", "width:" + editor.clientWidth + "px",
+      "padding:" + style.padding, "font:" + style.font, "line-height:" + style.lineHeight,
+      "box-sizing:border-box"
+    ].join(";");
+    const before = document.createTextNode(text.slice(0, safe));
+    const marker = document.createElement("span");
+    marker.textContent = "|";
+    mirror.appendChild(before);
+    mirror.appendChild(marker);
+    wrap.appendChild(mirror);
+    const top = marker.offsetTop;
+    const left = marker.offsetLeft;
+    wrap.removeChild(mirror);
+    return { top: top, left: left };
   }
 
   function renderPresence() {
@@ -47,6 +89,7 @@ _COLLAB_EDITOR_HTML = """
     const keys = Object.keys(peers);
     if (!keys.length) {
       presenceEl.textContent = "Kimse yok";
+      cursorsEl.innerHTML = "";
       return;
     }
     keys.forEach(function(name) {
@@ -57,14 +100,41 @@ _COLLAB_EDITOR_HTML = """
         (p.cursor != null ? ' @' + p.cursor : '');
       presenceEl.appendChild(chip);
     });
+    renderCursorOverlay();
+  }
+
+  function renderCursorOverlay() {
     cursorsEl.innerHTML = "";
-    keys.forEach(function(name) {
+    Object.keys(peers).forEach(function(name) {
       if (name === USERNAME) return;
       const p = peers[name];
-      const mark = document.createElement("div");
-      mark.style.color = p.color;
-      mark.textContent = name + " imleç:" + (p.cursor || 0);
-      cursorsEl.appendChild(mark);
+      const pos = caretCoordsAt(p.cursor || 0);
+      const caret = document.createElement("div");
+      caret.style.cssText = [
+        "position:absolute",
+        "top:" + pos.top + "px",
+        "left:" + pos.left + "px",
+        "width:2px",
+        "height:1.2em",
+        "background:" + (p.color || "#e74c3c"),
+        "z-index:5"
+      ].join(";");
+      const label = document.createElement("div");
+      label.style.cssText = [
+        "position:absolute",
+        "top:-14px",
+        "left:0",
+        "font-size:10px",
+        "line-height:1",
+        "white-space:nowrap",
+        "padding:1px 4px",
+        "border-radius:3px",
+        "color:#fff",
+        "background:" + (p.color || "#e74c3c")
+      ].join(";");
+      label.textContent = name;
+      caret.appendChild(label);
+      cursorsEl.appendChild(caret);
     });
   }
 
@@ -87,23 +157,18 @@ _COLLAB_EDITOR_HTML = """
 
   function sendCursor() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const pos = textarea.selectionStart || 0;
-    const end = textarea.selectionEnd || pos;
+    const pos = getCaretOffset();
     ws.send(JSON.stringify({
       op: "cursor",
       cursor: pos,
-      selection_end: end,
+      selection_end: pos,
       username: USERNAME
     }));
   }
 
   function connect() {
-    try {
-      ws = new WebSocket(WS_URL);
-    } catch (e) {
-      setStatus("WebSocket hatası: " + e);
-      return;
-    }
+    try { ws = new WebSocket(WS_URL); }
+    catch (e) { setStatus("WebSocket hatası: " + e); return; }
     ws.onopen = function() {
       setStatus("Bağlandı — canlı senkron");
       ws.send(JSON.stringify({op: "join", workspace_key: WORKSPACE, username: USERNAME}));
@@ -113,18 +178,17 @@ _COLLAB_EDITOR_HTML = """
         const data = JSON.parse(ev.data);
         if (data.op === "snapshot") {
           revision = data.revision || revision;
-          if (!dirty) textarea.value = data.content || "";
-          if (data.presence) {
-            data.presence.forEach(function(u) { upsertPeer(u); });
-          }
+          if (!dirty) setText(data.content || "");
+          if (data.presence) data.presence.forEach(function(u) { upsertPeer(u); });
           setStatus("Rev " + revision);
         } else if (data.op === "sync") {
           revision = data.revision || revision;
-          if (!dirty) textarea.value = data.content || "";
+          if (!dirty) setText(data.content || "");
           setStatus("Rev " + revision + (data.updated_by ? " · " + data.updated_by : ""));
+          renderCursorOverlay();
         } else if (data.op === "conflict") {
           revision = data.revision || revision;
-          textarea.value = data.content || textarea.value;
+          setText(data.content || getText());
           setStatus("Çakışma birleştirildi (rev " + revision + ")");
         } else if (data.op === "presence_join" || data.op === "presence_update") {
           upsertPeer(data.user);
@@ -133,21 +197,17 @@ _COLLAB_EDITOR_HTML = """
         } else if (data.op === "error") {
           setStatus("Hata: " + (data.message || "?"));
         }
-      } catch (e) {
-        setStatus("Mesaj hatası");
-      }
+      } catch (e) { setStatus("Mesaj hatası"); }
     };
     ws.onclose = function() {
       setStatus("Bağlantı kapandı — 3s sonra yeniden…");
       setTimeout(connect, 3000);
     };
-    ws.onerror = function() {
-      setStatus("WebSocket bağlantı hatası");
-    };
+    ws.onerror = function() { setStatus("WebSocket bağlantı hatası"); };
   }
 
-  textarea.value = INITIAL;
-  textarea.addEventListener("input", function() {
+  setText(INITIAL);
+  editor.addEventListener("input", function() {
     dirty = true;
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(function() {
@@ -155,18 +215,19 @@ _COLLAB_EDITOR_HTML = """
       ws.send(JSON.stringify({
         op: "edit",
         revision: revision,
-        content: textarea.value,
+        content: getText(),
         username: USERNAME
       }));
       dirty = false;
     }, 450);
   });
-  textarea.addEventListener("keyup", function() {
-    if (cursorTimer) clearTimeout(cursorTimer);
-    cursorTimer = setTimeout(sendCursor, 120);
+  ["keyup", "click", "mouseup"].forEach(function(evt) {
+    editor.addEventListener(evt, function() {
+      if (cursorTimer) clearTimeout(cursorTimer);
+      cursorTimer = setTimeout(sendCursor, 80);
+    });
   });
-  textarea.addEventListener("click", sendCursor);
-  textarea.addEventListener("select", sendCursor);
+  window.addEventListener("resize", renderCursorOverlay);
 
   connect();
 })();
@@ -181,9 +242,9 @@ def render_collab_live_editor(
     username: str,
     initial_content: str = "",
     revision: int = 0,
-    height: int = 300,
+    height: int = 320,
 ) -> None:
-    """HTML/JS CRDT istemcisi — düzenlemeler WebSocket üzerinden CRDT store'a yazılır."""
+    """Contenteditable CRDT istemcisi — görsel remote imleç overlay."""
     html = (
         _COLLAB_EDITOR_HTML.replace("__WS_URL__", _js_str(ws_url))
         .replace("__WORKSPACE__", _js_str(workspace_key))

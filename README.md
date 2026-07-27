@@ -274,6 +274,18 @@ export RAG_ENABLE_DOMAIN_EMBEDDING=1
 - GitHub Actions: `embed-finetune.yml` (haftalık schedule + workflow_dispatch)
 - CI fast job: `embed-pipeline --pairs-only` smoke
 
+### Otomatik domain veri toplama
+```bash
+export RAG_ENABLE_DOMAIN_COLLECT=1
+python -m rag.cli domain-collect --output metadata/domain_training/pairs.jsonl
+python -m rag.cli federated-pool --output metadata/federated/training_pool.jsonl
+python -m rag.cli privacy-pool --noise 1.0 --clip 1.0
+python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pairs.jsonl --federated-pool metadata/federated/training_pool.jsonl --private-pool metadata/federated/private_training_pool.jsonl
+```
+- Sohbet / audit / metriklerden (soru, chunk) çiftleri; tenant bazlı `metadata/tenants/<id>/domain_training/`
+- Federated havuz: tüm tenant çiftlerini tek JSONL'de birleştirir
+- **Privacy pool**: DP-SGD lite (clip + Gaussian) + secure aggregation PoC
+
 ### CRDT işbirlikçi not
 ```bash
 export RAG_ENABLE_COLLAB_CRDT=1
@@ -281,18 +293,8 @@ export RAG_ENABLE_COLLAB_WS=1
 export RAG_ENABLE_COLLAB_LIVE_EDITOR=1
 ```
 - RGA-tarzı CRDT: eşzamanlı düzenlemeler otomatik birleşir (`rag/collab_crdt.py`)
-- **Canlı düzenleyici**: gömülü WebSocket istemcisi (`rag/collab_component.py`)
-- WebSocket: `edit` veya `crdt_ops` mesajları
-
-### Otomatik domain veri toplama
-```bash
-export RAG_ENABLE_DOMAIN_COLLECT=1
-python -m rag.cli domain-collect --output metadata/domain_training/pairs.jsonl
-python -m rag.cli federated-pool --output metadata/federated/training_pool.jsonl
-python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pairs.jsonl --federated-pool metadata/federated/training_pool.jsonl
-```
-- Sohbet / audit / metriklerden (soru, chunk) çiftleri; tenant bazlı `metadata/tenants/<id>/domain_training/`
-- Federated havuz: tüm tenant çiftlerini tek JSONL'de birleştirir
+- **Canlı düzenleyici**: contenteditable + görsel remote imleç overlay (`rag/collab_component.py`)
+- WebSocket: `edit` / `crdt_ops` / `cursor` / presence
 
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
@@ -367,6 +369,11 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 | `RAG_DOMAIN_COLLECT_MIN_GATE` | Toplama için min gate skoru |
 | `RAG_FEDERATED_POOL_PATH` | Federated tenant eğitim havuzu JSONL |
 | `RAG_FEDERATED_MIN_PER_TENANT` | Havuza dahil min çift / tenant |
+| `RAG_ENABLE_FEDERATED_PRIVACY` | DP privacy pool (1/0) |
+| `RAG_FEDERATED_DP_NOISE` | DP Gaussian noise multiplier |
+| `RAG_FEDERATED_DP_CLIP` | DP L2 clip norm |
+| `RAG_FEDERATED_SECRET` | Secure aggregation secret |
+| `RAG_PRIVATE_FEDERATED_POOL_PATH` | Private federated pool çıktısı |
 | `RAG_EMBED_PIPELINE_REPORT_PATH` | Pipeline JSON rapor yolu |
 | `RAG_DOMAIN_EMBEDDING_MODEL` | Domain/fine-tuned embedding model yolu veya Hub adı |
 | `RAG_ENABLE_DOMAIN_EMBEDDING` | Domain embedding varsayılan preset (1/0) |
@@ -382,7 +389,7 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - `rag/tools.py`, `rag/agent.py`, `rag/highlight.py`: araçlar, agent döngüsü, kaynak vurgulama
 - `rag/vision.py`, `rag/vision_llm.py`, `rag/memory.py`, `rag/planner.py`, `rag/profile_memory.py`
 - `rag/share_links.py`, `rag/collab_notes.py`, `rag/collab_ws.py`, `rag/collab_crdt.py`, `rag/collab_component.py`
-- `rag/embed_finetune.py`, `rag/domain_collect.py`, `rag/federated_pool.py`, `rag/collab_presence.py`
+- `rag/embed_finetune.py`, `rag/domain_collect.py`, `rag/federated_pool.py`, `rag/privacy_federated.py`, `rag/collab_presence.py`
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -411,5 +418,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Cross-tenant embedding privacy (DP-SGD / şifreli aggregation)
-- CRDT düzenleyicide görsel imleç overlay (contenteditable)
+- Opacus / resmi DP-SGD ile model eğitimi
+- CRDT selection highlight ve undo stack

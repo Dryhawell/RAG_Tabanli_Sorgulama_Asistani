@@ -237,3 +237,17 @@ FEDERATED_POOL_PATH = os.getenv(
 )
 FEDERATED_MIN_PER_TENANT = int(os.getenv("RAG_FEDERATED_MIN_PER_TENANT", "0"))
 
+# Cross-tenant privacy (DP-SGD lite + secure aggregation PoC)
+ENABLE_FEDERATED_PRIVACY = os.getenv("RAG_ENABLE_FEDERATED_PRIVACY", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+FEDERATED_DP_NOISE = float(os.getenv("RAG_FEDERATED_DP_NOISE", "1.0"))
+FEDERATED_DP_CLIP = float(os.getenv("RAG_FEDERATED_DP_CLIP", "1.0"))
+FEDERATED_SECRET = os.getenv("RAG_FEDERATED_SECRET", "rag-federated")
+PRIVATE_FEDERATED_POOL_PATH = os.getenv(
+    "RAG_PRIVATE_FEDERATED_POOL_PATH",
+    os.path.join(METADATA_DIR, "federated", "private_training_pool.jsonl"),
+)
+

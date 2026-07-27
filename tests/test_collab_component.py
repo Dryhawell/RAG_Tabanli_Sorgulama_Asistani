@@ -14,6 +14,9 @@ def test_collab_editor_html_includes_ws_url():
     assert "ws://localhost:8765" in html
     assert "tenant:default|shared" in html
     assert "collab-editor" in html
+    assert "contenteditable" in html
     assert "collab-presence" in html
+    assert "collab-cursors" in html
     assert "presence_join" in html or "presence_update" in html
     assert "op: \"cursor\"" in html or 'op: "cursor"' in html
+    assert "caretCoordsAt" in html

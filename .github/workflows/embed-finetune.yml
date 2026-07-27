@@ -43,6 +43,7 @@ jobs:
           set -e
           python -m rag.cli domain-collect --output metadata/domain_training/pairs.jsonl || true
           python -m rag.cli federated-pool --output metadata/federated/training_pool.jsonl || true
+          python -m rag.cli privacy-pool --output metadata/federated/private_training_pool.jsonl || true
           if [ "$PAIRS_ONLY" = "true" ]; then
             python -m rag.cli embed-pipeline --pairs-only \
               --pairs metadata/embed_pairs.jsonl \

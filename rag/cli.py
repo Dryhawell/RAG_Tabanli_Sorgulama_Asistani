@@ -38,6 +38,11 @@ from app.config import (
     AUDIT_LOG_PATH,
     FEDERATED_POOL_PATH,
     FEDERATED_MIN_PER_TENANT,
+    PRIVATE_FEDERATED_POOL_PATH,
+    FEDERATED_DP_NOISE,
+    FEDERATED_DP_CLIP,
+    FEDERATED_SECRET,
+    ENABLE_FEDERATED_PRIVACY,
 )
 from rag.embed import Embedder, resolve_embedding_model
 from rag.eval import run_regression
@@ -55,7 +60,8 @@ from rag.embed_finetune import (
     train_embedding_model,
 )
 from rag.domain_collect import collect_and_save
-from rag.federated_pool import build_federated_pool
+from rag.federated_pool import build_federated_pool, aggregate_federated_pairs
+from rag.privacy_federated import build_private_federated_pool
 from rag.collab_ws import ensure_collab_ws_server, run_collab_ws_server, websockets_available
 from rag.store import create_index, load_index
 
@@ -375,6 +381,7 @@ def cmd_embed_pipeline(args: argparse.Namespace) -> int:
             hard_negatives=args.hard_negatives,
             collected_pairs_path=args.collected_pairs,
             federated_pool_path=args.federated_pool,
+            private_pool_path=getattr(args, "private_pool", None),
         )
     except Exception as exc:
         print(f"Pipeline hatası: {exc}", file=sys.stderr)
@@ -424,6 +431,33 @@ def cmd_federated_pool(args: argparse.Namespace) -> int:
     if summary.get("tenants"):
         for tid, count in sorted(summary["tenants"].items()):
             print(f"  {tid}: {count}")
+    return 0
+
+
+def cmd_privacy_pool(args: argparse.Namespace) -> int:
+    metadata_root = args.metadata or METADATA_DIR
+    pairs = aggregate_federated_pairs(
+        metadata_root,
+        min_per_tenant=args.min_per_tenant,
+    )
+    if not pairs:
+        print("Federated çift bulunamadı.", file=sys.stderr)
+        return 1
+    output = args.output or PRIVATE_FEDERATED_POOL_PATH
+    report = build_private_federated_pool(
+        pairs,
+        output,
+        noise_multiplier=args.noise,
+        clip_norm=args.clip,
+        shared_secret=args.secret or FEDERATED_SECRET,
+        keep_text_pairs=not args.redact_text,
+    )
+    print(
+        f"Private federated: pairs={report['pairs']} contributions={report['contributions']} "
+        f"noise={report['noise_multiplier']} -> {report['output']}"
+    )
+    if report.get("tenants"):
+        print("  tenants:", ", ".join(report["tenants"]))
     return 0
 
 
@@ -632,6 +666,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Federated tenant havuzu JSONL",
     )
+    p_pipe.add_argument(
+        "--private-pool",
+        default=None,
+        help="DP/private federated pool JSONL",
+    )
     p_pipe.set_defaults(func=cmd_embed_pipeline)
 
     p_fed = sub.add_parser("federated-pool", help="Tenant domain çiftlerini federated havuzda birleştir")
@@ -639,6 +678,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_fed.add_argument("--metadata", default=None, help="metadata kök dizini")
     p_fed.add_argument("--min-per-tenant", type=int, default=FEDERATED_MIN_PER_TENANT)
     p_fed.set_defaults(func=cmd_federated_pool)
+
+    p_priv = sub.add_parser(
+        "privacy-pool",
+        help="DP-SGD lite + secure aggregation ile private federated havuz",
+    )
+    p_priv.add_argument("--output", default=None, help="Private havuz çıktısı")
+    p_priv.add_argument("--metadata", default=None)
+    p_priv.add_argument("--min-per-tenant", type=int, default=FEDERATED_MIN_PER_TENANT)
+    p_priv.add_argument("--noise", type=float, default=FEDERATED_DP_NOISE)
+    p_priv.add_argument("--clip", type=float, default=FEDERATED_DP_CLIP)
+    p_priv.add_argument("--secret", default=None, help="Secure aggregation secret")
+    p_priv.add_argument(
+        "--redact-text",
+        action="store_true",
+        help="Metin çiftlerini yazma (yalnızca DP aggregate meta)",
+    )
+    p_priv.set_defaults(func=cmd_privacy_pool)
 
     p_dom = sub.add_parser("domain-collect", help="Sohbet/audit/metrikten domain çiftleri topla")
     p_dom.add_argument("--output", default=None, help="JSONL çıktı yolu")
