@@ -23,3 +23,7 @@ def test_collab_editor_html_includes_ws_url():
     assert "sendUndoRedo" in html
     assert 'op: "undo"' in html or "sendUndoRedo(\"undo\")" in html
     assert "opacity:0.22" in html  # selection highlight
+    assert "compositionstart" in html
+    assert "compositionend" in html
+    assert "sendPasteOrIme" in html
+    assert '"paste"' in html or "paste" in html

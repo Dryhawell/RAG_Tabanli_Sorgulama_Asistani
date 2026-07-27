@@ -48,6 +48,10 @@ from app.config import (
     DP_TRAIN_MAX_GRAD_NORM,
     DP_TRAIN_DELTA,
     DP_TRAIN_USE_OPACUS,
+    ST_DP_TRAIN_OUTPUT_DIR,
+    ST_DP_HEAD_DIM,
+    ST_DP_MAX_SEQ_LENGTH,
+    ST_DP_FREEZE_BACKBONE,
 )
 from rag.embed import Embedder, resolve_embedding_model
 from rag.eval import run_regression
@@ -68,6 +72,7 @@ from rag.domain_collect import collect_and_save
 from rag.federated_pool import build_federated_pool, aggregate_federated_pairs
 from rag.privacy_federated import build_private_federated_pool
 from rag.dp_train import opacus_available, train_embedding_model_dp
+from rag.st_dp_train import train_sentence_transformer_dp_from_pairs_file
 from rag.collab_ws import ensure_collab_ws_server, run_collab_ws_server, websockets_available
 from rag.store import create_index, load_index
 
@@ -503,6 +508,42 @@ def cmd_dp_train(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_st_dp_train(args: argparse.Namespace) -> int:
+    pairs_path = args.pairs or DEFAULT_EMBED_PAIRS
+    if not os.path.isfile(pairs_path):
+        pairs = build_pairs_from_eval(DEFAULT_EVAL_CASES, DEFAULT_EVAL_FIXTURES)
+        export_pairs_jsonl(pairs, pairs_path)
+        print(f"Pairs üretildi: {len(pairs)} -> {pairs_path}")
+    out_dir = args.output or ST_DP_TRAIN_OUTPUT_DIR
+    use_opacus = args.opacus if args.opacus is not None else DP_TRAIN_USE_OPACUS
+    if use_opacus and not opacus_available():
+        print("Opacus yok; manuel DP-SGD fallback kullanılacak.", file=sys.stderr)
+        use_opacus = False
+    try:
+        report = train_sentence_transformer_dp_from_pairs_file(
+            args.embedding,
+            pairs_path,
+            out_dir,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            noise_multiplier=args.noise,
+            max_grad_norm=args.clip,
+            delta=args.delta,
+            use_opacus=use_opacus,
+            head_dim=args.head_dim,
+            max_seq_length=args.max_seq_length,
+            freeze_backbone=not args.unfreeze_backbone,
+        )
+    except Exception as exc:
+        print(f"ST+DP eğitim hatası: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"ST+DP: steps={report['steps']} ε≈{report['epsilon']:.3f} "
+        f"opacus={report['used_opacus']} head={report['weights']}"
+    )
+    return 0
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     """JSONL metrik özetini yazdırır."""
     path = args.path or METRICS_PATH
@@ -761,6 +802,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Manuel DP-SGD fallback",
     )
     p_dp.set_defaults(func=cmd_dp_train)
+
+    p_stdp = sub.add_parser(
+        "st-dp-train",
+        help="SentenceTransformer + Opacus DP fine-tune (frozen backbone + head)",
+    )
+    _add_embedding_arg(p_stdp)
+    p_stdp.add_argument("--pairs", default=None)
+    p_stdp.add_argument("--output", default=None)
+    p_stdp.add_argument("--epochs", type=int, default=1)
+    p_stdp.add_argument("--batch-size", type=int, default=4)
+    p_stdp.add_argument("--noise", type=float, default=DP_TRAIN_NOISE)
+    p_stdp.add_argument("--clip", type=float, default=DP_TRAIN_MAX_GRAD_NORM)
+    p_stdp.add_argument("--delta", type=float, default=DP_TRAIN_DELTA)
+    p_stdp.add_argument("--head-dim", type=int, default=ST_DP_HEAD_DIM)
+    p_stdp.add_argument("--max-seq-length", type=int, default=ST_DP_MAX_SEQ_LENGTH)
+    p_stdp.add_argument(
+        "--unfreeze-backbone",
+        action="store_true",
+        help="Omurgayı da eğit (Opacus ile ağır)",
+    )
+    p_stdp.add_argument("--opacus", dest="opacus", action="store_true", default=None)
+    p_stdp.add_argument("--no-opacus", dest="opacus", action="store_false")
+    p_stdp.set_defaults(func=cmd_st_dp_train)
 
     p_dom = sub.add_parser("domain-collect", help="Sohbet/audit/metrikten domain çiftleri topla")
     p_dom.add_argument("--output", default=None, help="JSONL çıktı yolu")

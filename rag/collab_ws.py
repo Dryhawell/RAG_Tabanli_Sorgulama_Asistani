@@ -25,10 +25,13 @@ except ImportError:
 if ENABLE_COLLAB_CRDT:
     from rag.collab_crdt import apply_text_edit, load_crdt, merge_remote_ops
     from rag.collab_undo import apply_text_edit_with_undo, redo_edit, undo_edit
+    from rag.collab_ime import apply_ime_commit, apply_paste
 else:
     apply_text_edit_with_undo = None  # type: ignore
     redo_edit = None  # type: ignore
     undo_edit = None  # type: ignore
+    apply_paste = None  # type: ignore
+    apply_ime_commit = None  # type: ignore
 
 _ws_started = False
 _ws_lock = threading.Lock()
@@ -150,6 +153,37 @@ async def _handle_client(websocket) -> None:
                     saved_crdt = undo_edit(workspace_key, author=user)
                 else:
                     saved_crdt = redo_edit(workspace_key, author=user)
+                payload = {
+                    "op": "sync",
+                    "workspace_key": workspace_key,
+                    "revision": saved_crdt.revision,
+                    "content": saved_crdt.materialize(),
+                    "updated_by": saved_crdt.updated_by,
+                    "crdt": True,
+                    "via": op,
+                }
+                await websocket.send(json.dumps(payload, ensure_ascii=False))
+                await _broadcast(workspace_key, payload, exclude=websocket)
+                continue
+
+            if op in {"paste", "ime_commit"} and ENABLE_COLLAB_CRDT:
+                if not workspace_key:
+                    await websocket.send(
+                        json.dumps({"op": "error", "message": "Önce join gönderin"})
+                    )
+                    continue
+                user = data.get("username") or username
+                start = int(data.get("start") or 0)
+                end = int(data.get("end") or start)
+                text = str(data.get("text") or "")
+                if op == "paste":
+                    saved_crdt = apply_paste(
+                        workspace_key, start=start, end=end, text=text, author=user
+                    )
+                else:
+                    saved_crdt = apply_ime_commit(
+                        workspace_key, start=start, end=end, text=text, author=user
+                    )
                 payload = {
                     "op": "sync",
                     "workspace_key": workspace_key,

@@ -265,4 +265,15 @@ DP_TRAIN_USE_OPACUS = os.getenv("RAG_DP_TRAIN_USE_OPACUS", "1") not in {
     "false",
     "False",
 }
+ST_DP_TRAIN_OUTPUT_DIR = os.getenv(
+    "RAG_ST_DP_TRAIN_OUTPUT_DIR",
+    os.path.join("models", "st-dp-embed"),
+)
+ST_DP_HEAD_DIM = int(os.getenv("RAG_ST_DP_HEAD_DIM", "64"))
+ST_DP_MAX_SEQ_LENGTH = int(os.getenv("RAG_ST_DP_MAX_SEQ_LENGTH", "64"))
+ST_DP_FREEZE_BACKBONE = os.getenv("RAG_ST_DP_FREEZE_BACKBONE", "1") not in {
+    "0",
+    "false",
+    "False",
+}
 

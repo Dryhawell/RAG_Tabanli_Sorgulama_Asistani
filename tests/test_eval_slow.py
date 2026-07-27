@@ -31,3 +31,25 @@ def test_regression_with_minilm_embedding():
     )
     assert report["summary"]["ok"] is True
     assert report["summary"]["passed"] >= int(0.8 * report["summary"]["total"])
+
+
+@pytest.mark.slow
+def test_sentence_transformer_dp_train(tmp_path):
+    from rag.embed_finetune import build_pairs_from_eval
+    from rag.st_dp_train import train_sentence_transformer_dp
+
+    pairs = build_pairs_from_eval(CASES, FIXTURES)
+    out = str(tmp_path / "st-dp-real")
+    report = train_sentence_transformer_dp(
+        "mini-en",
+        pairs,
+        out,
+        epochs=1,
+        batch_size=2,
+        use_opacus=False,
+        head_dim=32,
+        max_seq_length=32,
+    )
+    assert report["steps"] >= 1
+    assert report["format"] == "st-dp-head-v1"
+    assert (tmp_path / "st-dp-real" / "st_dp_head.pt").exists()

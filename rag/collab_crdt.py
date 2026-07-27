@@ -209,6 +209,12 @@ def apply_op(doc: CrdtDocument, op: Dict[str, Any], author: str) -> None:
             doc.nodes[target].deleted = True
             doc.nodes[target].lamport = doc.lamport
             doc.nodes[target].author = author
+    elif kind == "reparent":
+        target = str(op.get("target") or "")
+        if target in doc.nodes:
+            doc.nodes[target].after = str(op.get("after") or ROOT_ID)
+            doc.nodes[target].lamport = doc.lamport
+            doc.nodes[target].author = author
 
 
 def apply_ops(doc: CrdtDocument, ops: List[Dict[str, Any]], author: str) -> CrdtDocument:
@@ -249,6 +255,7 @@ def _diff_to_ops(
         ops.append({"type": "del", "target": nid, "lamport": lamport})
 
     after_id = old_ids[i - 1] if i > 0 else ROOT_ID
+    last_ins_id = after_id
     for ch in middle_new:
         lamport += 1
         nid = _new_id()
@@ -262,6 +269,26 @@ def _diff_to_ops(
             }
         )
         after_id = nid
+        last_ins_id = nid
+
+    # Silinen aralığın sağındaki ilk düğümü yeni zincire bağla (RGA sibling sırası)
+    suffix_idx = j_old + 1
+    if suffix_idx < len(old_ids) and (middle_old or middle_new):
+        prev_after = (
+            old_ids[j_old]
+            if j_old >= i and j_old < len(old_ids)
+            else (old_ids[i - 1] if i > 0 else ROOT_ID)
+        )
+        lamport += 1
+        ops.append(
+            {
+                "type": "reparent",
+                "target": old_ids[suffix_idx],
+                "after": last_ins_id,
+                "prev_after": prev_after,
+                "lamport": lamport,
+            }
+        )
     return ops
 
 

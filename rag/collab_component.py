@@ -38,6 +38,8 @@ _COLLAB_EDITOR_HTML = """
   let dirty = false;
   let debounceTimer = null;
   let cursorTimer = null;
+  let composing = false;
+  let imeStart = 0;
   const peers = {};
 
   function setStatus(msg) { status.textContent = msg; }
@@ -211,6 +213,28 @@ _COLLAB_EDITOR_HTML = """
     ws.send(JSON.stringify({op: kind, username: USERNAME}));
   }
 
+  function sendPasteOrIme(kind, start, end, text) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({
+      op: kind,
+      start: start,
+      end: end,
+      text: text,
+      username: USERNAME
+    }));
+  }
+
+  function flushEdit() {
+    if (!ws || ws.readyState !== WebSocket.OPEN || composing) return;
+    ws.send(JSON.stringify({
+      op: "edit",
+      revision: revision,
+      content: getText(),
+      username: USERNAME
+    }));
+    dirty = false;
+  }
+
   function connect() {
     try { ws = new WebSocket(WS_URL); }
     catch (e) { setStatus("WebSocket hatası: " + e); return; }
@@ -252,27 +276,42 @@ _COLLAB_EDITOR_HTML = """
   }
 
   setText(INITIAL);
-  editor.addEventListener("input", function() {
+  editor.addEventListener("compositionstart", function() {
+    composing = true;
+    imeStart = getSelectionOffsets().start;
+    if (debounceTimer) clearTimeout(debounceTimer);
+  });
+  editor.addEventListener("compositionend", function() {
+    composing = false;
+    // IME metni zaten DOM'da; tek seferlik full-doc commit
+    dirty = true;
+    flushEdit();
+  });
+  editor.addEventListener("paste", function(e) {
+    e.preventDefault();
+    if (composing) return;
+    const clip = (e.clipboardData || window.clipboardData);
+    const text = clip ? String(clip.getData("text/plain") || "") : "";
+    const sel = getSelectionOffsets();
+    // Sunucu paste op uygular; sync ile DOM güncellenir (çift yazımı önler)
+    sendPasteOrIme("paste", sel.start, sel.end, text);
+    dirty = false;
+  });
+  editor.addEventListener("input", function(e) {
+    if (composing || (e && e.isComposing)) return;
     dirty = true;
     if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(function() {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      ws.send(JSON.stringify({
-        op: "edit",
-        revision: revision,
-        content: getText(),
-        username: USERNAME
-      }));
-      dirty = false;
-    }, 450);
+    debounceTimer = setTimeout(flushEdit, 450);
   });
   ["keyup", "click", "mouseup"].forEach(function(evt) {
     editor.addEventListener(evt, function() {
+      if (composing) return;
       if (cursorTimer) clearTimeout(cursorTimer);
       cursorTimer = setTimeout(sendCursor, 80);
     });
   });
   editor.addEventListener("keydown", function(e) {
+    if (composing || e.isComposing) return;
     const mod = e.ctrlKey || e.metaKey;
     if (mod && !e.shiftKey && (e.key === "z" || e.key === "Z")) {
       e.preventDefault();

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from rag.collab_crdt import (
+    ROOT_ID,
     CrdtDocument,
     _diff_to_ops,
     _text_to_nodes,
@@ -93,6 +94,18 @@ def invert_ops(ops: List[Dict[str, Any]], doc: CrdtDocument) -> List[Dict[str, A
                     "id": node.id,
                     "after": node.after,
                     "char": node.char,
+                    "lamport": int(op.get("lamport") or 0) + 1,
+                }
+            )
+        elif kind == "reparent":
+            target = str(op.get("target") or "")
+            prev = str(op.get("prev_after") or ROOT_ID)
+            inverse.append(
+                {
+                    "type": "reparent",
+                    "target": target,
+                    "after": prev,
+                    "prev_after": str(op.get("after") or ROOT_ID),
                     "lamport": int(op.get("lamport") or 0) + 1,
                 }
             )
