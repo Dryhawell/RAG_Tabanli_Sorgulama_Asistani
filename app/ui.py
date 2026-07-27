@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import secrets
 import time
 import streamlit as st
@@ -87,6 +88,7 @@ from rag.share_links import (
     revoke_share_link,
 )
 from rag.collab_notes import load_note, save_note
+from rag.collab_ws import ensure_collab_ws_server, websockets_available
 from rag.audit import read_audit, write_audit
 from rag.metrics import record_metric, summarize_metrics
 from rag.oidc import (
@@ -146,6 +148,10 @@ from app.config import (
     SHARE_LINK_DEFAULT_TTL_DAYS,
     PUBLIC_BASE_URL,
     ENABLE_COLLAB_NOTES,
+    ENABLE_COLLAB_WS,
+    COLLAB_WS_HOST,
+    COLLAB_WS_PORT,
+    COLLAB_WS_PUBLIC_HOST,
 )
 
 st.set_page_config(page_title="RAG Not/PDF Asistanı", layout="wide")
@@ -161,6 +167,17 @@ if ENABLE_PROMETHEUS:
         from rag.prometheus_sink import ensure_prometheus_server
 
         ensure_prometheus_server()
+    except Exception:
+        pass
+
+# Opsiyonel işbirlikçi WebSocket sunucusu (UI process içinde)
+if ENABLE_COLLAB_WS and ENABLE_COLLAB_NOTES:
+    try:
+        ensure_collab_ws_server(
+            host=COLLAB_WS_HOST,
+            port=COLLAB_WS_PORT,
+            enabled=True,
+        )
     except Exception:
         pass
 
@@ -796,6 +813,27 @@ with st.sidebar:
                         ts=_note.updated_at or "-",
                     )
                 )
+            if ENABLE_COLLAB_WS and websockets_available():
+                _ws_url = f"ws://{COLLAB_WS_PUBLIC_HOST}:{COLLAB_WS_PORT}"
+                st.caption(t("collab_ws_url", url=_ws_url))
+                st.code(
+                    json.dumps(
+                        {"op": "join", "workspace_key": ws.key, "username": "alice"},
+                        ensure_ascii=False,
+                    ),
+                    language="json",
+                )
+            _polled = load_note(ws.key)
+            if _polled.revision > st.session_state.get(f"collab_revision_{ws.key}", 0):
+                st.info(t("collab_remote_update"))
+            if st.button(
+                t("collab_refresh"),
+                use_container_width=True,
+                key=f"collab_refresh_{ws.key}",
+            ):
+                _ref = load_note(ws.key)
+                st.session_state[f"collab_revision_{ws.key}"] = _ref.revision
+                st.rerun()
             _collab_text = st.text_area(
                 "collab",
                 value=_note.content,

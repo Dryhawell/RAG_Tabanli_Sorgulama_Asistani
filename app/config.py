@@ -178,6 +178,18 @@ ENABLE_COLLAB_NOTES = os.getenv("RAG_ENABLE_COLLAB_NOTES", "1") not in {
     "false",
     "False",
 }
+ENABLE_COLLAB_WS = os.getenv("RAG_ENABLE_COLLAB_WS", "0") not in {
+    "0",
+    "false",
+    "False",
+}
+COLLAB_WS_HOST = os.getenv("RAG_COLLAB_WS_HOST", "0.0.0.0")
+COLLAB_WS_PORT = int(os.getenv("RAG_COLLAB_WS_PORT", "8765"))
+COLLAB_WS_PUBLIC_HOST = os.getenv("RAG_COLLAB_WS_PUBLIC_HOST", "localhost")
+EMBED_FINETUNE_OUTPUT_DIR = os.getenv(
+    "RAG_EMBED_FINETUNE_OUTPUT_DIR",
+    os.path.join("models", "embed-finetuned"),
+)
 
 # Domain / fine-tuned embedding (yerel veya Hub model yolu)
 DOMAIN_EMBEDDING_MODEL = os.getenv("RAG_DOMAIN_EMBEDDING_MODEL", "").strip()

@@ -91,6 +91,7 @@ docker compose up --build
 - Vision-LLM (GPT-4o / LLaVA) ve uzun vadeli vektör profil belleği
 - Paylaşım linkleri (salt okunur sohbet) ve işbirlikçi not
 - Domain / fine-tuned embedding preset
+- WebSocket çoklu düzenleyici + embedding fine-tuning pipeline
 - Admin paneli: kullanıcı listele / ekle / sil / ACL (klasör-etiket) / audit log / metrik dashboard
 - Sohbet dışa aktarma (JSON / Markdown)
 - Eval paneli: `soru | beklenen_kaynak | expect_no_answer(0/1)`
@@ -249,6 +250,26 @@ streamlit run app/ui.py
 - Embedding preset listesine **Domain / fine-tuned** eklenir
 - Model değişince indeksi yeniden oluşturun
 
+### WebSocket çoklu düzenleyici
+```bash
+export RAG_ENABLE_COLLAB_WS=1
+export RAG_COLLAB_WS_PORT=8765
+# Ayrı süreç:
+python -m rag.cli collab-serve --port 8765
+# veya UI açıkken aynı process içinde ws://localhost:8765
+```
+- İşbirlikçi not: `join` → `edit` → `sync` / `conflict`
+- Örnek mesaj: `{"op":"join","workspace_key":"tenant:default|shared","username":"alice"}`
+
+### Embedding fine-tuning pipeline
+```bash
+python -m rag.cli embed-pairs --output metadata/embed_pairs.jsonl
+python -m rag.cli embed-train --embedding mini-multi --pairs metadata/embed_pairs.jsonl --epochs 2
+python -m rag.cli embed-eval --embedding mini-multi --finetuned models/embed-finetuned
+export RAG_DOMAIN_EMBEDDING_MODEL=models/embed-finetuned
+export RAG_ENABLE_DOMAIN_EMBEDDING=1
+```
+
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
 |----------|----------|
@@ -312,6 +333,10 @@ streamlit run app/ui.py
 | `RAG_SHARE_LINK_TTL_DAYS` | Paylaşım linki geçerlilik süresi (gün) |
 | `RAG_PUBLIC_BASE_URL` | Paylaşım URL tabanı |
 | `RAG_ENABLE_COLLAB_NOTES` | İşbirlikçi paylaşımlı not (1/0) |
+| `RAG_ENABLE_COLLAB_WS` | İşbirlikçi WebSocket sunucusu (1/0) |
+| `RAG_COLLAB_WS_PORT` | WebSocket portu (varsayılan 8765) |
+| `RAG_COLLAB_WS_PUBLIC_HOST` | UI’da gösterilen WS host |
+| `RAG_EMBED_FINETUNE_OUTPUT_DIR` | Fine-tuned model çıktı dizini |
 | `RAG_DOMAIN_EMBEDDING_MODEL` | Domain/fine-tuned embedding model yolu veya Hub adı |
 | `RAG_ENABLE_DOMAIN_EMBEDDING` | Domain embedding varsayılan preset (1/0) |
 | `OLLAMA_HOST` | Ollama adresi |
@@ -325,7 +350,8 @@ streamlit run app/ui.py
 - `rag/query_rewrite.py`, `rag/compare.py`: HyDE/expand ve çoklu doküman özet/karşılaştırma
 - `rag/tools.py`, `rag/agent.py`, `rag/highlight.py`: araçlar, agent döngüsü, kaynak vurgulama
 - `rag/vision.py`, `rag/vision_llm.py`, `rag/memory.py`, `rag/planner.py`, `rag/profile_memory.py`
-- `rag/share_links.py`, `rag/collab_notes.py`
+- `rag/share_links.py`, `rag/collab_notes.py`, `rag/collab_ws.py`
+- `rag/embed_finetune.py`
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -354,5 +380,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Gerçek zamanlı çoklu düzenleyici (WebSocket / CRDT)
-- Embedding fine-tuning pipeline (otomatik eğitim + değerlendirme)
+- CRDT tabanlı çoklu düzenleyici (tam çakışma birleştirme)
+- Otomatik embedding eğitim döngüsü (CI’da periyodik fine-tune)

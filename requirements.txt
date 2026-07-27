@@ -14,3 +14,4 @@ PyJWT[crypto]
 prometheus-client
 Pillow
 pytesseract
+websockets

@@ -68,6 +68,9 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "collab_save": "Notu kaydet",
         "collab_updated": "Son güncelleme: {user} — {ts}",
         "collab_conflict": "Not başka biri tarafından güncellendi; yenileyin.",
+        "collab_ws_url": "Canlı WebSocket: {url}",
+        "collab_remote_update": "Uzaktan güncelleme algılandı — Yenile ile çekin.",
+        "collab_refresh": "Notu yenile",
     },
     "en": {
         "app_title": "LLM-Powered PDF / Notes Query Assistant (RAG)",
@@ -130,6 +133,9 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "collab_save": "Save note",
         "collab_updated": "Last update: {user} — {ts}",
         "collab_conflict": "Note was updated by someone else; refresh first.",
+        "collab_ws_url": "Live WebSocket: {url}",
+        "collab_remote_update": "Remote update detected — pull with Refresh.",
+        "collab_refresh": "Refresh note",
     },
 }
 

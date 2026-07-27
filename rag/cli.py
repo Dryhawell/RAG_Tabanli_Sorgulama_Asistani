@@ -28,6 +28,9 @@ from app.config import (
     MULTILINGUAL_EMBEDDING_MODEL,
     PROMETHEUS_ADDR,
     PROMETHEUS_PORT,
+    EMBED_FINETUNE_OUTPUT_DIR,
+    COLLAB_WS_HOST,
+    COLLAB_WS_PORT,
 )
 from rag.embed import Embedder, resolve_embedding_model
 from rag.eval import run_regression
@@ -36,11 +39,20 @@ from rag.ingest import ingest_path, list_data_files, rebuild_from_data_dir
 from rag.judge import run_judge_file
 from rag.metrics import summarize_metrics
 from rag.prometheus_sink import ensure_prometheus_server, prometheus_available, render_prometheus
+from rag.embed_finetune import (
+    build_pairs_from_eval,
+    compare_embedding_models,
+    export_pairs_jsonl,
+    load_pairs_jsonl,
+    train_embedding_model,
+)
+from rag.collab_ws import ensure_collab_ws_server, run_collab_ws_server, websockets_available
 from rag.store import create_index, load_index
 
 DEFAULT_EVAL_FIXTURES = os.path.join("evals", "fixtures")
 DEFAULT_EVAL_CASES = os.path.join("evals", "cases.json")
 DEFAULT_JUDGE_CASES = os.path.join("evals", "judge_cases.json")
+DEFAULT_EMBED_PAIRS = os.path.join("metadata", "embed_pairs.jsonl")
 
 
 def _ensure_dirs():
@@ -216,6 +228,112 @@ def cmd_judge(args: argparse.Namespace) -> int:
     return 0 if summary.get("ok") else 1
 
 
+def cmd_collab_serve(args: argparse.Namespace) -> int:
+    if not websockets_available():
+        print("websockets kurulu değil. pip install websockets", file=sys.stderr)
+        return 2
+    host = args.host or COLLAB_WS_HOST
+    port = args.port or COLLAB_WS_PORT
+    try:
+        run_collab_ws_server(host=host, port=port)
+    except KeyboardInterrupt:
+        print("\nKapatıldı.")
+    return 0
+
+
+def cmd_embed_pairs(args: argparse.Namespace) -> int:
+    fixture_dir = args.fixtures
+    cases_path = args.cases
+    if not os.path.isdir(fixture_dir):
+        print(f"Fixture klasörü yok: {fixture_dir}", file=sys.stderr)
+        return 2
+    if not os.path.isfile(cases_path):
+        print(f"Cases dosyası yok: {cases_path}", file=sys.stderr)
+        return 2
+    pairs = build_pairs_from_eval(
+        cases_path,
+        fixture_dir,
+        include_hard_negatives=args.hard_negatives,
+    )
+    if not pairs:
+        print("Üretilen çift yok.", file=sys.stderr)
+        return 1
+    out = export_pairs_jsonl(pairs, args.output)
+    print(f"{len(pairs)} çift yazıldı: {out}")
+    return 0
+
+
+def cmd_embed_train(args: argparse.Namespace) -> int:
+    pairs_path = args.pairs
+    if not os.path.isfile(pairs_path):
+        print(f"Pairs dosyası yok: {pairs_path}", file=sys.stderr)
+        return 2
+    pairs = load_pairs_jsonl(pairs_path)
+    if not pairs:
+        print("Pairs dosyası boş.", file=sys.stderr)
+        return 1
+    out_dir = args.output or EMBED_FINETUNE_OUTPUT_DIR
+    print(
+        f"Eğitim: base={args.embedding} pairs={len(pairs)} "
+        f"epochs={args.epochs} -> {out_dir}"
+    )
+    try:
+        saved = train_embedding_model(
+            args.embedding,
+            pairs_path,
+            out_dir,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+        )
+        print(f"Model kaydedildi: {saved}")
+        return 0
+    except Exception as exc:
+        print(f"Eğitim hatası: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_embed_eval(args: argparse.Namespace) -> int:
+    fixture_dir = args.fixtures
+    cases_path = args.cases
+    if not os.path.isdir(fixture_dir):
+        print(f"Fixture klasörü yok: {fixture_dir}", file=sys.stderr)
+        return 2
+    if not os.path.isfile(cases_path):
+        print(f"Cases dosyası yok: {cases_path}", file=sys.stderr)
+        return 2
+    if not args.finetuned:
+        print("--finetuned gerekli", file=sys.stderr)
+        return 2
+    try:
+        report = compare_embedding_models(
+            args.embedding,
+            args.finetuned,
+            fixture_dir,
+            cases_path,
+            top_k=args.top_k,
+            threshold=args.threshold,
+            use_hybrid=not args.no_hybrid,
+            min_accuracy=args.min_accuracy,
+        )
+    except Exception as exc:
+        print(f"Karşılaştırma hatası: {exc}", file=sys.stderr)
+        return 1
+    b = report["base_summary"]
+    f = report["finetuned_summary"]
+    print(f"Base ({report['base_model']}): {b['passed']}/{b['total']} ({b['accuracy']:.2%})")
+    print(
+        f"Fine-tuned ({report['finetuned_model']}): "
+        f"{f['passed']}/{f['total']} ({f['accuracy']:.2%})"
+    )
+    print(f"Delta accuracy: {report['delta_accuracy']:+.2%}")
+    if args.output:
+        os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+        with open(args.output, "w", encoding="utf-8") as out:
+            json.dump(report, out, ensure_ascii=False, indent=2)
+        print(f"Rapor: {args.output}")
+    return 0 if report.get("improved") else 1
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     """JSONL metrik özetini yazdırır."""
     path = args.path or METRICS_PATH
@@ -354,6 +472,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="Sunucu başlatmadan metrikleri stdout'a yaz",
     )
     p_prom.set_defaults(func=cmd_prometheus)
+
+    p_collab = sub.add_parser("collab-serve", help="İşbirlikçi not WebSocket sunucusu")
+    p_collab.add_argument("--host", default=None, help=f"Bind host (varsayılan {COLLAB_WS_HOST})")
+    p_collab.add_argument("--port", type=int, default=None, help=f"Port (varsayılan {COLLAB_WS_PORT})")
+    p_collab.set_defaults(func=cmd_collab_serve)
+
+    p_pairs = sub.add_parser("embed-pairs", help="Eval'den embedding eğitim çiftleri üret")
+    p_pairs.add_argument("--fixtures", default=DEFAULT_EVAL_FIXTURES)
+    p_pairs.add_argument("--cases", default=DEFAULT_EVAL_CASES)
+    p_pairs.add_argument("--output", default=DEFAULT_EMBED_PAIRS)
+    p_pairs.add_argument(
+        "--hard-negatives",
+        action="store_true",
+        help="Her çifte opsiyonel hard negative ekle",
+    )
+    p_pairs.set_defaults(func=cmd_embed_pairs)
+
+    p_train = sub.add_parser("embed-train", help="Embedding contrastive fine-tuning")
+    _add_embedding_arg(p_train)
+    p_train.add_argument("--pairs", default=DEFAULT_EMBED_PAIRS, help="JSONL çift dosyası")
+    p_train.add_argument("--output", default=None, help="Model çıktı dizini")
+    p_train.add_argument("--epochs", type=int, default=1)
+    p_train.add_argument("--batch-size", type=int, default=8)
+    p_train.set_defaults(func=cmd_embed_train)
+
+    p_emeval = sub.add_parser("embed-eval", help="Base vs fine-tuned retrieval karşılaştır")
+    _add_embedding_arg(p_emeval)
+    p_emeval.add_argument("--fixtures", default=DEFAULT_EVAL_FIXTURES)
+    p_emeval.add_argument("--cases", default=DEFAULT_EVAL_CASES)
+    p_emeval.add_argument("--finetuned", required=True, help="Fine-tuned model dizini veya adı")
+    p_emeval.add_argument("--top-k", type=int, default=4)
+    p_emeval.add_argument("--threshold", type=float, default=0.30)
+    p_emeval.add_argument("--min-accuracy", type=float, default=0.0)
+    p_emeval.add_argument("--no-hybrid", action="store_true")
+    p_emeval.add_argument("--output", default=None, help="JSON rapor")
+    p_emeval.set_defaults(func=cmd_embed_eval)
     return p
 
 
