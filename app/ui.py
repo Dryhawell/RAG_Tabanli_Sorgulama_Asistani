@@ -5,7 +5,13 @@ import time
 import streamlit as st
 import requests
 
-from rag.embed import EMBEDDING_PRESETS, Embedder, preset_for_model, resolve_embedding_model
+from rag.embed import (
+    EMBEDDING_PRESETS,
+    Embedder,
+    default_embedding_preset,
+    preset_for_model,
+    resolve_embedding_model,
+)
 from rag.hybrid import build_bm25_from_index
 from rag.ingest import (
     delete_source,
@@ -72,6 +78,15 @@ from rag.acl import (
     intersect_tag_filter,
 )
 from rag.export_chat import export_session_json, export_session_markdown
+from rag.share_links import (
+    build_share_url,
+    create_share_link,
+    list_links_for_session,
+    load_shared_session,
+    resolve_share_token,
+    revoke_share_link,
+)
+from rag.collab_notes import load_note, save_note
 from rag.audit import read_audit, write_audit
 from rag.metrics import record_metric, summarize_metrics
 from rag.oidc import (
@@ -127,6 +142,10 @@ from app.config import (
     ENABLE_PROFILE_MEMORY,
     PROFILE_MEMORY_TOP_K,
     PROFILE_MEMORY_MIN_SCORE,
+    ENABLE_SHARE_LINKS,
+    SHARE_LINK_DEFAULT_TTL_DAYS,
+    PUBLIC_BASE_URL,
+    ENABLE_COLLAB_NOTES,
 )
 
 st.set_page_config(page_title="RAG Not/PDF Asistanı", layout="wide")
@@ -147,6 +166,35 @@ if ENABLE_PROMETHEUS:
 
 for _d in [DATA_DIR, INDEXES_DIR, METADATA_DIR, CHAT_DIR]:
     os.makedirs(_d, exist_ok=True)
+
+# Paylaşım linki görüntüleyici (auth bypass, salt okunur)
+_share_qp = st.query_params.get("share")
+if ENABLE_SHARE_LINKS and _share_qp:
+    _share_link = resolve_share_token(str(_share_qp))
+    if _share_link is None:
+        st.error(t("share_invalid"))
+        st.stop()
+    _shared_session = load_shared_session(_share_link)
+    if _shared_session is None:
+        st.error(t("share_invalid"))
+        st.stop()
+    st.subheader(t("share_view_title"))
+    st.caption(
+        f"{_shared_session.get('title') or 'Sohbet'} · id={_shared_session.get('id')}"
+    )
+    for _m in _shared_session.get("messages") or []:
+        with st.chat_message(_m.get("role") or "assistant"):
+            st.markdown(_m.get("content") or "")
+            if _m.get("sources"):
+                with st.expander(t("sources")):
+                    for _src in _m["sources"]:
+                        _label = _src.get("label") or _src.get("source_file") or "?"
+                        _score = _src.get("score")
+                        if _score is not None:
+                            st.markdown(f"- {_label} (skor: {float(_score):.3f})")
+                        else:
+                            st.markdown(f"- {_label}")
+    st.stop()
 
 # --- Auth (opsiyonel; indeks paylaşımlı, sohbetler kullanıcıya özel) ---
 current_user = None
@@ -414,7 +462,9 @@ with st.sidebar:
             st.warning("OPENAI_API_KEY tanımlı değil. Ayarlamazsanız yanıt üretemeyiz.")
 
     embedding_keys = list(EMBEDDING_PRESETS.keys())
-    default_preset = preset_for_model(DEFAULT_EMBEDDING_MODEL)
+    default_preset = default_embedding_preset()
+    if default_preset not in embedding_keys:
+        default_preset = preset_for_model(DEFAULT_EMBEDDING_MODEL)
     embedding_preset = st.selectbox(
         "Embedding modeli",
         options=embedding_keys,
@@ -691,6 +741,86 @@ with st.sidebar:
         clear_chat = st.button(t("clear_chat"), use_container_width=True)
     with c3:
         delete_chat = st.button(t("delete"), use_container_width=True)
+
+    if ENABLE_SHARE_LINKS:
+        st.caption(t("share_link_caption"))
+        _sid = st.session_state.get("chat_session_id")
+        _active_links = (
+            list_links_for_session(active_chat_dir, _sid) if _sid else []
+        )
+        if st.button(t("share_link"), use_container_width=True, key="create_share_link"):
+            if _sid:
+                _new_link = create_share_link(
+                    active_chat_dir,
+                    _sid,
+                    owner=current_user.username if current_user else None,
+                    ttl_days=SHARE_LINK_DEFAULT_TTL_DAYS,
+                )
+                st.session_state["last_share_url"] = build_share_url(
+                    _new_link.token, PUBLIC_BASE_URL
+                )
+                write_audit(
+                    "share_link_create",
+                    username=current_user.username if current_user else None,
+                    tenant_id=ws.tenant_id if ENABLE_TENANTS else None,
+                    details={"session_id": _sid, "token": _new_link.token[:8]},
+                )
+        if st.session_state.get("last_share_url"):
+            st.code(st.session_state["last_share_url"])
+        if _active_links:
+            if st.button(
+                t("share_link_revoke"),
+                use_container_width=True,
+                key="revoke_share_link",
+            ):
+                revoke_share_link(_active_links[0].token)
+                st.session_state.pop("last_share_url", None)
+                write_audit(
+                    "share_link_revoke",
+                    username=current_user.username if current_user else None,
+                    tenant_id=ws.tenant_id if ENABLE_TENANTS else None,
+                    details={"session_id": _sid, "token": _active_links[0].token[:8]},
+                )
+                st.rerun()
+
+    if ENABLE_COLLAB_NOTES:
+        with st.expander(t("collab_note"), expanded=False):
+            _note = load_note(ws.key)
+            if f"collab_revision_{ws.key}" not in st.session_state:
+                st.session_state[f"collab_revision_{ws.key}"] = _note.revision
+            if _note.updated_by or _note.updated_at:
+                st.caption(
+                    t(
+                        "collab_updated",
+                        user=_note.updated_by or "-",
+                        ts=_note.updated_at or "-",
+                    )
+                )
+            _collab_text = st.text_area(
+                "collab",
+                value=_note.content,
+                height=120,
+                label_visibility="collapsed",
+                key=f"collab_text_{ws.key}",
+            )
+            if st.button(t("collab_save"), use_container_width=True, key=f"collab_save_{ws.key}"):
+                try:
+                    _saved = save_note(
+                        ws.key,
+                        _collab_text,
+                        username=current_user.username if current_user else None,
+                        expected_revision=st.session_state.get(f"collab_revision_{ws.key}"),
+                    )
+                    st.session_state[f"collab_revision_{ws.key}"] = _saved.revision
+                    write_audit(
+                        "collab_note_save",
+                        username=current_user.username if current_user else None,
+                        tenant_id=ws.tenant_id if ENABLE_TENANTS else None,
+                        details={"workspace": ws.key, "revision": _saved.revision},
+                    )
+                    st.success("Kaydedildi")
+                except ValueError:
+                    st.warning(t("collab_conflict"))
 
     # Dışa aktarma mevcut oturum üzerinden (session yüklendikten sonra da çalışır)
 

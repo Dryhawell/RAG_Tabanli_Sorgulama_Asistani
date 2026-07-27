@@ -165,3 +165,25 @@ ENABLE_PROFILE_MEMORY = os.getenv("RAG_ENABLE_PROFILE_MEMORY", "1") not in {
 PROFILE_MEMORY_TOP_K = int(os.getenv("RAG_PROFILE_MEMORY_TOP_K", "4"))
 PROFILE_MEMORY_MIN_SCORE = float(os.getenv("RAG_PROFILE_MEMORY_MIN_SCORE", "0.28"))
 
+# Paylaşım linkleri + işbirlikçi not
+ENABLE_SHARE_LINKS = os.getenv("RAG_ENABLE_SHARE_LINKS", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+SHARE_LINK_DEFAULT_TTL_DAYS = int(os.getenv("RAG_SHARE_LINK_TTL_DAYS", "7"))
+PUBLIC_BASE_URL = os.getenv("RAG_PUBLIC_BASE_URL", "http://localhost:8501")
+ENABLE_COLLAB_NOTES = os.getenv("RAG_ENABLE_COLLAB_NOTES", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+
+# Domain / fine-tuned embedding (yerel veya Hub model yolu)
+DOMAIN_EMBEDDING_MODEL = os.getenv("RAG_DOMAIN_EMBEDDING_MODEL", "").strip()
+ENABLE_DOMAIN_EMBEDDING = os.getenv("RAG_ENABLE_DOMAIN_EMBEDDING", "0") not in {
+    "0",
+    "false",
+    "False",
+}
+

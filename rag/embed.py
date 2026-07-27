@@ -1,7 +1,12 @@
 from typing import List, Optional
 import numpy as np
 
-from app.config import DEFAULT_EMBEDDING_MODEL, MULTILINGUAL_EMBEDDING_MODEL
+from app.config import (
+    DEFAULT_EMBEDDING_MODEL,
+    DOMAIN_EMBEDDING_MODEL,
+    ENABLE_DOMAIN_EMBEDDING,
+    MULTILINGUAL_EMBEDDING_MODEL,
+)
 
 EMBEDDING_PRESETS = {
     "mini-en": {
@@ -13,6 +18,18 @@ EMBEDDING_PRESETS = {
         "model": MULTILINGUAL_EMBEDDING_MODEL,
     },
 }
+
+if DOMAIN_EMBEDDING_MODEL:
+    EMBEDDING_PRESETS["domain"] = {
+        "label": "Domain / fine-tuned embedding",
+        "model": DOMAIN_EMBEDDING_MODEL,
+    }
+
+
+def default_embedding_preset() -> str:
+    if ENABLE_DOMAIN_EMBEDDING and DOMAIN_EMBEDDING_MODEL:
+        return "domain"
+    return "mini-en"
 
 
 def resolve_embedding_model(preset_or_model: str) -> str:
@@ -36,8 +53,8 @@ class Embedder:
 
 def preset_for_model(model_name: Optional[str]) -> str:
     if not model_name:
-        return "mini-en"
+        return default_embedding_preset()
     for key, meta in EMBEDDING_PRESETS.items():
         if meta["model"] == model_name:
             return key
-    return "mini-en"
+    return default_embedding_preset()

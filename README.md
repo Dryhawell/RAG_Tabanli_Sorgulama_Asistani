@@ -89,6 +89,8 @@ docker compose up --build
 - Yanıtta kaynak chunk vurgulama (HTML `<mark>`)
 - Multimodal: görüntü OCR + tablo sorusu boost; agent bellek/planlama
 - Vision-LLM (GPT-4o / LLaVA) ve uzun vadeli vektör profil belleği
+- Paylaşım linkleri (salt okunur sohbet) ve işbirlikçi not
+- Domain / fine-tuned embedding preset
 - Admin paneli: kullanıcı listele / ekle / sil / ACL (klasör-etiket) / audit log / metrik dashboard
 - Sohbet dışa aktarma (JSON / Markdown)
 - Eval paneli: `soru | beklenen_kaynak | expect_no_answer(0/1)`
@@ -224,6 +226,29 @@ streamlit run app/ui.py
 - Profil belleği: `metadata/profiles/<user>/long_memory.json` (embedding araması)
 - Oturum olguları otomatik uzun vadeli belleğe taşınır
 
+### Paylaşım linkleri + işbirlikçi not
+```bash
+export RAG_ENABLE_SHARE_LINKS=1
+export RAG_PUBLIC_BASE_URL=http://localhost:8501
+export RAG_SHARE_LINK_TTL_DAYS=7
+export RAG_ENABLE_COLLAB_NOTES=1
+streamlit run app/ui.py
+```
+- Sidebar’dan salt okunur sohbet paylaşım linki oluşturun (`?share=<token>`)
+- Link giriş gerektirmez; süre dolunca veya iptal edilince geçersiz olur
+- İşbirlikçi not: çalışma alanına özel paylaşımlı metin; revizyon geçmişi ve çakışma uyarısı
+
+### Domain / fine-tuned embedding
+```bash
+export RAG_DOMAIN_EMBEDDING_MODEL=/path/to/fine-tuned-model
+# veya HuggingFace model adı:
+# export RAG_DOMAIN_EMBEDDING_MODEL=my-org/legal-miniLM
+export RAG_ENABLE_DOMAIN_EMBEDDING=1
+streamlit run app/ui.py
+```
+- Embedding preset listesine **Domain / fine-tuned** eklenir
+- Model değişince indeksi yeniden oluşturun
+
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
 |----------|----------|
@@ -283,6 +308,12 @@ streamlit run app/ui.py
 | `RAG_ENABLE_PROFILE_MEMORY` | Uzun vadeli vektör bellek (1/0) |
 | `RAG_PROFILE_MEMORY_TOP_K` | Profil bellek retrieval k |
 | `RAG_PROFILE_MEMORY_MIN_SCORE` | Profil bellek skor eşiği |
+| `RAG_ENABLE_SHARE_LINKS` | Sohbet paylaşım linkleri (1/0) |
+| `RAG_SHARE_LINK_TTL_DAYS` | Paylaşım linki geçerlilik süresi (gün) |
+| `RAG_PUBLIC_BASE_URL` | Paylaşım URL tabanı |
+| `RAG_ENABLE_COLLAB_NOTES` | İşbirlikçi paylaşımlı not (1/0) |
+| `RAG_DOMAIN_EMBEDDING_MODEL` | Domain/fine-tuned embedding model yolu veya Hub adı |
+| `RAG_ENABLE_DOMAIN_EMBEDDING` | Domain embedding varsayılan preset (1/0) |
 | `OLLAMA_HOST` | Ollama adresi |
 | `OPENAI_API_KEY` | OpenAI anahtarı |
 
@@ -294,6 +325,7 @@ streamlit run app/ui.py
 - `rag/query_rewrite.py`, `rag/compare.py`: HyDE/expand ve çoklu doküman özet/karşılaştırma
 - `rag/tools.py`, `rag/agent.py`, `rag/highlight.py`: araçlar, agent döngüsü, kaynak vurgulama
 - `rag/vision.py`, `rag/vision_llm.py`, `rag/memory.py`, `rag/planner.py`, `rag/profile_memory.py`
+- `rag/share_links.py`, `rag/collab_notes.py`
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -322,5 +354,5 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Gerçek zamanlı işbirlikçi düzenleme / paylaşım linkleri
-- Fine-tuned domain embedding
+- Gerçek zamanlı çoklu düzenleyici (WebSocket / CRDT)
+- Embedding fine-tuning pipeline (otomatik eğitim + değerlendirme)
