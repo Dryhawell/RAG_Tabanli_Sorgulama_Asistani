@@ -312,4 +312,5 @@ NOTIFY_SMTP_USER = os.getenv("RAG_NOTIFY_SMTP_USER", "").strip()
 NOTIFY_SMTP_PASSWORD = os.getenv("RAG_NOTIFY_SMTP_PASSWORD", "").strip()
 NOTIFY_FROM_EMAIL = os.getenv("RAG_NOTIFY_FROM_EMAIL", "noreply@localhost").strip()
 NOTIFY_WEBHOOK_URL = os.getenv("RAG_NOTIFY_WEBHOOK_URL", "").strip()
+NOTIFY_DIGEST_HOURS = int(os.getenv("RAG_NOTIFY_DIGEST_HOURS", "24"))
 

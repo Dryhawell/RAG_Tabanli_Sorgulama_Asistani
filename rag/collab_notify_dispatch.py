@@ -109,3 +109,29 @@ def dispatch_notification(event: Dict[str, Any]) -> Dict[str, Any]:
 
 def dispatch_notifications(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [dispatch_notification(ev) for ev in events or []]
+
+
+def dispatch_digest_email(username: str, events: List[Dict[str, Any]]) -> bool:
+    """Okunmamış bildirimlerin günlük özet e-postası."""
+    if not NOTIFY_SMTP_HOST or not events:
+        return False
+    to_addr = resolve_notify_email(username)
+    if not to_addr:
+        return False
+    from rag.collab_notify_digest import build_digest_body
+
+    body = build_digest_body(events, username)
+    subject = f"[RAG Collab] Bildirim özeti ({len(events)})"
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = NOTIFY_FROM_EMAIL
+    msg["To"] = to_addr
+    try:
+        with smtplib.SMTP(NOTIFY_SMTP_HOST, NOTIFY_SMTP_PORT, timeout=15) as smtp:
+            if NOTIFY_SMTP_USER:
+                smtp.starttls()
+                smtp.login(NOTIFY_SMTP_USER, NOTIFY_SMTP_PASSWORD)
+            smtp.sendmail(NOTIFY_FROM_EMAIL, [to_addr], msg.as_string())
+        return True
+    except Exception:
+        return False

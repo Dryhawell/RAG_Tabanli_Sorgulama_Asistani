@@ -297,6 +297,15 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
         result = dispatch_notification(sample)
         print(json.dumps(result, ensure_ascii=False))
         return 0
+    if args.digest:
+        from rag.collab_notify_digest import send_digest_email
+
+        result = send_digest_email(
+            user,
+            hours=args.digest_hours,
+        )
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result.get("sent") or result.get("reason") == "empty" else 1
     if args.mark_read:
         changed = mark_notifications_read_global(
             user,
@@ -800,6 +809,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_cnot.add_argument("--unread-only", action="store_true", default=False)
     p_cnot.add_argument("--mark-read", action="store_true", help="Tümünü okundu işaretle")
     p_cnot.add_argument("--test-dispatch", action="store_true", help="E-posta/webhook test gönderimi")
+    p_cnot.add_argument("--digest", action="store_true", help="Günlük özet e-postası gönder")
+    p_cnot.add_argument("--digest-hours", type=int, default=24, help="Özet penceresi (saat)")
     p_cnot.add_argument("--ids", nargs="*", default=None, help="Belirli bildirim id'leri")
     p_cnot.add_argument("--json", action="store_true", help="JSON çıktı")
     p_cnot.set_defaults(func=cmd_collab_notifications)

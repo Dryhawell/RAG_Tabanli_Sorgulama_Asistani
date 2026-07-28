@@ -270,6 +270,60 @@ def merge_overlapping_marks(marks: List[TextMark]) -> List[TextMark]:
     return merged
 
 
+def marks_in_range(
+    store: RichTextStore,
+    start: int,
+    end: int,
+) -> List[str]:
+    """[start, end) aralığıyla kesişen mark türlerini döndürür."""
+    start, end = int(start), int(end)
+    if end <= start:
+        return []
+    found: set[str] = set()
+    for m in store.marks:
+        if m.start < end and m.end > start:
+            found.add(m.mark)
+    return sorted(found)
+
+
+def summarize_mark_layers(
+    workspace_key: str,
+    *,
+    base: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Metindeki katman bölgelerini (çoklu stil birleşimleri) özetler."""
+    doc = load_crdt(workspace_key, base=base)
+    text = doc.materialize()
+    store = load_richtext(workspace_key, base=base)
+    n = len(text)
+    if n == 0:
+        return []
+    open_marks: List[set] = [set() for _ in range(n)]
+    for m in store.marks:
+        a = max(0, min(m.start, n))
+        b = max(a, min(m.end, n))
+        for i in range(a, b):
+            open_marks[i].add(m.mark)
+    regions: List[Dict[str, Any]] = []
+    i = 0
+    while i < n:
+        marks = open_marks[i]
+        j = i + 1
+        while j < n and open_marks[j] == marks:
+            j += 1
+        if marks:
+            regions.append(
+                {
+                    "start": i,
+                    "end": j,
+                    "layers": sorted(marks),
+                    "layer_key": "-".join(sorted(marks)),
+                }
+            )
+        i = j
+    return regions
+
+
 def add_mark(
     workspace_key: str,
     *,
@@ -459,6 +513,12 @@ def render_rich_html(
             chunk = f"<strong>{chunk}</strong>"
         if "italic" in marks:
             chunk = f"<em>{chunk}</em>"
+        if marks:
+            layer_key = "-".join(sorted(marks))
+            chunk = (
+                f'<span class="crdt-layer crdt-layer-{layer_key}" '
+                f'data-layers="{layer_key}">{chunk}</span>'
+            )
         parts.append(chunk)
         i = j
     return "".join(parts)
@@ -470,6 +530,7 @@ def richtext_snapshot(workspace_key: str, base: Optional[str] = None) -> Dict[st
         "marks": [m.to_dict() for m in store.marks],
         "comments": [c.to_dict() for c in store.comments],
         "html": render_rich_html(workspace_key, base=base),
+        "layers": summarize_mark_layers(workspace_key, base=base),
     }
 
 

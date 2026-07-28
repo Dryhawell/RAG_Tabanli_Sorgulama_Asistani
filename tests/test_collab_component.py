@@ -34,3 +34,6 @@ def test_collab_editor_html_includes_ws_url():
     assert "applyRichHtml" in html
     assert "mention_notify" in html
     assert "collab-notify" in html
+    assert "collab-layers" in html
+    assert "updateLayerPreview" in html
+    assert "crdt-layer" in html

@@ -38,10 +38,30 @@ _COLLAB_EDITOR_HTML = """
     border-radius: 4px;
     display: none;
   }
+  #collab-layers {
+    font-size: 11px;
+    color: #555;
+    margin-bottom: 4px;
+    min-height: 14px;
+  }
+  #collab-editor .crdt-layer-bold-italic strong em {
+    font-weight: 700;
+    font-style: italic;
+  }
+  #collab-editor .crdt-layer-bold-code code {
+    font-weight: 700;
+    background: #eef6ff;
+  }
+  #collab-editor .crdt-layer-italic-code em code,
+  #collab-editor .crdt-layer-code-italic code {
+    font-style: italic;
+    background: #f4f4f4;
+  }
 </style>
 <div style="font-family: system-ui, sans-serif;">
   <div id="collab-presence" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;font-size:12px;"></div>
   <div id="collab-notify"></div>
+  <div id="collab-layers"></div>
   <div id="collab-toolbar" style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;">
     <button type="button" data-mark="bold" style="padding:4px 10px;font-weight:700;">B</button>
     <button type="button" data-mark="italic" style="padding:4px 10px;font-style:italic;">I</button>
@@ -69,6 +89,7 @@ _COLLAB_EDITOR_HTML = """
   const cursorsEl = document.getElementById("collab-cursors");
   const toolbar = document.getElementById("collab-toolbar");
   const notifyEl = document.getElementById("collab-notify");
+  const layersEl = document.getElementById("collab-layers");
   let revision = __REVISION__;
   let ws = null;
   let dirty = false;
@@ -77,6 +98,7 @@ _COLLAB_EDITOR_HTML = """
   let composing = false;
   let imeStart = 0;
   const peers = {};
+  let richMarks = [];
   if (!RICHTEXT && toolbar) toolbar.style.display = "none";
 
   function setStatus(msg) { status.textContent = msg; }
@@ -112,6 +134,36 @@ _COLLAB_EDITOR_HTML = """
       applyRichHtml(data.rich.html);
     } else if (data.content !== undefined) {
       setText(data.content || "");
+    }
+    if (RICHTEXT && data.rich && data.rich.marks) {
+      richMarks = data.rich.marks;
+      updateLayerPreview();
+    }
+  }
+
+  function marksAtSelection() {
+    const sel = getSelectionOffsets();
+    if (sel.end <= sel.start) return [];
+    const found = new Set();
+    richMarks.forEach(function(m) {
+      const a = parseInt(m.start || 0, 10);
+      const b = parseInt(m.end || 0, 10);
+      if (a < sel.end && b > sel.start) found.add(m.mark);
+    });
+    return Array.from(found).sort();
+  }
+
+  function updateLayerPreview() {
+    if (!layersEl || !RICHTEXT) return;
+    const sel = getSelectionOffsets();
+    const layers = marksAtSelection();
+    if (layers.length) {
+      layersEl.textContent =
+        "Katmanlar @" + sel.start + "-" + sel.end + ": " + layers.join(" + ");
+    } else if (sel.end > sel.start) {
+      layersEl.textContent = "Seçim @" + sel.start + "-" + sel.end + " (biçim yok)";
+    } else {
+      layersEl.textContent = "";
     }
   }
 
@@ -332,7 +384,9 @@ _COLLAB_EDITOR_HTML = """
         } else if (data.op === "presence_leave") {
           removePeer(data.user);
         } else if (data.op === "rich_sync") {
+          if (RICHTEXT && data.rich && data.rich.marks) richMarks = data.rich.marks;
           if (RICHTEXT && data.rich && data.rich.html) applyRichHtml(data.rich.html);
+          updateLayerPreview();
           setStatus("Richtext güncellendi");
         } else if (data.op === "mention_notify") {
           const n = data.notification;
@@ -383,7 +437,10 @@ _COLLAB_EDITOR_HTML = """
     editor.addEventListener(evt, function() {
       if (composing) return;
       if (cursorTimer) clearTimeout(cursorTimer);
-      cursorTimer = setTimeout(sendCursor, 80);
+      cursorTimer = setTimeout(function() {
+        sendCursor();
+        updateLayerPreview();
+      }, 80);
     });
   });
   editor.addEventListener("keydown", function(e) {

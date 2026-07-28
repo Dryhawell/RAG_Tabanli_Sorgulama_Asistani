@@ -92,6 +92,11 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "collab_mention_notify_ws": "[{workspace}] {from_user}: {preview}",
         "collab_mark_read_all": "Tümünü okundu işaretle",
         "collab_no_notifications": "Yeni bildirim yok",
+        "collab_mark_layers": "Aktif katmanlar: {layers}",
+        "collab_layer_map": "Biçim katman haritası",
+        "collab_send_digest": "Özet e-posta gönder",
+        "collab_digest_sent": "Özet gönderildi ({count} bildirim)",
+        "collab_digest_skip": "Özet gönderilmedi: {reason}",
     },
     "en": {
         "app_title": "LLM-Powered PDF / Notes Query Assistant (RAG)",
@@ -178,6 +183,11 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "collab_mention_notify_ws": "[{workspace}] {from_user}: {preview}",
         "collab_mark_read_all": "Mark all read",
         "collab_no_notifications": "No new notifications",
+        "collab_mark_layers": "Active layers: {layers}",
+        "collab_layer_map": "Style layer map",
+        "collab_send_digest": "Send digest email",
+        "collab_digest_sent": "Digest sent ({count} notifications)",
+        "collab_digest_skip": "Digest not sent: {reason}",
     },
 }
 

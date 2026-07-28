@@ -95,10 +95,12 @@ from rag.collab_richtext import (
     add_comment,
     add_mark,
     load_richtext,
+    marks_in_range,
     render_rich_html,
     render_mention_html,
     reply_comment,
     resolve_comment,
+    summarize_mark_layers,
 )
 from rag.collab_notify import list_notifications, mark_notifications_read, notify_mentions
 from rag.collab_notify import list_notifications_global, mark_notifications_read_global
@@ -488,13 +490,25 @@ with st.sidebar:
                             preview=_gn.get("body_preview") or "",
                         )
                     )
-                if st.button(
-                    t("collab_mark_read_all"),
-                    key="collab_mark_read_all",
-                    use_container_width=True,
-                ):
-                    mark_notifications_read_global(_nc_user)
-                    st.rerun()
+                    if st.button(
+                        t("collab_mark_read_all"),
+                        key="collab_mark_read_all",
+                        use_container_width=True,
+                    ):
+                        mark_notifications_read_global(_nc_user)
+                        st.rerun()
+                    if st.button(
+                        t("collab_send_digest"),
+                        key="collab_send_digest",
+                        use_container_width=True,
+                    ):
+                        from rag.collab_notify_digest import send_digest_email
+
+                        _dig = send_digest_email(_nc_user)
+                        if _dig.get("sent"):
+                            st.success(t("collab_digest_sent", count=_dig.get("count") or 0))
+                        else:
+                            st.info(t("collab_digest_skip", reason=_dig.get("reason") or "?"))
             else:
                 st.caption(t("collab_no_notifications"))
     provider_options = ["ollama", "openai"]
@@ -983,6 +997,21 @@ with st.sidebar:
                         ["bold", "italic", "code"],
                         key=f"mk_kind_{ws.key}",
                     )
+                _rt_layers = marks_in_range(
+                    load_richtext(ws.key),
+                    int(_mk_start),
+                    int(_mk_end),
+                )
+                if _rt_layers:
+                    st.caption(t("collab_mark_layers", layers=" + ".join(_rt_layers)))
+                _layer_regions = summarize_mark_layers(ws.key)
+                if _layer_regions:
+                    with st.expander(t("collab_layer_map"), expanded=False):
+                        for _lr in _layer_regions[:20]:
+                            st.write(
+                                f"{_lr['start']}:{_lr['end']} → "
+                                + " + ".join(_lr.get("layers") or [])
+                            )
                 if st.button(t("collab_add_mark"), use_container_width=True, key=f"mk_add_{ws.key}"):
                     try:
                         add_mark(
