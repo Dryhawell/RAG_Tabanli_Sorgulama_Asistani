@@ -52,6 +52,10 @@ from app.config import (
     ST_DP_HEAD_DIM,
     ST_DP_MAX_SEQ_LENGTH,
     ST_DP_FREEZE_BACKBONE,
+    LORA_DP_TRAIN_OUTPUT_DIR,
+    LORA_DP_RANK,
+    LORA_DP_ALPHA,
+    LORA_DP_MOCK,
 )
 from rag.embed import Embedder, resolve_embedding_model
 from rag.eval import run_regression
@@ -73,6 +77,7 @@ from rag.federated_pool import build_federated_pool, aggregate_federated_pairs
 from rag.privacy_federated import build_private_federated_pool
 from rag.dp_train import opacus_available, train_embedding_model_dp
 from rag.st_dp_train import train_sentence_transformer_dp_from_pairs_file
+from rag.st_lora_dp import peft_available, train_lora_dp_from_pairs_file
 from rag.collab_ws import ensure_collab_ws_server, run_collab_ws_server, websockets_available
 from rag.store import create_index, load_index
 
@@ -544,6 +549,47 @@ def cmd_st_dp_train(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_lora_dp_train(args: argparse.Namespace) -> int:
+    pairs_path = args.pairs or DEFAULT_EMBED_PAIRS
+    if not os.path.isfile(pairs_path):
+        pairs = build_pairs_from_eval(DEFAULT_EVAL_CASES, DEFAULT_EVAL_FIXTURES)
+        export_pairs_jsonl(pairs, pairs_path)
+        print(f"Pairs üretildi: {len(pairs)} -> {pairs_path}")
+    out_dir = args.output or LORA_DP_TRAIN_OUTPUT_DIR
+    use_opacus = args.opacus if args.opacus is not None else DP_TRAIN_USE_OPACUS
+    if use_opacus and not opacus_available():
+        print("Opacus yok; manuel DP-SGD fallback kullanılacak.", file=sys.stderr)
+        use_opacus = False
+    mock = bool(args.mock) if args.mock is not None else LORA_DP_MOCK
+    if not mock and not peft_available():
+        print("PEFT yok; mock LoRA yoluna düşülüyor.", file=sys.stderr)
+        mock = True
+    try:
+        report = train_lora_dp_from_pairs_file(
+            args.embedding,
+            pairs_path,
+            out_dir,
+            mock=mock,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            noise_multiplier=args.noise,
+            max_grad_norm=args.clip,
+            delta=args.delta,
+            use_opacus=use_opacus,
+            lora_rank=args.rank,
+            **({"lora_alpha": args.alpha} if not mock else {}),
+        )
+    except Exception as exc:
+        print(f"LoRA+DP eğitim hatası: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"LoRA+DP: steps={report['steps']} ε≈{report['epsilon']:.3f} "
+        f"opacus={report['used_opacus']} peft={report.get('used_peft')} "
+        f"format={report.get('format')}"
+    )
+    return 0
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     """JSONL metrik özetini yazdırır."""
     path = args.path or METRICS_PATH
@@ -825,6 +871,37 @@ def build_parser() -> argparse.ArgumentParser:
     p_stdp.add_argument("--opacus", dest="opacus", action="store_true", default=None)
     p_stdp.add_argument("--no-opacus", dest="opacus", action="store_false")
     p_stdp.set_defaults(func=cmd_st_dp_train)
+
+    p_lora = sub.add_parser(
+        "lora-dp-train",
+        help="LoRA + Opacus DP-SGD (PEFT veya mock tiny transformer)",
+    )
+    _add_embedding_arg(p_lora)
+    p_lora.add_argument("--pairs", default=None)
+    p_lora.add_argument("--output", default=None)
+    p_lora.add_argument("--epochs", type=int, default=1)
+    p_lora.add_argument("--batch-size", type=int, default=4)
+    p_lora.add_argument("--noise", type=float, default=DP_TRAIN_NOISE)
+    p_lora.add_argument("--clip", type=float, default=DP_TRAIN_MAX_GRAD_NORM)
+    p_lora.add_argument("--delta", type=float, default=DP_TRAIN_DELTA)
+    p_lora.add_argument("--rank", type=int, default=LORA_DP_RANK)
+    p_lora.add_argument("--alpha", type=int, default=LORA_DP_ALPHA)
+    p_lora.add_argument(
+        "--mock",
+        dest="mock",
+        action="store_true",
+        default=None,
+        help="Tiny transformer + manuel LoRA (CI)",
+    )
+    p_lora.add_argument(
+        "--no-mock",
+        dest="mock",
+        action="store_false",
+        help="Gerçek SentenceTransformer + PEFT LoRA",
+    )
+    p_lora.add_argument("--opacus", dest="opacus", action="store_true", default=None)
+    p_lora.add_argument("--no-opacus", dest="opacus", action="store_false")
+    p_lora.set_defaults(func=cmd_lora_dp_train)
 
     p_dom = sub.add_parser("domain-collect", help="Sohbet/audit/metrikten domain çiftleri topla")
     p_dom.add_argument("--output", default=None, help="JSONL çıktı yolu")

@@ -15,6 +15,12 @@ def _js_str(value: Optional[str]) -> str:
 _COLLAB_EDITOR_HTML = """
 <div style="font-family: system-ui, sans-serif;">
   <div id="collab-presence" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;font-size:12px;"></div>
+  <div id="collab-toolbar" style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;">
+    <button type="button" data-mark="bold" style="padding:4px 10px;font-weight:700;">B</button>
+    <button type="button" data-mark="italic" style="padding:4px 10px;font-style:italic;">I</button>
+    <button type="button" data-mark="code" style="padding:4px 10px;font-family:monospace;">&lt;/&gt;</button>
+    <button type="button" id="collab-comment-btn" style="padding:4px 10px;">Yorum</button>
+  </div>
   <div id="editor-wrap" style="position:relative;border:1px solid #ccc;border-radius:6px;min-height:170px;background:#fff;">
     <div id="collab-editor" contenteditable="true" spellcheck="false"
       style="width:100%;min-height:170px;padding:10px 12px;box-sizing:border-box;outline:none;white-space:pre-wrap;word-break:break-word;line-height:1.5;font-size:14px;font-family:ui-monospace,Menlo,monospace;"></div>
@@ -28,11 +34,13 @@ _COLLAB_EDITOR_HTML = """
   const WORKSPACE = __WORKSPACE__;
   const USERNAME = __USERNAME__;
   const INITIAL = __INITIAL__;
+  const RICHTEXT = __RICHTEXT__;
   const editor = document.getElementById("collab-editor");
   const wrap = document.getElementById("editor-wrap");
   const status = document.getElementById("collab-status");
   const presenceEl = document.getElementById("collab-presence");
   const cursorsEl = document.getElementById("collab-cursors");
+  const toolbar = document.getElementById("collab-toolbar");
   let revision = __REVISION__;
   let ws = null;
   let dirty = false;
@@ -41,6 +49,7 @@ _COLLAB_EDITOR_HTML = """
   let composing = false;
   let imeStart = 0;
   const peers = {};
+  if (!RICHTEXT && toolbar) toolbar.style.display = "none";
 
   function setStatus(msg) { status.textContent = msg; }
 
@@ -224,6 +233,11 @@ _COLLAB_EDITOR_HTML = """
     }));
   }
 
+  function sendRichOps(ops) {
+    if (!RICHTEXT || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({op: "rich_ops", ops: ops, username: USERNAME}));
+  }
+
   function flushEdit() {
     if (!ws || ws.readyState !== WebSocket.OPEN || composing) return;
     ws.send(JSON.stringify({
@@ -263,6 +277,8 @@ _COLLAB_EDITOR_HTML = """
           upsertPeer(data.user);
         } else if (data.op === "presence_leave") {
           removePeer(data.user);
+        } else if (data.op === "rich_sync") {
+          setStatus("Richtext güncellendi");
         } else if (data.op === "error") {
           setStatus("Hata: " + (data.message || "?"));
         }
@@ -325,6 +341,38 @@ _COLLAB_EDITOR_HTML = """
   });
   window.addEventListener("resize", renderCursorOverlay);
 
+  if (toolbar && RICHTEXT) {
+    toolbar.querySelectorAll("button[data-mark]").forEach(function(btn) {
+      btn.addEventListener("click", function() {
+        const sel = getSelectionOffsets();
+        if (sel.end <= sel.start) {
+          setStatus("Biçim için metin seçin");
+          return;
+        }
+        sendRichOps([{
+          type: "add_mark",
+          mark: btn.getAttribute("data-mark"),
+          start: sel.start,
+          end: sel.end
+        }]);
+      });
+    });
+    const cmtBtn = document.getElementById("collab-comment-btn");
+    if (cmtBtn) {
+      cmtBtn.addEventListener("click", function() {
+        const sel = getSelectionOffsets();
+        const body = window.prompt("Yorum");
+        if (!body) return;
+        sendRichOps([{
+          type: "add_comment",
+          start: sel.start,
+          end: Math.max(sel.start, sel.end),
+          body: body
+        }]);
+      });
+    }
+  }
+
   connect();
 })();
 </script>
@@ -338,7 +386,8 @@ def render_collab_live_editor(
     username: str,
     initial_content: str = "",
     revision: int = 0,
-    height: int = 320,
+    height: int = 340,
+    richtext: bool = True,
 ) -> None:
     """Contenteditable CRDT istemcisi — görsel remote imleç overlay."""
     html = (
@@ -347,5 +396,6 @@ def render_collab_live_editor(
         .replace("__USERNAME__", _js_str(username))
         .replace("__INITIAL__", _js_str(initial_content))
         .replace("__REVISION__", str(int(revision)))
+        .replace("__RICHTEXT__", "true" if richtext else "false")
     )
     components.html(html, height=height, scrolling=False)

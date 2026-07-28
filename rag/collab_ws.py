@@ -18,9 +18,10 @@ from rag.collab_presence import (
 )
 
 try:
-    from app.config import ENABLE_COLLAB_CRDT
+    from app.config import ENABLE_COLLAB_CRDT, ENABLE_COLLAB_RICHTEXT
 except ImportError:
     ENABLE_COLLAB_CRDT = True
+    ENABLE_COLLAB_RICHTEXT = True
 
 if ENABLE_COLLAB_CRDT:
     from rag.collab_crdt import apply_text_edit, load_crdt, merge_remote_ops
@@ -32,6 +33,12 @@ else:
     undo_edit = None  # type: ignore
     apply_paste = None  # type: ignore
     apply_ime_commit = None  # type: ignore
+
+if ENABLE_COLLAB_RICHTEXT:
+    from rag.collab_richtext import apply_rich_ops, richtext_snapshot
+else:
+    apply_rich_ops = None  # type: ignore
+    richtext_snapshot = None  # type: ignore
 
 _ws_started = False
 _ws_lock = threading.Lock()
@@ -104,19 +111,18 @@ async def _handle_client(websocket) -> None:
                     note = load_note(workspace_key)
                     content = note.content
                     revision = note.revision
-                await websocket.send(
-                    json.dumps(
-                        {
-                            "op": "snapshot",
-                            "workspace_key": workspace_key,
-                            "revision": revision,
-                            "content": content,
-                            "crdt": ENABLE_COLLAB_CRDT,
-                            "presence": presence_list(room.clients),
-                        },
-                        ensure_ascii=False,
-                    )
-                )
+                snap_payload = {
+                    "op": "snapshot",
+                    "workspace_key": workspace_key,
+                    "revision": revision,
+                    "content": content,
+                    "crdt": ENABLE_COLLAB_CRDT,
+                    "richtext": ENABLE_COLLAB_RICHTEXT,
+                    "presence": presence_list(room.clients),
+                }
+                if ENABLE_COLLAB_RICHTEXT and richtext_snapshot is not None:
+                    snap_payload["rich"] = richtext_snapshot(workspace_key)
+                await websocket.send(json.dumps(snap_payload, ensure_ascii=False))
                 await _broadcast(
                     workspace_key,
                     {"op": "presence_join", "user": presence_entry(meta)},
@@ -283,6 +289,32 @@ async def _handle_client(websocket) -> None:
                     "content": saved.content,
                     "updated_at": saved.updated_at,
                     "updated_by": saved.updated_by,
+                }
+                await websocket.send(json.dumps(payload, ensure_ascii=False))
+                await _broadcast(workspace_key, payload, exclude=websocket)
+                continue
+
+            if op in {"rich_ops", "richtext"} and ENABLE_COLLAB_RICHTEXT:
+                if not workspace_key:
+                    await websocket.send(
+                        json.dumps({"op": "error", "message": "Önce join gönderin"})
+                    )
+                    continue
+                if apply_rich_ops is None:
+                    await websocket.send(
+                        json.dumps({"op": "error", "message": "Richtext kapalı"})
+                    )
+                    continue
+                user = data.get("username") or username
+                ops = data.get("ops") or []
+                if not ops and data.get("type"):
+                    ops = [data]
+                snap = apply_rich_ops(workspace_key, ops, author=user)
+                payload = {
+                    "op": "rich_sync",
+                    "workspace_key": workspace_key,
+                    "rich": snap,
+                    "updated_by": user,
                 }
                 await websocket.send(json.dumps(payload, ensure_ascii=False))
                 await _broadcast(workspace_key, payload, exclude=websocket)

@@ -1,0 +1,414 @@
+"""CRDT rich-text işaretleri (bold/italic) ve yorum thread'leri."""
+
+from __future__ import annotations
+
+import json
+import os
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from app.config import METADATA_DIR
+from rag.collab_crdt import _safe_slug, load_crdt
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _new_id() -> str:
+    return uuid.uuid4().hex[:10]
+
+
+def richtext_path(workspace_key: str, base: Optional[str] = None) -> str:
+    root = base or METADATA_DIR
+    return os.path.join(root, "collab", _safe_slug(workspace_key), "richtext.json")
+
+
+ALLOWED_MARKS = {"bold", "italic", "code"}
+
+
+@dataclass
+class TextMark:
+    id: str
+    mark: str  # bold | italic | code
+    start: int
+    end: int
+    author: Optional[str] = None
+    created_at: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "mark": self.mark,
+            "start": self.start,
+            "end": self.end,
+            "author": self.author,
+            "created_at": self.created_at or _utcnow_iso(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TextMark":
+        return cls(
+            id=str(data.get("id") or _new_id()),
+            mark=str(data.get("mark") or "bold"),
+            start=int(data.get("start") or 0),
+            end=int(data.get("end") or 0),
+            author=data.get("author"),
+            created_at=str(data.get("created_at") or ""),
+        )
+
+
+@dataclass
+class CommentReply:
+    id: str
+    author: Optional[str]
+    body: str
+    created_at: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "author": self.author,
+            "body": self.body,
+            "created_at": self.created_at or _utcnow_iso(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CommentReply":
+        return cls(
+            id=str(data.get("id") or _new_id()),
+            author=data.get("author"),
+            body=str(data.get("body") or ""),
+            created_at=str(data.get("created_at") or ""),
+        )
+
+
+@dataclass
+class CommentThread:
+    id: str
+    start: int
+    end: int
+    author: Optional[str]
+    body: str
+    resolved: bool = False
+    created_at: str = ""
+    replies: List[CommentReply] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "start": self.start,
+            "end": self.end,
+            "author": self.author,
+            "body": self.body,
+            "resolved": self.resolved,
+            "created_at": self.created_at or _utcnow_iso(),
+            "replies": [r.to_dict() for r in self.replies],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CommentThread":
+        replies = [
+            CommentReply.from_dict(x)
+            for x in (data.get("replies") or [])
+            if isinstance(x, dict)
+        ]
+        return cls(
+            id=str(data.get("id") or _new_id()),
+            start=int(data.get("start") or 0),
+            end=int(data.get("end") or 0),
+            author=data.get("author"),
+            body=str(data.get("body") or ""),
+            resolved=bool(data.get("resolved")),
+            created_at=str(data.get("created_at") or ""),
+            replies=replies,
+        )
+
+
+@dataclass
+class RichTextStore:
+    workspace_key: str
+    marks: List[TextMark] = field(default_factory=list)
+    comments: List[CommentThread] = field(default_factory=list)
+    path: str = ""
+
+
+def load_richtext(workspace_key: str, base: Optional[str] = None) -> RichTextStore:
+    path = richtext_path(workspace_key, base=base)
+    store = RichTextStore(workspace_key=workspace_key, path=path)
+    if not os.path.isfile(path):
+        return store
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    store.marks = [
+        TextMark.from_dict(x) for x in (data.get("marks") or []) if isinstance(x, dict)
+    ]
+    store.comments = [
+        CommentThread.from_dict(x)
+        for x in (data.get("comments") or [])
+        if isinstance(x, dict)
+    ]
+    return store
+
+
+def save_richtext(store: RichTextStore, base: Optional[str] = None) -> str:
+    path = store.path or richtext_path(store.workspace_key, base=base)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    payload = {
+        "workspace_key": store.workspace_key,
+        "updated_at": _utcnow_iso(),
+        "marks": [m.to_dict() for m in store.marks],
+        "comments": [c.to_dict() for c in store.comments],
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    store.path = path
+    return path
+
+
+def add_mark(
+    workspace_key: str,
+    *,
+    mark: str,
+    start: int,
+    end: int,
+    author: Optional[str] = None,
+    base: Optional[str] = None,
+) -> TextMark:
+    mark = (mark or "").strip().lower()
+    if mark not in ALLOWED_MARKS:
+        raise ValueError(f"Geçersiz mark: {mark}")
+    start, end = int(start), int(end)
+    if end <= start:
+        raise ValueError("Mark aralığı boş")
+    store = load_richtext(workspace_key, base=base)
+    item = TextMark(
+        id=_new_id(),
+        mark=mark,
+        start=start,
+        end=end,
+        author=author,
+        created_at=_utcnow_iso(),
+    )
+    store.marks.append(item)
+    save_richtext(store, base=base)
+    return item
+
+
+def remove_mark(workspace_key: str, mark_id: str, base: Optional[str] = None) -> bool:
+    store = load_richtext(workspace_key, base=base)
+    before = len(store.marks)
+    store.marks = [m for m in store.marks if m.id != mark_id]
+    if len(store.marks) == before:
+        return False
+    save_richtext(store, base=base)
+    return True
+
+
+def add_comment(
+    workspace_key: str,
+    *,
+    start: int,
+    end: int,
+    body: str,
+    author: Optional[str] = None,
+    base: Optional[str] = None,
+) -> CommentThread:
+    body = (body or "").strip()
+    if len(body) < 1:
+        raise ValueError("Boş yorum")
+    start, end = int(start), int(end)
+    if end < start:
+        start, end = end, start
+    store = load_richtext(workspace_key, base=base)
+    thread = CommentThread(
+        id=_new_id(),
+        start=start,
+        end=max(start, end),
+        author=author,
+        body=body,
+        created_at=_utcnow_iso(),
+    )
+    store.comments.append(thread)
+    save_richtext(store, base=base)
+    return thread
+
+
+def reply_comment(
+    workspace_key: str,
+    thread_id: str,
+    *,
+    body: str,
+    author: Optional[str] = None,
+    base: Optional[str] = None,
+) -> CommentThread:
+    body = (body or "").strip()
+    if not body:
+        raise ValueError("Boş yanıt")
+    store = load_richtext(workspace_key, base=base)
+    for thread in store.comments:
+        if thread.id == thread_id:
+            thread.replies.append(
+                CommentReply(
+                    id=_new_id(),
+                    author=author,
+                    body=body,
+                    created_at=_utcnow_iso(),
+                )
+            )
+            save_richtext(store, base=base)
+            return thread
+    raise KeyError(f"Thread yok: {thread_id}")
+
+
+def resolve_comment(
+    workspace_key: str,
+    thread_id: str,
+    *,
+    resolved: bool = True,
+    base: Optional[str] = None,
+) -> CommentThread:
+    store = load_richtext(workspace_key, base=base)
+    for thread in store.comments:
+        if thread.id == thread_id:
+            thread.resolved = resolved
+            save_richtext(store, base=base)
+            return thread
+    raise KeyError(f"Thread yok: {thread_id}")
+
+
+def render_rich_html(
+    workspace_key: str,
+    *,
+    base: Optional[str] = None,
+) -> str:
+    """Düz metni mark'larla HTML'e çevirir; yorum ankorlarını işaretler."""
+    doc = load_crdt(workspace_key, base=base)
+    text = doc.materialize()
+    store = load_richtext(workspace_key, base=base)
+    n = len(text)
+    if n == 0:
+        return ""
+
+    # her karakter için açık etiket seti
+    open_marks: List[set] = [set() for _ in range(n)]
+    for m in store.marks:
+        a = max(0, min(m.start, n))
+        b = max(a, min(m.end, n))
+        for i in range(a, b):
+            open_marks[i].add(m.mark)
+
+    comment_starts = {}
+    for c in store.comments:
+        if c.resolved:
+            continue
+        a = max(0, min(c.start, n))
+        comment_starts.setdefault(a, []).append(c.id)
+
+    parts: List[str] = []
+    i = 0
+    while i < n:
+        if i in comment_starts:
+            for cid in comment_starts[i]:
+                parts.append(
+                    f'<span class="crdt-comment" data-id="{cid}" title="yorum">&#9679;</span>'
+                )
+        marks = open_marks[i]
+        j = i + 1
+        while j < n and open_marks[j] == marks and j not in comment_starts:
+            j += 1
+        chunk = (
+            text[i:j]
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        if "code" in marks:
+            chunk = f"<code>{chunk}</code>"
+        if "bold" in marks:
+            chunk = f"<strong>{chunk}</strong>"
+        if "italic" in marks:
+            chunk = f"<em>{chunk}</em>"
+        parts.append(chunk)
+        i = j
+    return "".join(parts)
+
+
+def richtext_snapshot(workspace_key: str, base: Optional[str] = None) -> Dict[str, Any]:
+    store = load_richtext(workspace_key, base=base)
+    return {
+        "marks": [m.to_dict() for m in store.marks],
+        "comments": [c.to_dict() for c in store.comments],
+        "html": render_rich_html(workspace_key, base=base),
+    }
+
+
+def apply_rich_ops(
+    workspace_key: str,
+    ops: List[Dict[str, Any]],
+    *,
+    author: Optional[str] = None,
+    base: Optional[str] = None,
+) -> Dict[str, Any]:
+    """WebSocket / UI için zengin metin işlemleri.
+
+    Desteklenen op.type:
+      add_mark, remove_mark, add_comment, reply_comment, resolve_comment
+    """
+    results: List[Dict[str, Any]] = []
+    for raw in ops or []:
+        if not isinstance(raw, dict):
+            continue
+        kind = str(raw.get("type") or raw.get("op") or "").strip().lower()
+        try:
+            if kind == "add_mark":
+                item = add_mark(
+                    workspace_key,
+                    mark=str(raw.get("mark") or "bold"),
+                    start=int(raw.get("start") or 0),
+                    end=int(raw.get("end") or 0),
+                    author=raw.get("author") or author,
+                    base=base,
+                )
+                results.append({"type": kind, "ok": True, "item": item.to_dict()})
+            elif kind == "remove_mark":
+                ok = remove_mark(
+                    workspace_key, str(raw.get("id") or raw.get("mark_id") or ""), base=base
+                )
+                results.append({"type": kind, "ok": ok})
+            elif kind == "add_comment":
+                thread = add_comment(
+                    workspace_key,
+                    start=int(raw.get("start") or 0),
+                    end=int(raw.get("end") or 0),
+                    body=str(raw.get("body") or ""),
+                    author=raw.get("author") or author,
+                    base=base,
+                )
+                results.append({"type": kind, "ok": True, "item": thread.to_dict()})
+            elif kind == "reply_comment":
+                thread = reply_comment(
+                    workspace_key,
+                    str(raw.get("thread_id") or raw.get("id") or ""),
+                    body=str(raw.get("body") or ""),
+                    author=raw.get("author") or author,
+                    base=base,
+                )
+                results.append({"type": kind, "ok": True, "item": thread.to_dict()})
+            elif kind == "resolve_comment":
+                thread = resolve_comment(
+                    workspace_key,
+                    str(raw.get("thread_id") or raw.get("id") or ""),
+                    resolved=bool(raw.get("resolved", True)),
+                    base=base,
+                )
+                results.append({"type": kind, "ok": True, "item": thread.to_dict()})
+            else:
+                results.append({"type": kind or "?", "ok": False, "error": "bilinmeyen op"})
+        except Exception as exc:
+            results.append({"type": kind, "ok": False, "error": str(exc)})
+    snap = richtext_snapshot(workspace_key, base=base)
+    snap["results"] = results
+    return snap

@@ -10,6 +10,7 @@ def test_collab_editor_html_includes_ws_url():
         .replace("__USERNAME__", _js_str("alice"))
         .replace("__INITIAL__", _js_str("merhaba"))
         .replace("__REVISION__", "3")
+        .replace("__RICHTEXT__", "true")
     )
     assert "ws://localhost:8765" in html
     assert "tenant:default|shared" in html
@@ -27,3 +28,6 @@ def test_collab_editor_html_includes_ws_url():
     assert "compositionend" in html
     assert "sendPasteOrIme" in html
     assert '"paste"' in html or "paste" in html
+    assert "sendRichOps" in html
+    assert "collab-toolbar" in html
+    assert "data-mark" in html

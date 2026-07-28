@@ -287,18 +287,21 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - **Privacy pool**: DP-SGD lite (clip + Gaussian) + secure aggregation PoC
 - **DP-SGD eğitim**: `python -m rag.cli dp-train --no-opacus` (Opacus varsa `--opacus`)
 - **ST + Opacus**: `python -m rag.cli st-dp-train --embedding mini-en` (frozen backbone + DP head)
+- **LoRA + DP**: `python -m rag.cli lora-dp-train --mock` (CI) veya PEFT ile `--no-mock`
 
 ### CRDT işbirlikçi not
 ```bash
 export RAG_ENABLE_COLLAB_CRDT=1
 export RAG_ENABLE_COLLAB_WS=1
 export RAG_ENABLE_COLLAB_LIVE_EDITOR=1
+export RAG_ENABLE_COLLAB_RICHTEXT=1
 ```
 - RGA-tarzı CRDT: eşzamanlı düzenlemeler otomatik birleşir (`rag/collab_crdt.py`)
 - **Canlı düzenleyici**: contenteditable + görsel remote imleç/selection overlay
 - Undo/redo: Ctrl+Z / Ctrl+Y (WebSocket `undo`/`redo`) + UI butonları
 - **Paste / IME**: composition sırasında sync kapalı; paste `paste` op; IME `compositionend` → full commit
-- WebSocket: `edit` / `paste` / `ime_commit` / `cursor` / presence / undo / redo
+- **Rich-text**: kalın/italik/kod işaretleri + yorum thread'leri (`rich_ops` / `rich_sync`)
+- WebSocket: `edit` / `paste` / `ime_commit` / `cursor` / presence / undo / redo / `rich_ops`
 
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
@@ -368,6 +371,7 @@ export RAG_ENABLE_COLLAB_LIVE_EDITOR=1
 | `RAG_COLLAB_WS_PUBLIC_HOST` | UI’da gösterilen WS host |
 | `RAG_ENABLE_COLLAB_CRDT` | CRDT birleştirme (1/0, varsayılan açık) |
 | `RAG_ENABLE_COLLAB_LIVE_EDITOR` | Canlı WebSocket düzenleyici (1/0) |
+| `RAG_ENABLE_COLLAB_RICHTEXT` | Rich-text marks + yorum thread'leri (1/0) |
 | `RAG_ENABLE_DOMAIN_COLLECT` | Canlı sorgulardan domain çift toplama (1/0) |
 | `RAG_DOMAIN_PAIRS_PATH` | Toplanan domain çiftleri JSONL |
 | `RAG_DOMAIN_COLLECT_MIN_GATE` | Toplama için min gate skoru |
@@ -388,6 +392,10 @@ export RAG_ENABLE_COLLAB_LIVE_EDITOR=1
 | `RAG_ST_DP_HEAD_DIM` | ST DP projeksiyon boyutu |
 | `RAG_ST_DP_MAX_SEQ_LENGTH` | ST max seq length |
 | `RAG_ST_DP_FREEZE_BACKBONE` | Omurgayı dondur (1/0) |
+| `RAG_LORA_DP_TRAIN_OUTPUT_DIR` | LoRA+DP model çıktı dizini |
+| `RAG_LORA_DP_RANK` | LoRA rank |
+| `RAG_LORA_DP_ALPHA` | LoRA alpha |
+| `RAG_LORA_DP_MOCK` | Mock LoRA yolu (1/0) |
 | `RAG_EMBED_PIPELINE_REPORT_PATH` | Pipeline JSON rapor yolu |
 | `RAG_DOMAIN_EMBEDDING_MODEL` | Domain/fine-tuned embedding model yolu veya Hub adı |
 | `RAG_ENABLE_DOMAIN_EMBEDDING` | Domain embedding varsayılan preset (1/0) |
@@ -403,7 +411,7 @@ export RAG_ENABLE_COLLAB_LIVE_EDITOR=1
 - `rag/tools.py`, `rag/agent.py`, `rag/highlight.py`: araçlar, agent döngüsü, kaynak vurgulama
 - `rag/vision.py`, `rag/vision_llm.py`, `rag/memory.py`, `rag/planner.py`, `rag/profile_memory.py`
 - `rag/share_links.py`, `rag/collab_notes.py`, `rag/collab_ws.py`, `rag/collab_crdt.py`, `rag/collab_component.py`
-- `rag/embed_finetune.py`, `rag/domain_collect.py`, `rag/federated_pool.py`, `rag/privacy_federated.py`, `rag/dp_train.py`, `rag/st_dp_train.py`, `rag/collab_presence.py`, `rag/collab_undo.py`, `rag/collab_ime.py`
+- `rag/embed_finetune.py`, `rag/domain_collect.py`, `rag/federated_pool.py`, `rag/privacy_federated.py`, `rag/dp_train.py`, `rag/st_dp_train.py`, `rag/st_lora_dp.py`, `rag/collab_presence.py`, `rag/collab_undo.py`, `rag/collab_ime.py`, `rag/collab_richtext.py`
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -432,5 +440,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Unfrozen full-transformer DP-SGD (Opacus + LoRA)
-- CRDT rich-text (kalın/italik) ve yorum thread'leri
+- Gerçek ST üzerinde Opacus + PEFT LoRA (üretim ayarı / gradient sample uyumu)
+- Rich-text görsel render'ın canlı editörde inline yansıması
+- Yorum @mention ve bildirimler

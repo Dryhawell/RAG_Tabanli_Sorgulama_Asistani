@@ -91,6 +91,14 @@ from rag.collab_notes import load_note, save_note
 from rag.collab_crdt import load_crdt
 from rag.collab_undo import apply_text_edit_with_undo, redo_edit, undo_edit
 from rag.collab_component import render_collab_live_editor
+from rag.collab_richtext import (
+    add_comment,
+    add_mark,
+    load_richtext,
+    render_rich_html,
+    reply_comment,
+    resolve_comment,
+)
 from rag.collab_ws import ensure_collab_ws_server, websockets_available
 from rag.audit import read_audit, write_audit
 from rag.metrics import record_metric, summarize_metrics
@@ -157,6 +165,7 @@ from app.config import (
     COLLAB_WS_PUBLIC_HOST,
     ENABLE_COLLAB_CRDT,
     ENABLE_COLLAB_LIVE_EDITOR,
+    ENABLE_COLLAB_RICHTEXT,
     ENABLE_DOMAIN_COLLECT,
     DOMAIN_PAIRS_PATH,
     DOMAIN_COLLECT_MIN_GATE,
@@ -845,6 +854,7 @@ with st.sidebar:
                         username=_uname,
                         initial_content=_note_content,
                         revision=_note_revision,
+                        richtext=ENABLE_COLLAB_RICHTEXT,
                     )
                 else:
                     st.code(
@@ -921,6 +931,93 @@ with st.sidebar:
                         _r = redo_edit(ws.key, author=current_user.username if current_user else None)
                         st.session_state[f"collab_revision_{ws.key}"] = _r.revision
                         st.rerun()
+            if ENABLE_COLLAB_CRDT and ENABLE_COLLAB_RICHTEXT:
+                st.caption(t("collab_richtext"))
+                _rt_html = render_rich_html(ws.key)
+                if _rt_html:
+                    st.markdown(_rt_html, unsafe_allow_html=True)
+                rc1, rc2, rc3 = st.columns(3)
+                with rc1:
+                    _mk_start = st.number_input(
+                        t("collab_mark_start"),
+                        min_value=0,
+                        value=0,
+                        key=f"mk_start_{ws.key}",
+                    )
+                with rc2:
+                    _mk_end = st.number_input(
+                        t("collab_mark_end"),
+                        min_value=0,
+                        value=min(5, max(0, len(_note_content))),
+                        key=f"mk_end_{ws.key}",
+                    )
+                with rc3:
+                    _mk_kind = st.selectbox(
+                        t("collab_mark_kind"),
+                        ["bold", "italic", "code"],
+                        key=f"mk_kind_{ws.key}",
+                    )
+                if st.button(t("collab_add_mark"), use_container_width=True, key=f"mk_add_{ws.key}"):
+                    try:
+                        add_mark(
+                            ws.key,
+                            mark=_mk_kind,
+                            start=int(_mk_start),
+                            end=int(_mk_end),
+                            author=current_user.username if current_user else None,
+                        )
+                        st.rerun()
+                    except ValueError as exc:
+                        st.warning(str(exc))
+                _c_body = st.text_input(t("collab_comment_body"), key=f"cmt_body_{ws.key}")
+                if st.button(t("collab_add_comment"), use_container_width=True, key=f"cmt_add_{ws.key}"):
+                    try:
+                        add_comment(
+                            ws.key,
+                            start=int(_mk_start),
+                            end=int(_mk_end),
+                            body=_c_body,
+                            author=current_user.username if current_user else None,
+                        )
+                        st.rerun()
+                    except ValueError as exc:
+                        st.warning(str(exc))
+                _rt = load_richtext(ws.key)
+                for _th in _rt.comments:
+                    _label = f"{'[✓] ' if _th.resolved else ''}{_th.author or '-'}: {_th.body[:80]}"
+                    with st.expander(_label, expanded=False):
+                        st.caption(f"{_th.start}:{_th.end} · {_th.id}")
+                        for _rep in _th.replies:
+                            st.write(f"— {_rep.author or '-'}: {_rep.body}")
+                        _reply = st.text_input(
+                            t("collab_reply"),
+                            key=f"cmt_reply_{ws.key}_{_th.id}",
+                        )
+                        rcol1, rcol2 = st.columns(2)
+                        with rcol1:
+                            if st.button(
+                                t("collab_send_reply"),
+                                key=f"cmt_send_{ws.key}_{_th.id}",
+                                use_container_width=True,
+                            ):
+                                try:
+                                    reply_comment(
+                                        ws.key,
+                                        _th.id,
+                                        body=_reply,
+                                        author=current_user.username if current_user else None,
+                                    )
+                                    st.rerun()
+                                except Exception as exc:
+                                    st.warning(str(exc))
+                        with rcol2:
+                            if not _th.resolved and st.button(
+                                t("collab_resolve"),
+                                key=f"cmt_res_{ws.key}_{_th.id}",
+                                use_container_width=True,
+                            ):
+                                resolve_comment(ws.key, _th.id, resolved=True)
+                                st.rerun()
 
     # Dışa aktarma mevcut oturum üzerinden (session yüklendikten sonra da çalışır)
 

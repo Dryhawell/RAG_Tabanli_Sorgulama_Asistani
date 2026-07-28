@@ -224,6 +224,11 @@ ENABLE_COLLAB_LIVE_EDITOR = os.getenv("RAG_ENABLE_COLLAB_LIVE_EDITOR", "1") not 
     "false",
     "False",
 }
+ENABLE_COLLAB_RICHTEXT = os.getenv("RAG_ENABLE_COLLAB_RICHTEXT", "1") not in {
+    "0",
+    "false",
+    "False",
+}
 
 # Federated embedding havuzu
 ENABLE_FEDERATED_POOL = os.getenv("RAG_ENABLE_FEDERATED_POOL", "1") not in {
@@ -276,4 +281,11 @@ ST_DP_FREEZE_BACKBONE = os.getenv("RAG_ST_DP_FREEZE_BACKBONE", "1") not in {
     "false",
     "False",
 }
+LORA_DP_TRAIN_OUTPUT_DIR = os.getenv(
+    "RAG_LORA_DP_TRAIN_OUTPUT_DIR",
+    os.path.join("models", "lora-dp-embed"),
+)
+LORA_DP_RANK = int(os.getenv("RAG_LORA_DP_RANK", "8"))
+LORA_DP_ALPHA = int(os.getenv("RAG_LORA_DP_ALPHA", "16"))
+LORA_DP_MOCK = os.getenv("RAG_LORA_DP_MOCK", "0") not in {"0", "false", "False"}
 
