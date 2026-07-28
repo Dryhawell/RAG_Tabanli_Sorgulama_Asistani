@@ -283,6 +283,20 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
     )
 
     user = args.user or "local"
+    if args.test_dispatch:
+        from rag.collab_notify_dispatch import dispatch_notification
+
+        sample = {
+            "id": "test",
+            "workspace_key": "test",
+            "target_user": user,
+            "from_user": "system",
+            "body_preview": "Test bildirimi",
+            "kind": "mention",
+        }
+        result = dispatch_notification(sample)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
     if args.mark_read:
         changed = mark_notifications_read_global(
             user,
@@ -785,6 +799,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cnot.add_argument("--limit", type=int, default=50)
     p_cnot.add_argument("--unread-only", action="store_true", default=False)
     p_cnot.add_argument("--mark-read", action="store_true", help="Tümünü okundu işaretle")
+    p_cnot.add_argument("--test-dispatch", action="store_true", help="E-posta/webhook test gönderimi")
     p_cnot.add_argument("--ids", nargs="*", default=None, help="Belirli bildirim id'leri")
     p_cnot.add_argument("--json", action="store_true", help="JSON çıktı")
     p_cnot.set_defaults(func=cmd_collab_notifications)

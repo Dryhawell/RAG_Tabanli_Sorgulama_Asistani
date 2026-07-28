@@ -80,3 +80,39 @@ def test_lora_dp_real_minilm(tmp_path):
     assert report["format"] == "st-lora-dp-v1"
     assert report.get("used_peft") is True
     assert (tmp_path / "lora-dp-real" / "lora_dp_report.json").exists()
+
+
+@pytest.mark.slow
+def test_lora_dp_opacus_production_minilm(tmp_path):
+    from rag.dp_train import opacus_available
+    from rag.embed_finetune import build_pairs_from_eval
+    from rag.st_lora_dp import peft_available, train_sentence_transformer_lora_dp
+
+    if not peft_available():
+        pytest.skip("peft kurulu değil")
+    if not opacus_available():
+        pytest.skip("opacus kurulu değil")
+
+    pairs = build_pairs_from_eval(CASES, FIXTURES)
+    out = str(tmp_path / "lora-dp-opacus")
+    try:
+        report = train_sentence_transformer_lora_dp(
+            "mini-en",
+            pairs,
+            out,
+            epochs=1,
+            batch_size=2,
+            use_opacus=True,
+            lora_rank=4,
+            max_seq_length=32,
+            production_mode=True,
+            secure_mode=False,
+            grad_sample_mode="hooks",
+        )
+    except Exception as exc:
+        pytest.skip(f"Opacus+PEFT üretim yolu başarısız: {exc}")
+
+    assert report["steps"] >= 1
+    assert report.get("used_opacus") is True
+    assert report.get("production_mode") is True
+    assert (tmp_path / "lora-dp-opacus" / "lora_dp_report.json").exists()

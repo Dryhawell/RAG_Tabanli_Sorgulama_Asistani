@@ -300,3 +300,16 @@ LORA_DP_SECURE_MODE = os.getenv("RAG_LORA_DP_SECURE_MODE", "0") not in {
 }
 LORA_DP_GRAD_SAMPLE_MODE = os.getenv("RAG_LORA_DP_GRAD_SAMPLE_MODE", "hooks")
 
+# Collab bildirim dağıtımı (e-posta / webhook)
+ENABLE_COLLAB_NOTIFY_DISPATCH = os.getenv("RAG_ENABLE_COLLAB_NOTIFY_DISPATCH", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+NOTIFY_SMTP_HOST = os.getenv("RAG_NOTIFY_SMTP_HOST", "").strip()
+NOTIFY_SMTP_PORT = int(os.getenv("RAG_NOTIFY_SMTP_PORT", "587"))
+NOTIFY_SMTP_USER = os.getenv("RAG_NOTIFY_SMTP_USER", "").strip()
+NOTIFY_SMTP_PASSWORD = os.getenv("RAG_NOTIFY_SMTP_PASSWORD", "").strip()
+NOTIFY_FROM_EMAIL = os.getenv("RAG_NOTIFY_FROM_EMAIL", "noreply@localhost").strip()
+NOTIFY_WEBHOOK_URL = os.getenv("RAG_NOTIFY_WEBHOOK_URL", "").strip()
+

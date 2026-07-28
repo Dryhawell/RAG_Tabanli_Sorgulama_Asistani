@@ -90,6 +90,7 @@ def remap_richtext_after_text_change(
         m.start, m.end = ns, ne
         new_marks.append(m)
     store.marks = new_marks
+    store.marks = merge_overlapping_marks(store.marks)
     for c in store.comments:
         ns, ne = remap_span(c.start, c.end, old_text, new_text)
         c.start, c.end = ns, max(ns, ne)
@@ -240,6 +241,35 @@ def save_richtext(store: RichTextStore, base: Optional[str] = None) -> str:
     return path
 
 
+def merge_overlapping_marks(marks: List[TextMark]) -> List[TextMark]:
+    """Aynı türde çakışan veya bitişik mark aralıklarını birleştirir."""
+    if not marks:
+        return []
+    by_type: Dict[str, List[TextMark]] = {}
+    for m in marks:
+        by_type.setdefault(m.mark, []).append(m)
+    merged: List[TextMark] = []
+    for mark_type, group in by_type.items():
+        intervals = sorted(group, key=lambda x: (x.start, x.end))
+        cur = intervals[0]
+        for nxt in intervals[1:]:
+            if nxt.start <= cur.end:
+                cur = TextMark(
+                    id=cur.id,
+                    mark=mark_type,
+                    start=min(cur.start, nxt.start),
+                    end=max(cur.end, nxt.end),
+                    author=cur.author or nxt.author,
+                    created_at=cur.created_at or nxt.created_at,
+                )
+            else:
+                merged.append(cur)
+                cur = nxt
+        merged.append(cur)
+    merged.sort(key=lambda x: (x.start, x.end, x.mark))
+    return merged
+
+
 def add_mark(
     workspace_key: str,
     *,
@@ -265,6 +295,7 @@ def add_mark(
         created_at=_utcnow_iso(),
     )
     store.marks.append(item)
+    store.marks = merge_overlapping_marks(store.marks)
     save_richtext(store, base=base)
     return item
 

@@ -82,6 +82,12 @@ def append_notification(
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
     _append_center_line(event, base=base)
+    try:
+        from rag.collab_notify_dispatch import dispatch_notification
+
+        event["dispatch"] = dispatch_notification(event)
+    except Exception:
+        pass
     return event
 
 
