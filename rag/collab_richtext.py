@@ -6,6 +6,7 @@ import json
 import os
 import re
 import uuid
+from difflib import SequenceMatcher
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -29,6 +30,75 @@ def richtext_path(workspace_key: str, base: Optional[str] = None) -> str:
 
 
 ALLOWED_MARKS = {"bold", "italic", "code"}
+
+
+def _map_old_index_to_new(
+    idx: int,
+    old: str,
+    new: str,
+    sm: Optional[SequenceMatcher] = None,
+) -> int:
+    if idx <= 0:
+        return 0
+    if idx >= len(old):
+        return len(new)
+    matcher = sm or SequenceMatcher(None, old, new)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal" and i1 <= idx < i2:
+            return j1 + (idx - i1)
+        if tag == "delete" and i1 <= idx < i2:
+            return j1
+        if tag == "replace" and i1 <= idx < i2:
+            offset = idx - i1
+            span = max(1, j2 - j1)
+            return j1 + min(offset, span - 1)
+    return len(new)
+
+
+def remap_span(start: int, end: int, old: str, new: str) -> tuple[int, int]:
+    """Eski metin koordinatlarındaki [start, end) aralığını yeni metne taşır."""
+    if not old and not new:
+        return 0, 0
+    sm = SequenceMatcher(None, old, new)
+    new_start = _map_old_index_to_new(int(start), old, new, sm)
+    if int(end) <= int(start):
+        return new_start, new_start
+    new_end = _map_old_index_to_new(int(end), old, new, sm)
+    new_start = max(0, min(new_start, len(new)))
+    new_end = max(new_start, min(new_end, len(new)))
+    return new_start, new_end
+
+
+def remap_richtext_after_text_change(
+    workspace_key: str,
+    old_text: str,
+    new_text: str,
+    *,
+    base: Optional[str] = None,
+) -> Dict[str, Any]:
+    """CRDT düzenlemesi sonrası mark ve yorum aralıklarını yeniden eşler."""
+    if old_text == new_text:
+        return {"marks": 0, "comments": 0, "removed_marks": 0}
+    store = load_richtext(workspace_key, base=base)
+    removed_marks = 0
+    new_marks: List[TextMark] = []
+    for m in store.marks:
+        ns, ne = remap_span(m.start, m.end, old_text, new_text)
+        if ne <= ns:
+            removed_marks += 1
+            continue
+        m.start, m.end = ns, ne
+        new_marks.append(m)
+    store.marks = new_marks
+    for c in store.comments:
+        ns, ne = remap_span(c.start, c.end, old_text, new_text)
+        c.start, c.end = ns, max(ns, ne)
+    save_richtext(store, base=base)
+    return {
+        "marks": len(store.marks),
+        "comments": len(store.comments),
+        "removed_marks": removed_marks,
+    }
 
 
 @dataclass

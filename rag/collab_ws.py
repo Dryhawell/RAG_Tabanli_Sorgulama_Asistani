@@ -40,6 +40,15 @@ else:
     apply_rich_ops = None  # type: ignore
     richtext_snapshot = None  # type: ignore
 
+try:
+    from rag.collab_notify import (
+        list_notifications_global,
+        mark_notifications_read_global,
+    )
+except ImportError:
+    list_notifications_global = None  # type: ignore
+    mark_notifications_read_global = None  # type: ignore
+
 _ws_started = False
 _ws_lock = threading.Lock()
 
@@ -354,6 +363,41 @@ async def _handle_client(websocket) -> None:
                     workspace_key,
                     snap.get("notifications") or [],
                     exclude=websocket,
+                )
+                continue
+
+            if op == "notify_list" and list_notifications_global is not None:
+                if not workspace_key:
+                    await websocket.send(
+                        json.dumps({"op": "error", "message": "Önce join gönderin"})
+                    )
+                    continue
+                user = data.get("username") or username or "anon"
+                rows = list_notifications_global(
+                    user,
+                    limit=int(data.get("limit") or 50),
+                    unread_only=bool(data.get("unread_only")),
+                )
+                await websocket.send(
+                    json.dumps(
+                        {"op": "notify_center", "notifications": rows, "username": user},
+                        ensure_ascii=False,
+                    )
+                )
+                continue
+
+            if op == "notify_read" and mark_notifications_read_global is not None:
+                user = data.get("username") or username or "anon"
+                ids = data.get("ids") or data.get("notification_ids") or None
+                changed = mark_notifications_read_global(
+                    user,
+                    notification_ids=ids if ids else None,
+                )
+                await websocket.send(
+                    json.dumps(
+                        {"op": "notify_read_ok", "changed": changed, "username": user},
+                        ensure_ascii=False,
+                    )
                 )
                 continue
 

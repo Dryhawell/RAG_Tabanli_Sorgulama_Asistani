@@ -11,6 +11,7 @@ from rag.collab_crdt import (
     ROOT_ID,
     CrdtDocument,
     _diff_to_ops,
+    _maybe_remap_richtext,
     _text_to_nodes,
     apply_op,
     apply_ops,
@@ -112,12 +113,23 @@ def invert_ops(ops: List[Dict[str, Any]], doc: CrdtDocument) -> List[Dict[str, A
     return inverse
 
 
-def _apply_ops_keep_revision(doc: CrdtDocument, ops: List[Dict[str, Any]], author: str) -> None:
+def _apply_ops_keep_revision(
+    doc: CrdtDocument,
+    ops: List[Dict[str, Any]],
+    author: str,
+    base: Optional[str] = None,
+) -> None:
+    if not ops:
+        return
+    old_text = doc.materialize()
     for op in ops:
         apply_op(doc, op, author)
     doc.revision += 1
     doc.updated_by = author
-    save_crdt(doc)
+    save_crdt(doc, base=base)
+    new_text = doc.materialize()
+    if old_text != new_text:
+        _maybe_remap_richtext(doc.workspace_key, old_text, new_text, base=base)
 
 
 def apply_text_edit_with_undo(
@@ -171,6 +183,7 @@ def apply_text_edit_with_undo(
         doc.revision += 1
         doc.updated_by = user
         save_crdt(doc, base=base)
+        _maybe_remap_richtext(workspace_key, "", new_text, base=base)
         return doc
 
     old_ids = doc.ordered_visible_ids()
@@ -179,7 +192,7 @@ def apply_text_edit_with_undo(
     inverse = invert_ops(ops, doc)
     stack.push_edit(ops, inverse)
     save_undo_stack(stack)
-    return apply_ops(doc, ops, user)
+    return apply_ops(doc, ops, user, base=base)
 
 
 def undo_edit(
@@ -193,7 +206,7 @@ def undo_edit(
         return load_crdt(workspace_key, base=base)
     entry = stack.undo.pop()
     doc = load_crdt(workspace_key, base=base)
-    _apply_ops_keep_revision(doc, list(entry.get("inverse") or []), author or "anon")
+    _apply_ops_keep_revision(doc, list(entry.get("inverse") or []), author or "anon", base=base)
     stack.redo.append(entry)
     save_undo_stack(stack)
     return doc
@@ -210,7 +223,7 @@ def redo_edit(
         return load_crdt(workspace_key, base=base)
     entry = stack.redo.pop()
     doc = load_crdt(workspace_key, base=base)
-    _apply_ops_keep_revision(doc, list(entry.get("forward") or []), author or "anon")
+    _apply_ops_keep_revision(doc, list(entry.get("forward") or []), author or "anon", base=base)
     stack.undo.append(entry)
     save_undo_stack(stack)
     return doc

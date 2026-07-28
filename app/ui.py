@@ -101,6 +101,7 @@ from rag.collab_richtext import (
     resolve_comment,
 )
 from rag.collab_notify import list_notifications, mark_notifications_read, notify_mentions
+from rag.collab_notify import list_notifications_global, mark_notifications_read_global
 from rag.collab_ws import ensure_collab_ws_server, websockets_available
 from rag.audit import read_audit, write_audit
 from rag.metrics import record_metric, summarize_metrics
@@ -473,6 +474,29 @@ with st.sidebar:
     st.caption(f"{t('vector_backend')}: `{vector_backend()}`")
     if ENABLE_PROMETHEUS:
         st.caption(f"Prometheus scrape: `:{PROMETHEUS_PORT}/metrics`")
+    if ENABLE_COLLAB_NOTES:
+        _nc_user = current_user.username if current_user else "local"
+        with st.expander(t("collab_notify_center"), expanded=False):
+            _global_notifs = list_notifications_global(_nc_user, unread_only=True, limit=30)
+            if _global_notifs:
+                for _gn in reversed(_global_notifs):
+                    st.caption(
+                        t(
+                            "collab_mention_notify_ws",
+                            workspace=_gn.get("workspace_key") or "-",
+                            from_user=_gn.get("from_user") or "-",
+                            preview=_gn.get("body_preview") or "",
+                        )
+                    )
+                if st.button(
+                    t("collab_mark_read_all"),
+                    key="collab_mark_read_all",
+                    use_container_width=True,
+                ):
+                    mark_notifications_read_global(_nc_user)
+                    st.rerun()
+            else:
+                st.caption(t("collab_no_notifications"))
     provider_options = ["ollama", "openai"]
     provider_index = (
         provider_options.index(DEFAULT_LLM_PROVIDER)

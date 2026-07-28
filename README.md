@@ -289,6 +289,7 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - **ST + Opacus**: `python -m rag.cli st-dp-train --embedding mini-en` (frozen backbone + DP head)
 - **LoRA + DP**: `python -m rag.cli lora-dp-train --mock` (CI) veya `--no-mock --production --opacus`
 - **@mention**: yorumlarda `@kullanici` → bildirim + WebSocket `mention_notify`
+- **Bildirim merkezi**: `python -m rag.cli collab-notifications --user alice`
 
 ### CRDT işbirlikçi not
 ```bash
@@ -302,7 +303,8 @@ export RAG_ENABLE_COLLAB_RICHTEXT=1
 - Undo/redo: Ctrl+Z / Ctrl+Y (WebSocket `undo`/`redo`) + UI butonları
 - **Paste / IME**: composition sırasında sync kapalı; paste `paste` op; IME `compositionend` → full commit
 - **Rich-text**: kalın/italik/kod işaretleri + yorum thread'leri; canlı editörde inline HTML
-- WebSocket: `edit` / `paste` / `ime_commit` / `cursor` / presence / undo / redo / `rich_ops`
+- WebSocket: `edit` / `paste` / `ime_commit` / `cursor` / presence / undo / redo / `rich_ops` / `notify_list`
+- CRDT düzenleme sonrası rich-text mark/yorum aralıkları otomatik yeniden eşlenir
 
 ## Ortam Değişkenleri
 | Değişken | Açıklama |
@@ -444,6 +446,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- LoRA+DP üretim doğrulama (gerçek MiniLM + slow eval regression)
-- Rich-text mark aralıklarının CRDT düzenleme sonrası yeniden eşleme
-- Çapraz workspace @mention bildirim merkezi
+- LoRA+DP üretim + Opacus slow regression (secure_mode)
+- Rich-text mark birleştirme (çakışan aralıklar)
+- Bildirim merkezi e-posta / push entegrasyonu

@@ -217,13 +217,44 @@ def apply_op(doc: CrdtDocument, op: Dict[str, Any], author: str) -> None:
             doc.nodes[target].author = author
 
 
-def apply_ops(doc: CrdtDocument, ops: List[Dict[str, Any]], author: str) -> CrdtDocument:
+def apply_ops(
+    doc: CrdtDocument,
+    ops: List[Dict[str, Any]],
+    author: str,
+    base: Optional[str] = None,
+) -> CrdtDocument:
+    if not ops:
+        return doc
+    old_text = doc.materialize()
     for op in ops:
         apply_op(doc, op, author)
     doc.revision += 1
     doc.updated_by = author
-    save_crdt(doc)
+    save_crdt(doc, base=base)
+    new_text = doc.materialize()
+    if old_text != new_text:
+        _maybe_remap_richtext(doc.workspace_key, old_text, new_text, base=base)
     return doc
+
+
+def _maybe_remap_richtext(
+    workspace_key: str,
+    old_text: str,
+    new_text: str,
+    base: Optional[str] = None,
+) -> None:
+    try:
+        from app.config import ENABLE_COLLAB_RICHTEXT
+
+        if not ENABLE_COLLAB_RICHTEXT:
+            return
+        from rag.collab_richtext import remap_richtext_after_text_change
+
+        remap_richtext_after_text_change(
+            workspace_key, old_text, new_text, base=base
+        )
+    except Exception:
+        pass
 
 
 def _diff_to_ops(
@@ -317,7 +348,7 @@ def apply_text_edit(
     old_ids = doc.ordered_visible_ids()
     old_chars = [doc.nodes[nid].char for nid in old_ids]
     ops = _diff_to_ops(old_ids, old_chars, new_text, author or "anon", doc.lamport)
-    return apply_ops(doc, ops, author or "anon")
+    return apply_ops(doc, ops, author or "anon", base=base)
 
 
 def merge_remote_ops(
@@ -328,4 +359,4 @@ def merge_remote_ops(
     base: Optional[str] = None,
 ) -> CrdtDocument:
     doc = load_crdt(workspace_key, base=base)
-    return apply_ops(doc, ops, author or "anon")
+    return apply_ops(doc, ops, author or "anon", base=base)

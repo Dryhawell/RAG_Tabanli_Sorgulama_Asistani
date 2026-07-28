@@ -276,6 +276,40 @@ def cmd_collab_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_collab_notifications(args: argparse.Namespace) -> int:
+    from rag.collab_notify import (
+        list_notifications_global,
+        mark_notifications_read_global,
+    )
+
+    user = args.user or "local"
+    if args.mark_read:
+        changed = mark_notifications_read_global(
+            user,
+            notification_ids=args.ids if args.ids else None,
+        )
+        print(f"Okundu işaretlendi: {changed}")
+        return 0
+    rows = list_notifications_global(
+        user,
+        limit=args.limit,
+        unread_only=args.unread_only,
+    )
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return 0
+    if not rows:
+        print(f"Bildirim yok ({user})")
+        return 0
+    for row in rows:
+        read = "✓" if row.get("read") else "•"
+        print(
+            f"{read} [{row.get('workspace_key')}] "
+            f"{row.get('from_user') or '-'}: {row.get('body_preview') or ''}"
+        )
+    return 0
+
+
 def cmd_embed_pairs(args: argparse.Namespace) -> int:
     fixture_dir = args.fixtures
     cases_path = args.cases
@@ -745,6 +779,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_collab.add_argument("--host", default=None, help=f"Bind host (varsayılan {COLLAB_WS_HOST})")
     p_collab.add_argument("--port", type=int, default=None, help=f"Port (varsayılan {COLLAB_WS_PORT})")
     p_collab.set_defaults(func=cmd_collab_serve)
+
+    p_cnot = sub.add_parser("collab-notifications", help="Çapraz workspace bildirim merkezi")
+    p_cnot.add_argument("--user", default="local", help="Hedef kullanıcı adı")
+    p_cnot.add_argument("--limit", type=int, default=50)
+    p_cnot.add_argument("--unread-only", action="store_true", default=False)
+    p_cnot.add_argument("--mark-read", action="store_true", help="Tümünü okundu işaretle")
+    p_cnot.add_argument("--ids", nargs="*", default=None, help="Belirli bildirim id'leri")
+    p_cnot.add_argument("--json", action="store_true", help="JSON çıktı")
+    p_cnot.set_defaults(func=cmd_collab_notifications)
 
     p_pairs = sub.add_parser("embed-pairs", help="Eval'den embedding eğitim çiftleri üret")
     p_pairs.add_argument("--fixtures", default=DEFAULT_EVAL_FIXTURES)

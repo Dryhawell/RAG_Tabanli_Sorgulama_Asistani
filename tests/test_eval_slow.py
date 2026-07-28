@@ -53,3 +53,30 @@ def test_sentence_transformer_dp_train(tmp_path):
     assert report["steps"] >= 1
     assert report["format"] == "st-dp-head-v1"
     assert (tmp_path / "st-dp-real" / "st_dp_head.pt").exists()
+
+
+@pytest.mark.slow
+def test_lora_dp_real_minilm(tmp_path):
+    from rag.embed_finetune import build_pairs_from_eval
+    from rag.st_lora_dp import peft_available, train_sentence_transformer_lora_dp
+
+    if not peft_available():
+        pytest.skip("peft kurulu değil")
+
+    pairs = build_pairs_from_eval(CASES, FIXTURES)
+    out = str(tmp_path / "lora-dp-real")
+    report = train_sentence_transformer_lora_dp(
+        "mini-en",
+        pairs,
+        out,
+        epochs=1,
+        batch_size=2,
+        use_opacus=False,
+        lora_rank=4,
+        max_seq_length=32,
+        production_mode=False,
+    )
+    assert report["steps"] >= 1
+    assert report["format"] == "st-lora-dp-v1"
+    assert report.get("used_peft") is True
+    assert (tmp_path / "lora-dp-real" / "lora_dp_report.json").exists()
