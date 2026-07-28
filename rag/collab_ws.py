@@ -6,7 +6,7 @@ import asyncio
 import json
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from rag.collab_notes import load_note, save_note
 from rag.collab_presence import (
@@ -60,6 +60,26 @@ class CollabRoom:
 
 
 _rooms: Dict[str, CollabRoom] = {}
+
+
+def _attach_rich(workspace_key: str, payload: dict) -> dict:
+    if ENABLE_COLLAB_RICHTEXT and richtext_snapshot is not None:
+        payload["rich"] = richtext_snapshot(workspace_key)
+    return payload
+
+
+async def _broadcast_mentions(
+    workspace_key: str,
+    events: List[dict],
+    *,
+    exclude=None,
+) -> None:
+    for ev in events or []:
+        await _broadcast(
+            workspace_key,
+            {"op": "mention_notify", "notification": ev},
+            exclude=exclude,
+        )
 
 
 def _room(workspace_key: str) -> CollabRoom:
@@ -159,15 +179,18 @@ async def _handle_client(websocket) -> None:
                     saved_crdt = undo_edit(workspace_key, author=user)
                 else:
                     saved_crdt = redo_edit(workspace_key, author=user)
-                payload = {
-                    "op": "sync",
-                    "workspace_key": workspace_key,
-                    "revision": saved_crdt.revision,
-                    "content": saved_crdt.materialize(),
-                    "updated_by": saved_crdt.updated_by,
-                    "crdt": True,
-                    "via": op,
-                }
+                payload = _attach_rich(
+                    workspace_key,
+                    {
+                        "op": "sync",
+                        "workspace_key": workspace_key,
+                        "revision": saved_crdt.revision,
+                        "content": saved_crdt.materialize(),
+                        "updated_by": saved_crdt.updated_by,
+                        "crdt": True,
+                        "via": op,
+                    },
+                )
                 await websocket.send(json.dumps(payload, ensure_ascii=False))
                 await _broadcast(workspace_key, payload, exclude=websocket)
                 continue
@@ -190,15 +213,18 @@ async def _handle_client(websocket) -> None:
                     saved_crdt = apply_ime_commit(
                         workspace_key, start=start, end=end, text=text, author=user
                     )
-                payload = {
-                    "op": "sync",
-                    "workspace_key": workspace_key,
-                    "revision": saved_crdt.revision,
-                    "content": saved_crdt.materialize(),
-                    "updated_by": saved_crdt.updated_by,
-                    "crdt": True,
-                    "via": op,
-                }
+                payload = _attach_rich(
+                    workspace_key,
+                    {
+                        "op": "sync",
+                        "workspace_key": workspace_key,
+                        "revision": saved_crdt.revision,
+                        "content": saved_crdt.materialize(),
+                        "updated_by": saved_crdt.updated_by,
+                        "crdt": True,
+                        "via": op,
+                    },
+                )
                 await websocket.send(json.dumps(payload, ensure_ascii=False))
                 await _broadcast(workspace_key, payload, exclude=websocket)
                 continue
@@ -221,14 +247,17 @@ async def _handle_client(websocket) -> None:
                     ops,
                     author=user,
                 )
-                payload = {
-                    "op": "sync",
-                    "workspace_key": workspace_key,
-                    "revision": saved.revision,
-                    "content": saved.materialize(),
-                    "updated_by": saved.updated_by,
-                    "crdt": True,
-                }
+                payload = _attach_rich(
+                    workspace_key,
+                    {
+                        "op": "sync",
+                        "workspace_key": workspace_key,
+                        "revision": saved.revision,
+                        "content": saved.materialize(),
+                        "updated_by": saved.updated_by,
+                        "crdt": True,
+                    },
+                )
                 await websocket.send(json.dumps(payload, ensure_ascii=False))
                 await _broadcast(workspace_key, payload, exclude=websocket)
                 continue
@@ -248,14 +277,17 @@ async def _handle_client(websocket) -> None:
                         content,
                         author=user,
                     )
-                    payload = {
-                        "op": "sync",
-                        "workspace_key": workspace_key,
-                        "revision": saved_crdt.revision,
-                        "content": saved_crdt.materialize(),
-                        "updated_by": saved_crdt.updated_by,
-                        "crdt": True,
-                    }
+                    payload = _attach_rich(
+                        workspace_key,
+                        {
+                            "op": "sync",
+                            "workspace_key": workspace_key,
+                            "revision": saved_crdt.revision,
+                            "content": saved_crdt.materialize(),
+                            "updated_by": saved_crdt.updated_by,
+                            "crdt": True,
+                        },
+                    )
                     await websocket.send(json.dumps(payload, ensure_ascii=False))
                     await _broadcast(workspace_key, payload, exclude=websocket)
                     continue
@@ -318,6 +350,11 @@ async def _handle_client(websocket) -> None:
                 }
                 await websocket.send(json.dumps(payload, ensure_ascii=False))
                 await _broadcast(workspace_key, payload, exclude=websocket)
+                await _broadcast_mentions(
+                    workspace_key,
+                    snap.get("notifications") or [],
+                    exclude=websocket,
+                )
                 continue
 
             if op == "ping":

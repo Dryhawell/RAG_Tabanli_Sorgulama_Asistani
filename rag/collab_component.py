@@ -13,8 +13,35 @@ def _js_str(value: Optional[str]) -> str:
 
 
 _COLLAB_EDITOR_HTML = """
+<style>
+  #collab-editor strong { font-weight: 700; }
+  #collab-editor em { font-style: italic; }
+  #collab-editor code {
+    font-family: ui-monospace, Menlo, monospace;
+    background: #f4f4f4;
+    padding: 0 2px;
+    border-radius: 2px;
+  }
+  #collab-editor .crdt-comment {
+    color: #4a90d9;
+    font-size: 10px;
+    vertical-align: super;
+    margin-right: 1px;
+  }
+  #collab-notify {
+    font-size: 12px;
+    color: #444;
+    margin: 4px 0 6px;
+    padding: 6px 8px;
+    background: #fff8e6;
+    border: 1px solid #f0d78c;
+    border-radius: 4px;
+    display: none;
+  }
+</style>
 <div style="font-family: system-ui, sans-serif;">
   <div id="collab-presence" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;font-size:12px;"></div>
+  <div id="collab-notify"></div>
   <div id="collab-toolbar" style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;">
     <button type="button" data-mark="bold" style="padding:4px 10px;font-weight:700;">B</button>
     <button type="button" data-mark="italic" style="padding:4px 10px;font-style:italic;">I</button>
@@ -41,6 +68,7 @@ _COLLAB_EDITOR_HTML = """
   const presenceEl = document.getElementById("collab-presence");
   const cursorsEl = document.getElementById("collab-cursors");
   const toolbar = document.getElementById("collab-toolbar");
+  const notifyEl = document.getElementById("collab-notify");
   let revision = __REVISION__;
   let ws = null;
   let dirty = false;
@@ -59,6 +87,32 @@ _COLLAB_EDITOR_HTML = """
 
   function setText(t) {
     editor.innerText = t || "";
+  }
+
+  function applyRichHtml(html) {
+    if (!RICHTEXT || dirty) return;
+    if (html) {
+      editor.innerHTML = html;
+    } else {
+      setText(getText());
+    }
+    renderCursorOverlay();
+  }
+
+  function showNotify(msg) {
+    if (!notifyEl) return;
+    notifyEl.style.display = "block";
+    notifyEl.textContent = msg;
+    setTimeout(function() { notifyEl.style.display = "none"; }, 6000);
+  }
+
+  function applyContentFromServer(data) {
+    if (dirty) return;
+    if (RICHTEXT && data.rich && data.rich.html) {
+      applyRichHtml(data.rich.html);
+    } else if (data.content !== undefined) {
+      setText(data.content || "");
+    }
   }
 
   function getCaretOffset() {
@@ -261,12 +315,12 @@ _COLLAB_EDITOR_HTML = """
         const data = JSON.parse(ev.data);
         if (data.op === "snapshot") {
           revision = data.revision || revision;
-          if (!dirty) setText(data.content || "");
+          applyContentFromServer(data);
           if (data.presence) data.presence.forEach(function(u) { upsertPeer(u); });
           setStatus("Rev " + revision);
         } else if (data.op === "sync") {
           revision = data.revision || revision;
-          if (!dirty) setText(data.content || "");
+          applyContentFromServer(data);
           setStatus("Rev " + revision + (data.updated_by ? " · " + data.updated_by : ""));
           renderCursorOverlay();
         } else if (data.op === "conflict") {
@@ -278,7 +332,13 @@ _COLLAB_EDITOR_HTML = """
         } else if (data.op === "presence_leave") {
           removePeer(data.user);
         } else if (data.op === "rich_sync") {
+          if (RICHTEXT && data.rich && data.rich.html) applyRichHtml(data.rich.html);
           setStatus("Richtext güncellendi");
+        } else if (data.op === "mention_notify") {
+          const n = data.notification;
+          if (n && String(n.target_user || "").toLowerCase() === String(USERNAME || "").toLowerCase()) {
+            showNotify((n.from_user || "Biri") + " sizi etiketledi: " + (n.body_preview || ""));
+          }
         } else if (data.op === "error") {
           setStatus("Hata: " + (data.message || "?"));
         }
@@ -361,7 +421,7 @@ _COLLAB_EDITOR_HTML = """
     if (cmtBtn) {
       cmtBtn.addEventListener("click", function() {
         const sel = getSelectionOffsets();
-        const body = window.prompt("Yorum");
+        const body = window.prompt("Yorum (@kullanici ile etiketleyin)");
         if (!body) return;
         sendRichOps([{
           type: "add_comment",

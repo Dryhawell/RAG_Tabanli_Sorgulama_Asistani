@@ -287,7 +287,8 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - **Privacy pool**: DP-SGD lite (clip + Gaussian) + secure aggregation PoC
 - **DP-SGD eğitim**: `python -m rag.cli dp-train --no-opacus` (Opacus varsa `--opacus`)
 - **ST + Opacus**: `python -m rag.cli st-dp-train --embedding mini-en` (frozen backbone + DP head)
-- **LoRA + DP**: `python -m rag.cli lora-dp-train --mock` (CI) veya PEFT ile `--no-mock`
+- **LoRA + DP**: `python -m rag.cli lora-dp-train --mock` (CI) veya `--no-mock --production --opacus`
+- **@mention**: yorumlarda `@kullanici` → bildirim + WebSocket `mention_notify`
 
 ### CRDT işbirlikçi not
 ```bash
@@ -300,7 +301,7 @@ export RAG_ENABLE_COLLAB_RICHTEXT=1
 - **Canlı düzenleyici**: contenteditable + görsel remote imleç/selection overlay
 - Undo/redo: Ctrl+Z / Ctrl+Y (WebSocket `undo`/`redo`) + UI butonları
 - **Paste / IME**: composition sırasında sync kapalı; paste `paste` op; IME `compositionend` → full commit
-- **Rich-text**: kalın/italik/kod işaretleri + yorum thread'leri (`rich_ops` / `rich_sync`)
+- **Rich-text**: kalın/italik/kod işaretleri + yorum thread'leri; canlı editörde inline HTML
 - WebSocket: `edit` / `paste` / `ime_commit` / `cursor` / presence / undo / redo / `rich_ops`
 
 ## Ortam Değişkenleri
@@ -396,6 +397,9 @@ export RAG_ENABLE_COLLAB_RICHTEXT=1
 | `RAG_LORA_DP_RANK` | LoRA rank |
 | `RAG_LORA_DP_ALPHA` | LoRA alpha |
 | `RAG_LORA_DP_MOCK` | Mock LoRA yolu (1/0) |
+| `RAG_LORA_DP_OPACUS_PRODUCTION` | Opacus ModuleValidator + üretim grad_sample (1/0) |
+| `RAG_LORA_DP_SECURE_MODE` | Opacus secure RNG (1/0) |
+| `RAG_LORA_DP_GRAD_SAMPLE_MODE` | Opacus grad_sample_mode (varsayılan hooks) |
 | `RAG_EMBED_PIPELINE_REPORT_PATH` | Pipeline JSON rapor yolu |
 | `RAG_DOMAIN_EMBEDDING_MODEL` | Domain/fine-tuned embedding model yolu veya Hub adı |
 | `RAG_ENABLE_DOMAIN_EMBEDDING` | Domain embedding varsayılan preset (1/0) |
@@ -411,7 +415,7 @@ export RAG_ENABLE_COLLAB_RICHTEXT=1
 - `rag/tools.py`, `rag/agent.py`, `rag/highlight.py`: araçlar, agent döngüsü, kaynak vurgulama
 - `rag/vision.py`, `rag/vision_llm.py`, `rag/memory.py`, `rag/planner.py`, `rag/profile_memory.py`
 - `rag/share_links.py`, `rag/collab_notes.py`, `rag/collab_ws.py`, `rag/collab_crdt.py`, `rag/collab_component.py`
-- `rag/embed_finetune.py`, `rag/domain_collect.py`, `rag/federated_pool.py`, `rag/privacy_federated.py`, `rag/dp_train.py`, `rag/st_dp_train.py`, `rag/st_lora_dp.py`, `rag/collab_presence.py`, `rag/collab_undo.py`, `rag/collab_ime.py`, `rag/collab_richtext.py`
+- `rag/embed_finetune.py`, `rag/domain_collect.py`, `rag/federated_pool.py`, `rag/privacy_federated.py`, `rag/dp_train.py`, `rag/st_dp_train.py`, `rag/st_lora_dp.py`, `rag/lora_dp_opacus.py`, `rag/collab_presence.py`, `rag/collab_undo.py`, `rag/collab_ime.py`, `rag/collab_richtext.py`, `rag/collab_notify.py`
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -440,6 +444,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Gerçek ST üzerinde Opacus + PEFT LoRA (üretim ayarı / gradient sample uyumu)
-- Rich-text görsel render'ın canlı editörde inline yansıması
-- Yorum @mention ve bildirimler
+- LoRA+DP üretim doğrulama (gerçek MiniLM + slow eval regression)
+- Rich-text mark aralıklarının CRDT düzenleme sonrası yeniden eşleme
+- Çapraz workspace @mention bildirim merkezi

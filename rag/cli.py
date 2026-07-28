@@ -56,6 +56,9 @@ from app.config import (
     LORA_DP_RANK,
     LORA_DP_ALPHA,
     LORA_DP_MOCK,
+    LORA_DP_OPACUS_PRODUCTION,
+    LORA_DP_SECURE_MODE,
+    LORA_DP_GRAD_SAMPLE_MODE,
 )
 from rag.embed import Embedder, resolve_embedding_model
 from rag.eval import run_regression
@@ -561,10 +564,19 @@ def cmd_lora_dp_train(args: argparse.Namespace) -> int:
         print("Opacus yok; manuel DP-SGD fallback kullanılacak.", file=sys.stderr)
         use_opacus = False
     mock = bool(args.mock) if args.mock is not None else LORA_DP_MOCK
+    production = bool(args.production) if args.production is not None else LORA_DP_OPACUS_PRODUCTION
     if not mock and not peft_available():
         print("PEFT yok; mock LoRA yoluna düşülüyor.", file=sys.stderr)
         mock = True
     try:
+        extra: dict = {}
+        if not mock:
+            extra["lora_alpha"] = args.alpha
+            extra["production_mode"] = production
+            extra["secure_mode"] = (
+                bool(args.secure_mode) if args.secure_mode is not None else LORA_DP_SECURE_MODE
+            )
+            extra["grad_sample_mode"] = args.grad_sample_mode or LORA_DP_GRAD_SAMPLE_MODE
         report = train_lora_dp_from_pairs_file(
             args.embedding,
             pairs_path,
@@ -577,7 +589,7 @@ def cmd_lora_dp_train(args: argparse.Namespace) -> int:
             delta=args.delta,
             use_opacus=use_opacus,
             lora_rank=args.rank,
-            **({"lora_alpha": args.alpha} if not mock else {}),
+            **extra,
         )
     except Exception as exc:
         print(f"LoRA+DP eğitim hatası: {exc}", file=sys.stderr)
@@ -901,6 +913,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_lora.add_argument("--opacus", dest="opacus", action="store_true", default=None)
     p_lora.add_argument("--no-opacus", dest="opacus", action="store_false")
+    p_lora.add_argument(
+        "--production",
+        dest="production",
+        action="store_true",
+        default=None,
+        help="Opacus ModuleValidator + üretim grad_sample",
+    )
+    p_lora.add_argument(
+        "--no-production",
+        dest="production",
+        action="store_false",
+        help="Üretim Opacus sarmalayıcısını kapat",
+    )
+    p_lora.add_argument(
+        "--secure-mode",
+        dest="secure_mode",
+        action="store_true",
+        default=None,
+        help="Opacus secure RNG (üretim)",
+    )
+    p_lora.add_argument(
+        "--no-secure-mode",
+        dest="secure_mode",
+        action="store_false",
+        help="Secure RNG kapalı",
+    )
+    p_lora.add_argument(
+        "--grad-sample-mode",
+        default=None,
+        help="Opacus grad_sample_mode (varsayılan hooks)",
+    )
     p_lora.set_defaults(func=cmd_lora_dp_train)
 
     p_dom = sub.add_parser("domain-collect", help="Sohbet/audit/metrikten domain çiftleri topla")

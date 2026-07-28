@@ -96,9 +96,11 @@ from rag.collab_richtext import (
     add_mark,
     load_richtext,
     render_rich_html,
+    render_mention_html,
     reply_comment,
     resolve_comment,
 )
+from rag.collab_notify import list_notifications, mark_notifications_read, notify_mentions
 from rag.collab_ws import ensure_collab_ws_server, websockets_available
 from rag.audit import read_audit, write_audit
 from rag.metrics import record_metric, summarize_metrics
@@ -972,23 +974,53 @@ with st.sidebar:
                 _c_body = st.text_input(t("collab_comment_body"), key=f"cmt_body_{ws.key}")
                 if st.button(t("collab_add_comment"), use_container_width=True, key=f"cmt_add_{ws.key}"):
                     try:
-                        add_comment(
+                        _th = add_comment(
                             ws.key,
                             start=int(_mk_start),
                             end=int(_mk_end),
                             body=_c_body,
                             author=current_user.username if current_user else None,
                         )
+                        notify_mentions(
+                            ws.key,
+                            _c_body,
+                            from_user=current_user.username if current_user else None,
+                            thread_id=_th.id,
+                        )
                         st.rerun()
                     except ValueError as exc:
                         st.warning(str(exc))
+                _uname = current_user.username if current_user else "local"
+                _notifs = list_notifications(ws.key, _uname, unread_only=True, limit=20)
+                if _notifs:
+                    st.caption(t("collab_notifications"))
+                    for _n in reversed(_notifs):
+                        st.info(
+                            t(
+                                "collab_mention_notify",
+                                from_user=_n.get("from_user") or "-",
+                                preview=_n.get("body_preview") or "",
+                            )
+                        )
+                    if st.button(
+                        t("collab_mark_read"),
+                        key=f"collab_mark_read_{ws.key}",
+                        use_container_width=True,
+                    ):
+                        mark_notifications_read(ws.key, _uname)
+                        st.rerun()
                 _rt = load_richtext(ws.key)
                 for _th in _rt.comments:
                     _label = f"{'[✓] ' if _th.resolved else ''}{_th.author or '-'}: {_th.body[:80]}"
                     with st.expander(_label, expanded=False):
                         st.caption(f"{_th.start}:{_th.end} · {_th.id}")
+                        st.markdown(render_mention_html(_th.body), unsafe_allow_html=True)
                         for _rep in _th.replies:
-                            st.write(f"— {_rep.author or '-'}: {_rep.body}")
+                            st.markdown(
+                                f"— {_rep.author or '-'}: "
+                                + render_mention_html(_rep.body),
+                                unsafe_allow_html=True,
+                            )
                         _reply = st.text_input(
                             t("collab_reply"),
                             key=f"cmt_reply_{ws.key}_{_th.id}",
@@ -1006,6 +1038,12 @@ with st.sidebar:
                                         _th.id,
                                         body=_reply,
                                         author=current_user.username if current_user else None,
+                                    )
+                                    notify_mentions(
+                                        ws.key,
+                                        _reply,
+                                        from_user=current_user.username if current_user else None,
+                                        thread_id=_th.id,
                                     )
                                     st.rerun()
                                 except Exception as exc:

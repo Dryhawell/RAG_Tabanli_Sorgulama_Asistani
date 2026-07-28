@@ -288,4 +288,15 @@ LORA_DP_TRAIN_OUTPUT_DIR = os.getenv(
 LORA_DP_RANK = int(os.getenv("RAG_LORA_DP_RANK", "8"))
 LORA_DP_ALPHA = int(os.getenv("RAG_LORA_DP_ALPHA", "16"))
 LORA_DP_MOCK = os.getenv("RAG_LORA_DP_MOCK", "0") not in {"0", "false", "False"}
+LORA_DP_OPACUS_PRODUCTION = os.getenv("RAG_LORA_DP_OPACUS_PRODUCTION", "0") not in {
+    "0",
+    "false",
+    "False",
+}
+LORA_DP_SECURE_MODE = os.getenv("RAG_LORA_DP_SECURE_MODE", "0") not in {
+    "0",
+    "false",
+    "False",
+}
+LORA_DP_GRAD_SAMPLE_MODE = os.getenv("RAG_LORA_DP_GRAD_SAMPLE_MODE", "hooks")
 

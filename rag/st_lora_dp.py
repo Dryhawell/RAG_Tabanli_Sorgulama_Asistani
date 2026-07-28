@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Sequence
 import numpy as np
 
 from rag.dp_train import estimate_epsilon, opacus_available
+from rag.lora_dp_opacus import make_private_lora, prepare_model_for_opacus
 
 
 def peft_available() -> bool:
@@ -264,6 +265,9 @@ def train_sentence_transformer_lora_dp(
     lora_alpha: int = 16,
     max_seq_length: int = 64,
     seed: int = 42,
+    production_mode: bool = False,
+    secure_mode: bool = False,
+    grad_sample_mode: str = "hooks",
 ) -> Dict[str, Any]:
     """SentenceTransformer omurgasına PEFT LoRA + DP-SGD (mümkünse Opacus).
 
@@ -403,25 +407,32 @@ def train_sentence_transformer_lora_dp(
     trainable = [p for p in auto.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=lr)
 
-    # Opacus + PEFT çoğu mimaride kırılgan; varsayılan manuel DP
     used_opacus = False
     privacy_engine = None
+    validator_errors: List[str] = []
     if use_opacus and opacus_available():
         try:
-            from opacus import PrivacyEngine
-
-            privacy_engine = PrivacyEngine()
-            auto, optimizer, loader = privacy_engine.make_private(
-                module=auto,
-                optimizer=optimizer,
-                data_loader=loader,
+            if production_mode:
+                auto, validator_errors = prepare_model_for_opacus(auto, strict=False)
+            auto, optimizer, loader, privacy_engine, used_opacus = make_private_lora(
+                auto,
+                optimizer,
+                loader,
                 noise_multiplier=noise_multiplier,
                 max_grad_norm=max_grad_norm,
+                secure_mode=secure_mode if production_mode else False,
+                grad_sample_mode=grad_sample_mode if production_mode else "hooks",
             )
-            used_opacus = True
         except Exception:
             used_opacus = False
             privacy_engine = None
+            optimizer = torch.optim.AdamW(trainable, lr=lr)
+            loader = DataLoader(
+                ds,
+                batch_size=max(1, min(batch_size, len(ds))),
+                shuffle=True,
+                collate_fn=collate,
+            )
 
     steps = 0
     losses: List[float] = []
@@ -496,6 +507,10 @@ def train_sentence_transformer_lora_dp(
         "epsilon": epsilon,
         "used_opacus": used_opacus,
         "used_peft": True,
+        "production_mode": production_mode,
+        "secure_mode": secure_mode if production_mode else False,
+        "grad_sample_mode": grad_sample_mode if production_mode else None,
+        "validator_errors": validator_errors,
         "lora_rank": lora_rank,
         "lora_alpha": lora_alpha,
         "avg_loss": float(np.mean(losses)) if losses else None,

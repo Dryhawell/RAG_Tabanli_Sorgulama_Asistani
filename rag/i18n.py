@@ -85,6 +85,9 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "collab_reply": "Yanıt",
         "collab_send_reply": "Yanıtla",
         "collab_resolve": "Çözüldü",
+        "collab_notifications": "Bildirimler",
+        "collab_mention_notify": "{from_user} sizi etiketledi: {preview}",
+        "collab_mark_read": "Bildirimleri okundu işaretle",
     },
     "en": {
         "app_title": "LLM-Powered PDF / Notes Query Assistant (RAG)",
@@ -164,6 +167,9 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "collab_reply": "Reply",
         "collab_send_reply": "Reply",
         "collab_resolve": "Resolve",
+        "collab_notifications": "Notifications",
+        "collab_mention_notify": "{from_user} mentioned you: {preview}",
+        "collab_mark_read": "Mark notifications read",
     },
 }
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from app.config import METADATA_DIR
 from rag.collab_crdt import _safe_slug, load_crdt
+from rag.collab_notify import notify_mentions
 
 
 def _utcnow_iso() -> str:
@@ -279,6 +281,31 @@ def resolve_comment(
     raise KeyError(f"Thread yok: {thread_id}")
 
 
+def render_mention_html(text: str) -> str:
+    """Yorum metninde @kullanıcı etiketlerini vurgular."""
+    if not text:
+        return ""
+    parts: List[str] = []
+    last = 0
+    for match in re.finditer(r"@([a-zA-Z0-9_.-]{2,32})", text):
+        a, b = match.span()
+        chunk = (
+            text[last:a]
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        parts.append(chunk)
+        user = match.group(1)
+        parts.append(
+            f'<span class="crdt-mention" style="color:#4a90d9;font-weight:600">@{user}</span>'
+        )
+        last = b
+    tail = text[last:].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    parts.append(tail)
+    return "".join(parts)
+
+
 def render_rich_html(
     workspace_key: str,
     *,
@@ -358,6 +385,7 @@ def apply_rich_ops(
       add_mark, remove_mark, add_comment, reply_comment, resolve_comment
     """
     results: List[Dict[str, Any]] = []
+    mention_events: List[Dict[str, Any]] = []
     for raw in ops or []:
         if not isinstance(raw, dict):
             continue
@@ -387,6 +415,15 @@ def apply_rich_ops(
                     author=raw.get("author") or author,
                     base=base,
                 )
+                mention_events.extend(
+                    notify_mentions(
+                        workspace_key,
+                        thread.body,
+                        from_user=thread.author,
+                        thread_id=thread.id,
+                        base=base,
+                    )
+                )
                 results.append({"type": kind, "ok": True, "item": thread.to_dict()})
             elif kind == "reply_comment":
                 thread = reply_comment(
@@ -395,6 +432,15 @@ def apply_rich_ops(
                     body=str(raw.get("body") or ""),
                     author=raw.get("author") or author,
                     base=base,
+                )
+                mention_events.extend(
+                    notify_mentions(
+                        workspace_key,
+                        str(raw.get("body") or ""),
+                        from_user=raw.get("author") or author,
+                        thread_id=thread.id,
+                        base=base,
+                    )
                 )
                 results.append({"type": kind, "ok": True, "item": thread.to_dict()})
             elif kind == "resolve_comment":
@@ -411,4 +457,5 @@ def apply_rich_ops(
             results.append({"type": kind, "ok": False, "error": str(exc)})
     snap = richtext_snapshot(workspace_key, base=base)
     snap["results"] = results
+    snap["notifications"] = mention_events
     return snap

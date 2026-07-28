@@ -31,3 +31,6 @@ def test_collab_editor_html_includes_ws_url():
     assert "sendRichOps" in html
     assert "collab-toolbar" in html
     assert "data-mark" in html
+    assert "applyRichHtml" in html
+    assert "mention_notify" in html
+    assert "collab-notify" in html
