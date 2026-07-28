@@ -306,6 +306,12 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
         )
         print(json.dumps(result, ensure_ascii=False))
         return 0 if result.get("sent") or result.get("reason") == "empty" else 1
+    if args.digest_all:
+        from rag.collab_notify_digest import send_digest_all
+
+        result = send_digest_all(hours=args.digest_hours)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
     if args.mark_read:
         changed = mark_notifications_read_global(
             user,
@@ -659,6 +665,39 @@ def cmd_lora_dp_train(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_lora_dp_eval(args: argparse.Namespace) -> int:
+    from rag.lora_dp_eval import lora_adapter_available, run_lora_dp_eval_report
+
+    lora_dir = args.lora_dir or LORA_DP_TRAIN_OUTPUT_DIR
+    if not lora_adapter_available(lora_dir):
+        print(f"LoRA adapter bulunamadı: {lora_dir}/lora_adapter", file=sys.stderr)
+        return 2
+    try:
+        report = run_lora_dp_eval_report(
+            args.embedding,
+            lora_dir,
+            args.fixtures or DEFAULT_EVAL_FIXTURES,
+            args.cases or DEFAULT_EVAL_CASES,
+            report_path=args.output,
+            top_k=args.top_k,
+            threshold=args.threshold,
+            use_hybrid=not args.no_hybrid,
+            min_accuracy=args.min_accuracy,
+        )
+    except Exception as exc:
+        print(f"LoRA+DP eval hatası: {exc}", file=sys.stderr)
+        return 1
+    b = report["base_summary"]["accuracy"]
+    l = report["lora_summary"]["accuracy"]
+    print(
+        f"LoRA eval: base={b:.2%} lora={l:.2%} delta={report['delta_accuracy']:+.2%} "
+        f"improved={report['improved']}"
+    )
+    if args.min_accuracy and l < args.min_accuracy:
+        return 1
+    return 0
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     """JSONL metrik özetini yazdırır."""
     path = args.path or METRICS_PATH
@@ -810,6 +849,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cnot.add_argument("--mark-read", action="store_true", help="Tümünü okundu işaretle")
     p_cnot.add_argument("--test-dispatch", action="store_true", help="E-posta/webhook test gönderimi")
     p_cnot.add_argument("--digest", action="store_true", help="Günlük özet e-postası gönder")
+    p_cnot.add_argument("--digest-all", action="store_true", help="Tüm hedef kullanıcılara digest")
     p_cnot.add_argument("--digest-hours", type=int, default=24, help="Özet penceresi (saat)")
     p_cnot.add_argument("--ids", nargs="*", default=None, help="Belirli bildirim id'leri")
     p_cnot.add_argument("--json", action="store_true", help="JSON çıktı")
@@ -1014,6 +1054,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Opacus grad_sample_mode (varsayılan hooks)",
     )
     p_lora.set_defaults(func=cmd_lora_dp_train)
+
+    p_loraev = sub.add_parser(
+        "lora-dp-eval",
+        help="Base vs LoRA+DP adapter retrieval karşılaştırması",
+    )
+    _add_embedding_arg(p_loraev)
+    p_loraev.add_argument("--lora-dir", default=None, help="LoRA eğitim çıktı dizini")
+    p_loraev.add_argument("--fixtures", default=None)
+    p_loraev.add_argument("--cases", default=None)
+    p_loraev.add_argument("--top-k", type=int, default=4)
+    p_loraev.add_argument("--threshold", type=float, default=0.30)
+    p_loraev.add_argument("--min-accuracy", type=float, default=0.0)
+    p_loraev.add_argument("--no-hybrid", action="store_true")
+    p_loraev.add_argument("--output", default=None, help="JSON rapor")
+    p_loraev.set_defaults(func=cmd_lora_dp_eval)
 
     p_dom = sub.add_parser("domain-collect", help="Sohbet/audit/metrikten domain çiftleri topla")
     p_dom.add_argument("--output", default=None, help="JSONL çıktı yolu")

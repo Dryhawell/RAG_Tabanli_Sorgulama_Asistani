@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from app.config import METADATA_DIR
 from rag.collab_crdt import _safe_slug, load_crdt
 from rag.collab_notify import notify_mentions
+from rag.collab_richtext_audit import log_mark_audit
 
 
 def _utcnow_iso() -> str:
@@ -95,6 +96,14 @@ def remap_richtext_after_text_change(
         ns, ne = remap_span(c.start, c.end, old_text, new_text)
         c.start, c.end = ns, max(ns, ne)
     save_richtext(store, base=base)
+    if removed_marks:
+        log_mark_audit(
+            workspace_key,
+            "remap_prune",
+            author=None,
+            details={"removed_marks": removed_marks, "old_len": len(old_text), "new_len": len(new_text)},
+            base=base,
+        )
     return {
         "marks": len(store.marks),
         "comments": len(store.comments),
@@ -351,16 +360,38 @@ def add_mark(
     store.marks.append(item)
     store.marks = merge_overlapping_marks(store.marks)
     save_richtext(store, base=base)
+    log_mark_audit(
+        workspace_key,
+        "add",
+        mark=item.to_dict(),
+        author=author,
+        base=base,
+    )
     return item
 
 
 def remove_mark(workspace_key: str, mark_id: str, base: Optional[str] = None) -> bool:
     store = load_richtext(workspace_key, base=base)
     before = len(store.marks)
-    store.marks = [m for m in store.marks if m.id != mark_id]
+    removed = None
+    kept: List[TextMark] = []
+    for m in store.marks:
+        if m.id == mark_id:
+            removed = m
+        else:
+            kept.append(m)
+    store.marks = kept
     if len(store.marks) == before:
         return False
     save_richtext(store, base=base)
+    if removed:
+        log_mark_audit(
+            workspace_key,
+            "remove",
+            mark=removed.to_dict(),
+            author=removed.author,
+            base=base,
+        )
     return True
 
 

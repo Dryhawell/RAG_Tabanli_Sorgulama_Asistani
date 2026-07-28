@@ -1,0 +1,38 @@
+"""Periyodik collab bildirim digest (e-posta özet)."""
+
+name: Collab Notify Digest
+
+on:
+  schedule:
+    - cron: "0 8 * * *"  # Her gün 08:00 UTC
+  workflow_dispatch:
+    inputs:
+      digest_hours:
+        description: "Özet penceresi (saat)"
+        required: false
+        default: "24"
+        type: string
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Send digest to all users with unread notifications
+        env:
+          RAG_NOTIFY_SMTP_HOST: ${{ secrets.RAG_NOTIFY_SMTP_HOST }}
+          RAG_NOTIFY_SMTP_PORT: ${{ secrets.RAG_NOTIFY_SMTP_PORT }}
+          RAG_NOTIFY_SMTP_USER: ${{ secrets.RAG_NOTIFY_SMTP_USER }}
+          RAG_NOTIFY_SMTP_PASSWORD: ${{ secrets.RAG_NOTIFY_SMTP_PASSWORD }}
+          RAG_NOTIFY_FROM_EMAIL: ${{ secrets.RAG_NOTIFY_FROM_EMAIL }}
+        run: |
+          python -m rag.cli collab-notifications --digest-all \
+            --digest-hours "${{ inputs.digest_hours || '24' }}"

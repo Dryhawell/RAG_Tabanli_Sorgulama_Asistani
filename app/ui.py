@@ -102,6 +102,7 @@ from rag.collab_richtext import (
     resolve_comment,
     summarize_mark_layers,
 )
+from rag.collab_richtext_audit import read_mark_audit
 from rag.collab_notify import list_notifications, mark_notifications_read, notify_mentions
 from rag.collab_notify import list_notifications_global, mark_notifications_read_global
 from rag.collab_ws import ensure_collab_ws_server, websockets_available
@@ -1011,6 +1012,16 @@ with st.sidebar:
                             st.write(
                                 f"{_lr['start']}:{_lr['end']} → "
                                 + " + ".join(_lr.get("layers") or [])
+                            )
+                _mark_hist = read_mark_audit(ws.key, limit=15)
+                if _mark_hist:
+                    with st.expander(t("collab_mark_history"), expanded=False):
+                        for _mh in reversed(_mark_hist):
+                            st.caption(
+                                f"{_mh.get('ts', '-')} · {_mh.get('action')} · "
+                                f"{(_mh.get('mark') or {}).get('mark', '')} "
+                                f"{(_mh.get('mark') or {}).get('start', '')}:"
+                                f"{(_mh.get('mark') or {}).get('end', '')}"
                             )
                 if st.button(t("collab_add_mark"), use_container_width=True, key=f"mk_add_{ws.key}"):
                     try:

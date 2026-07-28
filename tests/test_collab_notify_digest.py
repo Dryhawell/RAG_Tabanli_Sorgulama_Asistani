@@ -1,8 +1,10 @@
 """Bildirim digest testleri."""
 
-from datetime import datetime, timezone
-
-from rag.collab_notify_digest import build_digest_body, collect_digest_events
+from rag.collab_notify_digest import (
+    build_digest_body,
+    collect_digest_events,
+    list_digest_target_users,
+)
 
 
 def test_collect_digest_events(tmp_path, monkeypatch):
@@ -12,6 +14,15 @@ def test_collect_digest_events(tmp_path, monkeypatch):
     notify_mentions("ws-d", "Hi @alice", from_user="bob", thread_id="t1")
     rows = collect_digest_events("alice", hours=24, base=str(tmp_path))
     assert len(rows) >= 1
+
+
+def test_list_digest_target_users(tmp_path, monkeypatch):
+    monkeypatch.setattr("rag.collab_notify.METADATA_DIR", str(tmp_path))
+    from rag.collab_notify import notify_mentions
+
+    notify_mentions("ws-x", "Hi @bob", from_user="alice", thread_id="t1")
+    users = list_digest_target_users(hours=24, base=str(tmp_path))
+    assert "bob" in users
 
 
 def test_build_digest_body():

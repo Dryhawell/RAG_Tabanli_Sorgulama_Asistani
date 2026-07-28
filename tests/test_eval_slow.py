@@ -152,3 +152,43 @@ def test_lora_dp_secure_mode_minilm(tmp_path):
     assert report.get("used_opacus") is True
     assert report.get("secure_mode") is True
     assert (tmp_path / "lora-dp-secure" / "lora_dp_report.json").exists()
+
+
+@pytest.mark.slow
+def test_lora_dp_eval_regression_minilm(tmp_path):
+    from rag.embed_finetune import build_pairs_from_eval
+    from rag.lora_dp_eval import compare_lora_dp_eval, lora_adapter_available
+    from rag.st_lora_dp import peft_available, train_sentence_transformer_lora_dp
+
+    if not peft_available():
+        pytest.skip("peft kurulu değil")
+
+    pairs = build_pairs_from_eval(CASES, FIXTURES)
+    out = str(tmp_path / "lora-dp-eval")
+    train_sentence_transformer_lora_dp(
+        "mini-en",
+        pairs,
+        out,
+        epochs=1,
+        batch_size=2,
+        use_opacus=False,
+        lora_rank=4,
+        max_seq_length=32,
+        production_mode=False,
+    )
+    if not lora_adapter_available(out):
+        pytest.skip("LoRA adapter kaydedilmedi")
+
+    report = compare_lora_dp_eval(
+        "mini-en",
+        out,
+        FIXTURES,
+        CASES,
+        top_k=4,
+        threshold=0.25,
+        use_hybrid=True,
+        min_accuracy=0.0,
+    )
+    assert "base_summary" in report
+    assert "lora_summary" in report
+    assert report["lora_summary"]["total"] >= 1

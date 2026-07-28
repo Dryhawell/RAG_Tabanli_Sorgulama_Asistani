@@ -288,10 +288,12 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - **DP-SGD eğitim**: `python -m rag.cli dp-train --no-opacus` (Opacus varsa `--opacus`)
 - **ST + Opacus**: `python -m rag.cli st-dp-train --embedding mini-en` (frozen backbone + DP head)
 - **LoRA + DP**: `python -m rag.cli lora-dp-train --mock` (CI) veya `--no-mock --production --opacus`
+- **LoRA eval**: `python -m rag.cli lora-dp-eval --lora-dir models/lora-dp-embed`
 - **@mention**: yorumlarda `@kullanici` → bildirim + WebSocket `mention_notify`
 - **Bildirim merkezi**: `python -m rag.cli collab-notifications --user alice`
 - **E-posta/webhook**: `RAG_NOTIFY_SMTP_HOST`, `RAG_NOTIFY_WEBHOOK_URL` (Slack/Discord/generic)
-- **Digest**: `python -m rag.cli collab-notifications --digest --user alice`
+- **Digest**: `python -m rag.cli collab-notifications --digest --user alice` veya `--digest-all`
+- GitHub Actions: `collab-notify-digest.yml` (günlük schedule)
 - **Mark katmanları**: çoklu stil birleşimi (bold+italic) canlı editör + katman haritası
 
 ### CRDT işbirlikçi not
@@ -428,7 +430,7 @@ export RAG_ENABLE_COLLAB_RICHTEXT=1
 - `rag/tools.py`, `rag/agent.py`, `rag/highlight.py`: araçlar, agent döngüsü, kaynak vurgulama
 - `rag/vision.py`, `rag/vision_llm.py`, `rag/memory.py`, `rag/planner.py`, `rag/profile_memory.py`
 - `rag/share_links.py`, `rag/collab_notes.py`, `rag/collab_ws.py`, `rag/collab_crdt.py`, `rag/collab_component.py`
-- `rag/embed_finetune.py`, `rag/domain_collect.py`, `rag/federated_pool.py`, `rag/privacy_federated.py`, `rag/dp_train.py`, `rag/st_dp_train.py`, `rag/st_lora_dp.py`, `rag/lora_dp_opacus.py`, `rag/collab_presence.py`, `rag/collab_undo.py`, `rag/collab_ime.py`, `rag/collab_richtext.py`, `rag/collab_notify.py`, `rag/collab_notify_dispatch.py`, `rag/collab_notify_digest.py`
+- `rag/embed_finetune.py`, `rag/domain_collect.py`, `rag/federated_pool.py`, `rag/privacy_federated.py`, `rag/dp_train.py`, `rag/st_dp_train.py`, `rag/st_lora_dp.py`, `rag/lora_dp_opacus.py`, `rag/lora_dp_eval.py`, `rag/collab_presence.py`, `rag/collab_undo.py`, `rag/collab_ime.py`, `rag/collab_richtext.py`, `rag/collab_richtext_audit.py`, `rag/collab_notify.py`, `rag/collab_notify_dispatch.py`, `rag/collab_notify_digest.py`
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -457,6 +459,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- LoRA+DP eval regression (fine-tuned embedding hit@k)
-- Rich-text mark geçmişi / audit
-- Bildirim digest cron (GitHub Actions schedule)
+- LoRA+DP eval min-accuracy gate (CI regression threshold)
+- Rich-text mark diff görselleştirme
+- Bildirim digest Slack Block Kit formatı

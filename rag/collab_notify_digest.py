@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -52,6 +54,41 @@ def collect_digest_events(
     return out
 
 
+def list_digest_target_users(
+    *,
+    hours: Optional[int] = None,
+    base: Optional[str] = None,
+) -> List[str]:
+    """Özet gönderilecek kullanıcıları merkez indeksinden toplar."""
+    try:
+        from rag.collab_notify import notify_center_path
+    except ImportError:
+        return []
+    path = notify_center_path(base=base)
+    if not os.path.isfile(path):
+        return []
+    window = int(hours or NOTIFY_DIGEST_HOURS)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, window))
+    users: set[str] = set()
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get("read"):
+                continue
+            dt = _parse_iso(str(row.get("created_at") or ""))
+            if dt is None or dt >= cutoff:
+                target = str(row.get("target_user") or "").strip()
+                if target:
+                    users.add(target)
+    return sorted(users)
+
+
 def build_digest_body(events: List[Dict[str, Any]], username: str) -> str:
     lines = [
         f"Bildirim özeti — {username}",
@@ -85,3 +122,19 @@ def send_digest_email(
         "count": len(events),
         "reason": None if ok else "send_failed",
     }
+
+
+def send_digest_all(
+    *,
+    hours: Optional[int] = None,
+    base: Optional[str] = None,
+) -> Dict[str, Any]:
+    users = list_digest_target_users(hours=hours, base=base)
+    results: Dict[str, Any] = {}
+    sent = 0
+    for user in users:
+        r = send_digest_email(user, hours=hours, base=base)
+        results[user] = r
+        if r.get("sent"):
+            sent += 1
+    return {"users": users, "sent": sent, "results": results}
