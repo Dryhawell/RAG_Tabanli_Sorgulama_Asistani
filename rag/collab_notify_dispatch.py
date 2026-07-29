@@ -83,15 +83,32 @@ def dispatch_webhook(event: Dict[str, Any]) -> bool:
     try:
         import requests
 
-        payload = {
+        from rag.collab_notify_digest import is_slack_webhook_url
+
+        preview = event.get("body_preview") or ""
+        text = (
+            f"{event.get('from_user') or 'Biri'} mentioned "
+            f"{event.get('target_user') or 'user'}: {preview}"
+        )
+        payload: Dict[str, Any] = {
             "type": "collab_mention",
             "notification": event,
-            "text": (
-                f"{event.get('from_user') or 'Biri'} mentioned "
-                f"{event.get('target_user') or 'user'}: "
-                f"{event.get('body_preview') or ''}"
-            ),
+            "text": text,
         }
+        if is_slack_webhook_url(url):
+            payload["blocks"] = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            f"*@{event.get('target_user') or 'user'}* "
+                            f"— {event.get('from_user') or 'Biri'}\n"
+                            f">{preview or '—'}"
+                        ),
+                    },
+                }
+            ]
         r = requests.post(url, json=payload, timeout=10)
         return r.status_code < 400
     except Exception:
@@ -133,5 +150,34 @@ def dispatch_digest_email(username: str, events: List[Dict[str, Any]]) -> bool:
                 smtp.login(NOTIFY_SMTP_USER, NOTIFY_SMTP_PASSWORD)
             smtp.sendmail(NOTIFY_FROM_EMAIL, [to_addr], msg.as_string())
         return True
+    except Exception:
+        return False
+
+
+def dispatch_digest_webhook(username: str, events: List[Dict[str, Any]]) -> bool:
+    """Digest özetini webhook'a gönderir (Slack Block Kit veya generic JSON)."""
+    url = (NOTIFY_WEBHOOK_URL or "").strip()
+    if not url or not events:
+        return False
+    try:
+        import requests
+
+        from rag.collab_notify_digest import (
+            build_digest_body,
+            build_digest_slack_blocks,
+            is_slack_webhook_url,
+        )
+
+        text = build_digest_body(events, username)
+        payload: Dict[str, Any] = {
+            "type": "collab_digest",
+            "username": username,
+            "count": len(events),
+            "text": text,
+        }
+        if is_slack_webhook_url(url):
+            payload["blocks"] = build_digest_slack_blocks(events, username)
+        r = requests.post(url, json=payload, timeout=10)
+        return r.status_code < 400
     except Exception:
         return False

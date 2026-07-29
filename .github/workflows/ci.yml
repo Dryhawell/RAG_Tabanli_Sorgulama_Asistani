@@ -50,6 +50,7 @@ jobs:
       - name: Slow embedding regression
         env:
           RUN_SLOW_EVAL: "1"
+          RAG_LORA_DP_EVAL_MIN_ACCURACY: "0.8"
         run: |
           pytest -q -m slow
           python -m rag.cli eval --embedding mini-en --min-accuracy 0.8

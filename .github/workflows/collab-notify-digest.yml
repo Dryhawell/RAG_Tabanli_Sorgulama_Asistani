@@ -33,6 +33,7 @@ jobs:
           RAG_NOTIFY_SMTP_USER: ${{ secrets.RAG_NOTIFY_SMTP_USER }}
           RAG_NOTIFY_SMTP_PASSWORD: ${{ secrets.RAG_NOTIFY_SMTP_PASSWORD }}
           RAG_NOTIFY_FROM_EMAIL: ${{ secrets.RAG_NOTIFY_FROM_EMAIL }}
+          RAG_NOTIFY_WEBHOOK_URL: ${{ secrets.RAG_NOTIFY_WEBHOOK_URL }}
         run: |
           python -m rag.cli collab-notifications --digest-all \
             --digest-hours "${{ inputs.digest_hours || '24' }}"

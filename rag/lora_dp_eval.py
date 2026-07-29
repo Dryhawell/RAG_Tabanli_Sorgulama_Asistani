@@ -86,6 +86,7 @@ def compare_lora_dp_eval(
 
     b_acc = report_base["summary"]["accuracy"]
     f_acc = report_lora["summary"]["accuracy"]
+    lora_ok = f_acc + 1e-9 >= float(min_accuracy)
     return {
         "base_model": emb_base.model_name,
         "lora_dir": lora_output_dir,
@@ -94,7 +95,21 @@ def compare_lora_dp_eval(
         "lora_summary": report_lora["summary"],
         "delta_accuracy": f_acc - b_acc,
         "improved": f_acc >= b_acc,
+        "min_lora_accuracy": float(min_accuracy),
+        "lora_ok": lora_ok,
+        "base_ok": report_base["summary"].get("ok", True),
     }
+
+
+def check_lora_eval_gate(report: Dict[str, Any], min_accuracy: float) -> bool:
+    """LoRA accuracy eşiğini kontrol eder (CI regression gate)."""
+    threshold = float(min_accuracy)
+    if threshold <= 0:
+        return True
+    if report.get("lora_ok") is not None:
+        return bool(report["lora_ok"])
+    lora_acc = float(report.get("lora_summary", {}).get("accuracy", 0.0))
+    return lora_acc + 1e-9 >= threshold
 
 
 def run_lora_dp_eval_report(

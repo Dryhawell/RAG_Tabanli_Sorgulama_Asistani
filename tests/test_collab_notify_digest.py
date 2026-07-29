@@ -37,3 +37,20 @@ def test_build_digest_body():
     assert "alice" in body
     assert "bob" in body
     assert "test mesaj" in body
+
+
+def test_build_digest_slack_blocks():
+    from rag.collab_notify_digest import build_digest_slack_blocks
+
+    events = [
+        {
+            "workspace_key": "ws",
+            "from_user": "bob",
+            "body_preview": "hello @alice",
+        }
+    ]
+    blocks = build_digest_slack_blocks(events, "alice")
+    assert blocks[0]["type"] == "header"
+    assert any(b.get("type") == "section" for b in blocks)
+    section = next(b for b in blocks if b.get("type") == "section" and "bob" in b["text"]["text"])
+    assert "hello" in section["text"]["text"]

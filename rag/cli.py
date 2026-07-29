@@ -59,6 +59,7 @@ from app.config import (
     LORA_DP_OPACUS_PRODUCTION,
     LORA_DP_SECURE_MODE,
     LORA_DP_GRAD_SAMPLE_MODE,
+    LORA_DP_EVAL_MIN_ACCURACY,
 )
 from rag.embed import Embedder, resolve_embedding_model
 from rag.eval import run_regression
@@ -666,12 +667,21 @@ def cmd_lora_dp_train(args: argparse.Namespace) -> int:
 
 
 def cmd_lora_dp_eval(args: argparse.Namespace) -> int:
-    from rag.lora_dp_eval import lora_adapter_available, run_lora_dp_eval_report
+    from rag.lora_dp_eval import (
+        check_lora_eval_gate,
+        lora_adapter_available,
+        run_lora_dp_eval_report,
+    )
 
     lora_dir = args.lora_dir or LORA_DP_TRAIN_OUTPUT_DIR
     if not lora_adapter_available(lora_dir):
         print(f"LoRA adapter bulunamadı: {lora_dir}/lora_adapter", file=sys.stderr)
         return 2
+    min_acc = (
+        args.min_accuracy
+        if args.min_accuracy is not None
+        else LORA_DP_EVAL_MIN_ACCURACY
+    )
     try:
         report = run_lora_dp_eval_report(
             args.embedding,
@@ -682,7 +692,7 @@ def cmd_lora_dp_eval(args: argparse.Namespace) -> int:
             top_k=args.top_k,
             threshold=args.threshold,
             use_hybrid=not args.no_hybrid,
-            min_accuracy=args.min_accuracy,
+            min_accuracy=min_acc,
         )
     except Exception as exc:
         print(f"LoRA+DP eval hatası: {exc}", file=sys.stderr)
@@ -691,9 +701,13 @@ def cmd_lora_dp_eval(args: argparse.Namespace) -> int:
     l = report["lora_summary"]["accuracy"]
     print(
         f"LoRA eval: base={b:.2%} lora={l:.2%} delta={report['delta_accuracy']:+.2%} "
-        f"improved={report['improved']}"
+        f"improved={report['improved']} min={min_acc:.2%} ok={report.get('lora_ok')}"
     )
-    if args.min_accuracy and l < args.min_accuracy:
+    if not check_lora_eval_gate(report, min_acc):
+        print(
+            f"LoRA eval gate başarısız: lora={l:.2%} < min={min_acc:.2%}",
+            file=sys.stderr,
+        )
         return 1
     return 0
 
@@ -1065,7 +1079,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_loraev.add_argument("--cases", default=None)
     p_loraev.add_argument("--top-k", type=int, default=4)
     p_loraev.add_argument("--threshold", type=float, default=0.30)
-    p_loraev.add_argument("--min-accuracy", type=float, default=0.0)
+    p_loraev.add_argument(
+        "--min-accuracy",
+        type=float,
+        default=None,
+        help="LoRA accuracy eşiği (varsayılan RAG_LORA_DP_EVAL_MIN_ACCURACY)",
+    )
     p_loraev.add_argument("--no-hybrid", action="store_true")
     p_loraev.add_argument("--output", default=None, help="JSON rapor")
     p_loraev.set_defaults(func=cmd_lora_dp_eval)
