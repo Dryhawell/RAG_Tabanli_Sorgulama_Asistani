@@ -155,17 +155,34 @@ def dispatch_notifications(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return [dispatch_notification(ev) for ev in events or []]
 
 
-def dispatch_digest_email(username: str, events: List[Dict[str, Any]]) -> bool:
+def dispatch_digest_email(
+    username: str,
+    events: List[Dict[str, Any]],
+    *,
+    mentions_only: Optional[bool] = None,
+    group_by: Optional[str] = None,
+) -> bool:
     """Okunmamış bildirimlerin günlük özet e-postası."""
     if not NOTIFY_SMTP_HOST or not events:
         return False
     to_addr = resolve_notify_email(username)
     if not to_addr:
         return False
-    from rag.collab_notify_digest import build_digest_body
+    from rag.collab_notify_digest import build_digest_body, prepare_digest_events
 
-    body = build_digest_body(events, username)
-    subject = f"[RAG Collab] Bildirim özeti ({len(events)})"
+    body = build_digest_body(
+        events,
+        username,
+        mentions_only=mentions_only,
+        group_by=group_by,
+    )
+    prep = prepare_digest_events(
+        events,
+        mentions_only=mentions_only,
+        group_by=group_by,
+    )
+    count = prep["total"]
+    subject = f"[RAG Collab] Bildirim özeti ({count})"
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = NOTIFY_FROM_EMAIL
@@ -181,8 +198,14 @@ def dispatch_digest_email(username: str, events: List[Dict[str, Any]]) -> bool:
         return False
 
 
-def dispatch_digest_webhook(username: str, events: List[Dict[str, Any]]) -> bool:
-    """Digest özetini webhook'a gönderir (Slack Block Kit veya generic JSON)."""
+def dispatch_digest_webhook(
+    username: str,
+    events: List[Dict[str, Any]],
+    *,
+    mentions_only: Optional[bool] = None,
+    group_by: Optional[str] = None,
+) -> bool:
+    """Digest özetini webhook'a gönderir (Teams/Slack/Discord/generic)."""
     url = (NOTIFY_WEBHOOK_URL or "").strip()
     if not url or not events:
         return False
@@ -193,25 +216,55 @@ def dispatch_digest_webhook(username: str, events: List[Dict[str, Any]]) -> bool
             build_digest_body,
             build_digest_discord_embed,
             build_digest_slack_blocks,
+            build_digest_teams_payload,
             is_discord_webhook_url,
             is_slack_webhook_url,
+            is_teams_webhook_url,
+            prepare_digest_events,
         )
 
-        text = build_digest_body(events, username)
-        if is_discord_webhook_url(url):
+        prep = prepare_digest_events(
+            events,
+            mentions_only=mentions_only,
+            group_by=group_by,
+        )
+        text = build_digest_body(
+            events,
+            username,
+            mentions_only=mentions_only,
+            group_by=group_by,
+        )
+        if is_teams_webhook_url(url):
+            payload = build_digest_teams_payload(
+                events,
+                username,
+                mentions_only=mentions_only,
+                group_by=group_by,
+            )
+        elif is_discord_webhook_url(url):
             payload = {
-                "content": f"Bildirim özeti — {username} ({len(events)})",
-                "embeds": build_digest_discord_embed(events, username),
+                "content": f"Bildirim özeti — {username} ({prep['total']})",
+                "embeds": build_digest_discord_embed(
+                    events,
+                    username,
+                    mentions_only=mentions_only,
+                    group_by=group_by,
+                ),
             }
         else:
             payload: Dict[str, Any] = {
                 "type": "collab_digest",
                 "username": username,
-                "count": len(events),
+                "count": prep["total"],
                 "text": text,
             }
             if is_slack_webhook_url(url):
-                payload["blocks"] = build_digest_slack_blocks(events, username)
+                payload["blocks"] = build_digest_slack_blocks(
+                    events,
+                    username,
+                    mentions_only=mentions_only,
+                    group_by=group_by,
+                )
         r = requests.post(url, json=payload, timeout=10)
         return r.status_code < 400
     except Exception:

@@ -101,3 +101,34 @@ def test_dispatch_digest_webhook_discord_embed(monkeypatch):
     assert ok is True
     assert "embeds" in calls[0]["json"]
     assert calls[0]["json"]["embeds"][0]["title"].startswith("Bildirim")
+
+
+def test_dispatch_digest_webhook_teams_adaptive(monkeypatch):
+    from rag.collab_notify_dispatch import dispatch_digest_webhook
+
+    monkeypatch.setattr(
+        "rag.collab_notify_dispatch.NOTIFY_WEBHOOK_URL",
+        "https://outlook.office.com/webhook/abc/IncomingWebhook/xyz",
+    )
+    calls = []
+
+    class FakeResp:
+        status_code = 200
+
+    def fake_post(url, json=None, timeout=10):
+        calls.append({"url": url, "json": json})
+        return FakeResp()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    events = [
+        {
+            "workspace_key": "ws",
+            "from_user": "bob",
+            "body_preview": "ping",
+            "kind": "mention",
+        }
+    ]
+    ok = dispatch_digest_webhook("alice", events)
+    assert ok is True
+    assert calls[0]["json"]["type"] == "message"
+    assert calls[0]["json"]["attachments"][0]["content"]["type"] == "AdaptiveCard"

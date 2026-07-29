@@ -292,7 +292,7 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - **@mention**: yorumlarda `@kullanici` → bildirim + WebSocket `mention_notify`
 - **Bildirim merkezi**: `python -m rag.cli collab-notifications --user alice`
 - **E-posta/webhook**: `RAG_NOTIFY_SMTP_HOST`, `RAG_NOTIFY_WEBHOOK_URL` (Slack/Discord/generic)
-- **Digest**: `python -m rag.cli collab-notifications --digest --user alice` veya `--digest-all` (e-posta + Slack/Discord webhook)
+- **Digest**: `python -m rag.cli collab-notifications --digest --user alice --digest-mentions-only --digest-group-by thread` (e-posta + Slack/Discord/Teams webhook)
 - GitHub Actions: `collab-notify-digest.yml` (günlük schedule)
 - **Mark katmanları**: çoklu stil birleşimi (bold+italic) canlı editör + katman haritası + audit diff görselleştirme
 
@@ -417,6 +417,8 @@ export RAG_ENABLE_COLLAB_RICHTEXT=1
 | `RAG_NOTIFY_FROM_EMAIL` | Gönderen e-posta |
 | `RAG_NOTIFY_WEBHOOK_URL` | Push/webhook URL (Slack/Discord) |
 | `RAG_NOTIFY_DIGEST_HOURS` | Digest özet penceresi (saat, varsayılan 24) |
+| `RAG_NOTIFY_DIGEST_MENTIONS_ONLY` | Digest yalnızca @mention (1/0) |
+| `RAG_NOTIFY_DIGEST_GROUP_BY` | Digest gruplama: `thread` / `workspace` / `none` |
 | `RAG_EMBED_PIPELINE_REPORT_PATH` | Pipeline JSON rapor yolu |
 | `RAG_DOMAIN_EMBEDDING_MODEL` | Domain/fine-tuned embedding model yolu veya Hub adı |
 | `RAG_ENABLE_DOMAIN_EMBEDDING` | Domain embedding varsayılan preset (1/0) |
@@ -461,6 +463,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Yorum thread @mention filtreleme ve digest gruplama
-- LoRA eval per-case delta raporu (hangi case regresse etti)
-- Bildirim digest Microsoft Teams adaptive card formatı
+- Digest per-workspace özet eşiği (min bildirim sayısı)
+- LoRA eval case-level JSON rapor export (`--per-case-output`)
+- Bildirim digest e-posta HTML şablonu

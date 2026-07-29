@@ -305,13 +305,20 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
         result = send_digest_email(
             user,
             hours=args.digest_hours,
+            mentions_only=args.digest_mentions_only,
+            group_by=args.digest_group_by,
         )
         print(json.dumps(result, ensure_ascii=False))
-        return 0 if result.get("sent") or result.get("reason") == "empty" else 1
+        empty_reasons = {"empty", "empty_after_filter"}
+        return 0 if result.get("sent") or result.get("reason") in empty_reasons else 1
     if args.digest_all:
         from rag.collab_notify_digest import send_digest_all
 
-        result = send_digest_all(hours=args.digest_hours)
+        result = send_digest_all(
+            hours=args.digest_hours,
+            mentions_only=args.digest_mentions_only,
+            group_by=args.digest_group_by,
+        )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.mark_read:
@@ -713,8 +720,16 @@ def cmd_lora_dp_eval(args: argparse.Namespace) -> int:
         f"LoRA eval: base={b:.2%} lora={l:.2%} delta={d:+.2%} "
         f"improved={report['improved']} min_acc={min_acc:.2%} "
         f"lora_ok={report.get('lora_ok')} min_delta={min_delta:+.2%} "
-        f"delta_ok={report.get('delta_ok')}"
+        f"delta_ok={report.get('delta_ok')} regressions={report.get('regression_count', 0)}"
     )
+    for reg in report.get("regressions") or []:
+        cid = reg.get("case_id") or "-"
+        print(
+            f"  [REGRESS] {cid}: base_gate={reg.get('base_gate', 0):.3f} "
+            f"lora_gate={reg.get('lora_gate', 0):.3f} "
+            f"Δgate={reg.get('gate_delta', 0):+.3f}",
+            file=sys.stderr,
+        )
     if not check_lora_eval_gates(report, min_acc, min_delta):
         if not check_lora_eval_gate(report, min_acc):
             print(
@@ -883,6 +898,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_cnot.add_argument("--digest", action="store_true", help="Günlük özet e-postası gönder")
     p_cnot.add_argument("--digest-all", action="store_true", help="Tüm hedef kullanıcılara digest")
     p_cnot.add_argument("--digest-hours", type=int, default=24, help="Özet penceresi (saat)")
+    p_cnot.add_argument(
+        "--digest-mentions-only",
+        action="store_true",
+        help="Digest yalnızca @mention bildirimleri",
+    )
+    p_cnot.add_argument(
+        "--digest-group-by",
+        default=None,
+        choices=["thread", "workspace", "none"],
+        help="Digest gruplama (thread / workspace / none)",
+    )
     p_cnot.add_argument("--ids", nargs="*", default=None, help="Belirli bildirim id'leri")
     p_cnot.add_argument("--json", action="store_true", help="JSON çıktı")
     p_cnot.set_defaults(func=cmd_collab_notifications)

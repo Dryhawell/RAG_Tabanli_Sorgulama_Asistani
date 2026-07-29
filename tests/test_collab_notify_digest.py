@@ -64,9 +64,75 @@ def test_build_digest_discord_embed():
             "workspace_key": "ws",
             "from_user": "bob",
             "body_preview": "ping",
+            "kind": "mention",
+            "thread_id": "t1",
         }
     ]
     embeds = build_digest_discord_embed(events, "alice")
     assert len(embeds) == 1
     assert "alice" in embeds[0]["title"]
-    assert embeds[0]["fields"][0]["name"].startswith("bob")
+    assert embeds[0]["fields"][0]["name"].find("bob") >= 0
+
+
+def test_filter_and_group_digest_events():
+    from rag.collab_notify_digest import (
+        filter_mention_events,
+        group_digest_events,
+        prepare_digest_events,
+    )
+
+    events = [
+        {
+            "kind": "mention",
+            "thread_id": "t1",
+            "workspace_key": "ws",
+            "from_user": "a",
+            "body_preview": "hi",
+        },
+        {
+            "kind": "system",
+            "thread_id": "t2",
+            "workspace_key": "ws",
+            "from_user": "b",
+            "body_preview": "sys",
+        },
+        {
+            "kind": "mention",
+            "thread_id": "t1",
+            "workspace_key": "ws",
+            "from_user": "c",
+            "body_preview": "again",
+        },
+    ]
+    mentions = filter_mention_events(events)
+    assert len(mentions) == 2
+    grouped = group_digest_events(mentions, group_by="thread")
+    assert "thread:t1" in grouped
+    assert len(grouped["thread:t1"]) == 2
+    prep = prepare_digest_events(events, mentions_only=True, group_by="thread")
+    assert prep["total"] == 2
+    assert "thread:t1" in prep["grouped"]
+
+
+def test_build_digest_teams_adaptive_card():
+    from rag.collab_notify_digest import build_digest_teams_payload
+
+    events = [
+        {
+            "workspace_key": "ws",
+            "from_user": "bob",
+            "body_preview": "teams ping",
+            "kind": "mention",
+            "thread_id": "th1",
+        }
+    ]
+    payload = build_digest_teams_payload(events, "alice")
+    assert payload["type"] == "message"
+    assert payload["attachments"][0]["contentType"] == (
+        "application/vnd.microsoft.card.adaptive"
+    )
+    card = payload["attachments"][0]["content"]
+    assert card["type"] == "AdaptiveCard"
+    assert any(
+        b.get("type") == "FactSet" for b in card.get("body") or []
+    )

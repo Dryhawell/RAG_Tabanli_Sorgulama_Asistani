@@ -50,6 +50,56 @@ def lora_adapter_available(lora_output_dir: str) -> bool:
     return os.path.isdir(os.path.join(lora_output_dir, "lora_adapter"))
 
 
+def _case_key(row: Dict[str, Any], idx: int) -> str:
+    cid = row.get("case_id")
+    if cid:
+        return str(cid)
+    return f"case-{idx}"
+
+
+def build_per_case_delta_report(
+    report_base: Dict[str, Any],
+    report_lora: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Base vs LoRA sonuçlarını case bazında karşılaştırır."""
+    base_rows = report_base.get("results") or []
+    lora_rows = report_lora.get("results") or []
+    lora_map: Dict[str, Dict[str, Any]] = {}
+    for i, row in enumerate(lora_rows):
+        lora_map[_case_key(row, i)] = row
+    deltas: List[Dict[str, Any]] = []
+    for i, base_row in enumerate(base_rows):
+        key = _case_key(base_row, i)
+        lora_row = lora_map.get(key) or {}
+        base_pass = bool(base_row.get("passed"))
+        lora_pass = bool(lora_row.get("passed"))
+        base_gate = float(base_row.get("gate_score") or 0.0)
+        lora_gate = float(lora_row.get("gate_score") or 0.0)
+        gate_delta = lora_gate - base_gate
+        regressed = base_pass and not lora_pass
+        improved = not base_pass and lora_pass
+        deltas.append(
+            {
+                "case_id": key,
+                "question": base_row.get("question") or lora_row.get("question"),
+                "base_passed": base_pass,
+                "lora_passed": lora_pass,
+                "base_gate": base_gate,
+                "lora_gate": lora_gate,
+                "gate_delta": gate_delta,
+                "regressed": regressed,
+                "improved": improved,
+                "base_top_sources": base_row.get("top_sources") or [],
+                "lora_top_sources": lora_row.get("top_sources") or [],
+            }
+        )
+    return deltas
+
+
+def list_regressed_cases(per_case: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [row for row in per_case if row.get("regressed")]
+
+
 def compare_lora_dp_eval(
     base_model: str,
     lora_output_dir: str,
@@ -90,6 +140,8 @@ def compare_lora_dp_eval(
     delta = f_acc - b_acc
     lora_ok = f_acc + 1e-9 >= float(min_accuracy)
     delta_ok = delta + 1e-9 >= float(min_delta)
+    per_case = build_per_case_delta_report(report_base, report_lora)
+    regressions = list_regressed_cases(per_case)
     return {
         "base_model": emb_base.model_name,
         "lora_dir": lora_output_dir,
@@ -104,6 +156,9 @@ def compare_lora_dp_eval(
         "delta_ok": delta_ok,
         "gate_ok": lora_ok and delta_ok,
         "base_ok": report_base["summary"].get("ok", True),
+        "per_case_deltas": per_case,
+        "regressions": regressions,
+        "regression_count": len(regressions),
     }
 
 
