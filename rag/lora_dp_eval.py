@@ -240,6 +240,95 @@ def suggest_lora_rollback(
         "rebuild_command": "python -m rag.cli rebuild --embedding mini-en"
         if should_rollback
         else None,
+        "rebuild_embedding": "mini-en" if should_rollback else None,
+    }
+
+
+def apply_lora_rollback_env_patch(
+    suggestion: Dict[str, Any],
+    *,
+    env_path: Optional[str] = None,
+    apply_os_environ: bool = False,
+) -> Dict[str, Any]:
+    """env_patch'i .env.rollback dosyasına yazar; isteğe bağlı os.environ günceller."""
+    patch = dict(suggestion.get("env_patch") or {})
+    if not suggestion.get("should_rollback") or not patch:
+        return {
+            "applied": False,
+            "reason": "no_rollback",
+            "env_path": env_path,
+            "patch": {},
+        }
+    path = env_path or os.path.join("metadata", "lora_rollback.env")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    lines = [f"{k}={v}" for k, v in patch.items()]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    if apply_os_environ:
+        for k, v in patch.items():
+            os.environ[k] = str(v)
+    return {
+        "applied": True,
+        "env_path": path,
+        "patch": patch,
+        "os_environ": apply_os_environ,
+    }
+
+
+def dry_run_lora_rebuild(
+    suggestion: Dict[str, Any],
+    *,
+    data_dir: Optional[str] = None,
+    embedding: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Rollback sonrası rebuild'i simüle eder (dosya silmez / indeks yazmaz)."""
+    if not suggestion.get("should_rollback"):
+        return {"would_rebuild": False, "reason": "no_rollback"}
+    emb = embedding or suggestion.get("rebuild_embedding") or "mini-en"
+    root = data_dir or "data"
+    files: List[str] = []
+    if os.path.isdir(root):
+        for dirpath, _, filenames in os.walk(root):
+            for name in filenames:
+                if name.lower().endswith((".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg")):
+                    files.append(os.path.join(dirpath, name))
+    return {
+        "would_rebuild": True,
+        "embedding": emb,
+        "data_dir": root,
+        "source_files": files[:200],
+        "source_count": len(files),
+        "command": f"python -m rag.cli rebuild --embedding {emb}",
+        "note": "Dry-run: indeks oluşturulmadı",
+    }
+
+
+def execute_lora_rollback(
+    report: Dict[str, Any],
+    *,
+    lora_output_dir: Optional[str] = None,
+    env_path: Optional[str] = None,
+    apply_os_environ: bool = False,
+    rebuild_dry_run: bool = True,
+    data_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Öneriyi uygular: env patch + isteğe bağlı rebuild dry-run."""
+    suggestion = suggest_lora_rollback(report, lora_output_dir=lora_output_dir)
+    env_result = apply_lora_rollback_env_patch(
+        suggestion,
+        env_path=env_path,
+        apply_os_environ=apply_os_environ,
+    )
+    rebuild_result = None
+    if rebuild_dry_run and suggestion.get("should_rollback"):
+        rebuild_result = dry_run_lora_rebuild(
+            suggestion,
+            data_dir=data_dir,
+        )
+    return {
+        "suggestion": suggestion,
+        "env": env_result,
+        "rebuild": rebuild_result,
     }
 
 
@@ -265,6 +354,10 @@ def run_lora_dp_eval_report(
     per_case_path: Optional[str] = None,
     rollback_path: Optional[str] = None,
     auto_rollback: bool = False,
+    apply_env_patch: bool = False,
+    rebuild_dry_run: bool = False,
+    env_path: Optional[str] = None,
+    data_dir: Optional[str] = None,
     **kwargs,
 ) -> Dict[str, Any]:
     report = compare_lora_dp_eval(
@@ -304,4 +397,14 @@ def run_lora_dp_eval_report(
             lora_output_dir=lora_output_dir,
         )
         report["rollback_path"] = out
+    if (apply_env_patch or rebuild_dry_run) and suggestion.get("should_rollback"):
+        exec_result = execute_lora_rollback(
+            report,
+            lora_output_dir=lora_output_dir,
+            env_path=env_path,
+            apply_os_environ=apply_env_patch,
+            rebuild_dry_run=rebuild_dry_run,
+            data_dir=data_dir,
+        )
+        report["rollback_execution"] = exec_result
     return report

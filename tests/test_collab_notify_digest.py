@@ -188,6 +188,42 @@ def test_quiet_hours_overnight():
     assert is_quiet_hours(now=night, quiet_spec="") is False
 
 
+def test_quiet_hours_tenant_timezone(monkeypatch):
+    from datetime import datetime, timezone
+
+    from rag.collab_notify_digest import (
+        is_quiet_hours,
+        parse_tenant_timezones,
+        resolve_digest_timezone,
+    )
+
+    monkeypatch.setattr(
+        "rag.collab_notify_digest.NOTIFY_TENANT_TIMEZONES",
+        "default:Europe/Istanbul,acme:America/New_York",
+    )
+    mapping = parse_tenant_timezones()
+    assert mapping["default"] == "Europe/Istanbul"
+    assert resolve_digest_timezone(tenant_id="default") == "Europe/Istanbul"
+    # 21:30 UTC = 00:30 Istanbul (UTC+3) → quiet if 22:00-07:00 local
+    utc_evening = datetime(2026, 1, 1, 21, 30, tzinfo=timezone.utc)
+    assert (
+        is_quiet_hours(
+            now=utc_evening,
+            quiet_spec="22:00-07:00",
+            timezone_name="Europe/Istanbul",
+        )
+        is True
+    )
+    assert (
+        is_quiet_hours(
+            now=utc_evening,
+            quiet_spec="22:00-07:00",
+            timezone_name="UTC",
+        )
+        is False
+    )
+
+
 def test_send_digest_skips_quiet_hours(monkeypatch):
     from rag.collab_notify_digest import send_digest_email
 

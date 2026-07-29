@@ -1,20 +1,27 @@
 """Mobil push PoC testleri."""
 
+from datetime import datetime, timedelta, timezone
+
 from rag.collab_notify_push import (
     build_fcm_payload,
     dispatch_push,
+    is_token_expired,
     list_device_tokens,
+    prune_expired_tokens,
     register_device_token,
+    revoke_device_token,
+    summarize_user_devices,
 )
 
 
 def test_register_and_list_device_tokens(tmp_path, monkeypatch):
     monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
-    register_device_token("alice", "tok-1", platform="fcm")
-    register_device_token("alice", "tok-1", platform="fcm")  # duplicate
+    register_device_token("alice", "tok-1", platform="fcm", label="phone")
+    register_device_token("alice", "tok-1", platform="fcm")  # refresh
     rows = list_device_tokens("alice")
     assert len(rows) == 1
     assert rows[0]["token"] == "tok-1"
+    assert rows[0].get("expires_at")
 
 
 def test_build_fcm_payload():
@@ -43,3 +50,24 @@ def test_dispatch_push_generic(tmp_path, monkeypatch):
     assert ok is True
     assert calls[0]["json"]["type"] == "collab_push"
     assert calls[0]["json"]["username"] == "bob"
+
+
+def test_token_ttl_revoke_and_prune(tmp_path, monkeypatch):
+    monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
+    rec = register_device_token("carol", "tok-old", ttl_days=1)
+    # force expire
+    past = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    rows = list_device_tokens("carol", include_expired=True)
+    assert rows
+    rows[0]["expires_at"] = past
+    from rag.collab_notify_push import _write_all_tokens
+
+    _write_all_tokens(rows)
+    assert is_token_expired(rows[0]) is True
+    assert list_device_tokens("carol") == []
+    result = prune_expired_tokens(username="carol")
+    assert result["removed"] == 1
+    register_device_token("carol", "tok-new")
+    assert revoke_device_token("carol", "tok-new") is True
+    devices = summarize_user_devices("carol")
+    assert any(d.get("revoked") for d in devices)

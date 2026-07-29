@@ -195,3 +195,31 @@ def test_suggest_lora_rollback():
     }
     assert suggest_lora_rollback(ok_report)["should_rollback"] is False
 
+
+def test_apply_lora_rollback_env_and_dry_run(tmp_path):
+    from rag.lora_dp_eval import execute_lora_rollback
+
+    report = {
+        "gate_ok": False,
+        "lora_ok": False,
+        "delta_ok": False,
+        "regressions": [{"case_id": "z"}],
+        "lora_dir": "models/lora-dp-embed",
+    }
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "a.txt").write_text("hello", encoding="utf-8")
+    env_path = str(tmp_path / "lora_rollback.env")
+    result = execute_lora_rollback(
+        report,
+        env_path=env_path,
+        apply_os_environ=True,
+        rebuild_dry_run=True,
+        data_dir=str(data),
+    )
+    assert result["env"]["applied"] is True
+    assert (tmp_path / "lora_rollback.env").exists()
+    assert result["rebuild"]["would_rebuild"] is True
+    assert result["rebuild"]["source_count"] >= 1
+    assert "rebuild" in result["rebuild"]["command"]
+

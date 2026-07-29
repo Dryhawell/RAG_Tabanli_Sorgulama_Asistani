@@ -15,8 +15,10 @@ try:
         NOTIFY_DIGEST_MENTIONS_ONLY,
         NOTIFY_DIGEST_MIN_PER_WORKSPACE,
         NOTIFY_DIGEST_QUIET_HOURS,
+        NOTIFY_DIGEST_TIMEZONE,
         NOTIFY_FROM_EMAIL,
         NOTIFY_SMTP_HOST,
+        NOTIFY_TENANT_TIMEZONES,
         NOTIFY_WEBHOOK_URL,
     )
 except ImportError:
@@ -26,6 +28,8 @@ except ImportError:
     NOTIFY_DIGEST_MIN_PER_WORKSPACE = 1
     NOTIFY_DIGEST_HTML = True
     NOTIFY_DIGEST_QUIET_HOURS = ""
+    NOTIFY_DIGEST_TIMEZONE = "UTC"
+    NOTIFY_TENANT_TIMEZONES = ""
     NOTIFY_SMTP_HOST = ""
     NOTIFY_FROM_EMAIL = "noreply@localhost"
     NOTIFY_WEBHOOK_URL = ""
@@ -81,27 +85,83 @@ def parse_quiet_hours(spec: Optional[str] = None) -> Optional[tuple[int, int]]:
     return start, end
 
 
+def parse_tenant_timezones(spec: Optional[str] = None) -> Dict[str, str]:
+    """'default:Europe/Istanbul,acme:America/New_York' → dict."""
+    text = (spec if spec is not None else NOTIFY_TENANT_TIMEZONES) or ""
+    text = text.strip()
+    out: Dict[str, str] = {}
+    if not text:
+        return out
+    if text.startswith("{"):
+        try:
+            raw = json.loads(text)
+            if isinstance(raw, dict):
+                return {str(k): str(v) for k, v in raw.items() if v}
+        except json.JSONDecodeError:
+            pass
+    for part in text.split(","):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        tid, tz = part.split(":", 1)
+        tid, tz = tid.strip(), tz.strip()
+        if tid and tz:
+            out[tid] = tz
+    return out
+
+
+def resolve_digest_timezone(
+    *,
+    timezone_name: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> str:
+    """Tenant yerel saati veya global timezone."""
+    if timezone_name:
+        return timezone_name.strip() or "UTC"
+    if tenant_id:
+        mapping = parse_tenant_timezones()
+        if tenant_id in mapping:
+            return mapping[tenant_id]
+        if tenant_id.lower() in mapping:
+            return mapping[tenant_id.lower()]
+    return (NOTIFY_DIGEST_TIMEZONE or "UTC").strip() or "UTC"
+
+
+def _zoneinfo(name: str):
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(name)
+    except Exception:
+        return timezone.utc
+
+
 def is_quiet_hours(
     *,
     now: Optional[datetime] = None,
     quiet_spec: Optional[str] = None,
+    timezone_name: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> bool:
-    """UTC saati quiet hours aralığındaysa True (gece yarısını aşan aralık desteklenir)."""
+    """Yerel (tenant) saati quiet hours aralığındaysa True."""
     bounds = parse_quiet_hours(quiet_spec)
     if bounds is None:
         return False
     start, end = bounds
+    tz_name = resolve_digest_timezone(
+        timezone_name=timezone_name,
+        tenant_id=tenant_id,
+    )
+    tz = _zoneinfo(tz_name)
     dt = now or datetime.now(timezone.utc)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    minute = dt.hour * 60 + dt.minute
+    local = dt.astimezone(tz)
+    minute = local.hour * 60 + local.minute
     if start == end:
         return True
     if start < end:
         return start <= minute < end
-    # örn. 22:00-07:00
     return minute >= start or minute < end
 
 
@@ -608,13 +668,25 @@ def send_digest_email(
     min_per_workspace: Optional[int] = None,
     ignore_quiet_hours: bool = False,
     quiet_hours: Optional[str] = None,
+    timezone_name: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    if not ignore_quiet_hours and is_quiet_hours(quiet_spec=quiet_hours):
+    tz_resolved = resolve_digest_timezone(
+        timezone_name=timezone_name,
+        tenant_id=tenant_id,
+    )
+    if not ignore_quiet_hours and is_quiet_hours(
+        quiet_spec=quiet_hours,
+        timezone_name=tz_resolved,
+        tenant_id=tenant_id,
+    ):
         return {
             "sent": False,
             "count": 0,
             "reason": "quiet_hours",
             "quiet_hours": quiet_hours or NOTIFY_DIGEST_QUIET_HOURS,
+            "timezone": tz_resolved,
+            "tenant_id": tenant_id,
         }
     events = collect_digest_events(username, hours=hours, base=base)
     if not events:
@@ -685,6 +757,8 @@ def send_digest_email(
         "group_by": prep["group_by"],
         "min_per_workspace": prep.get("min_per_workspace"),
         "workspace_filtered": prep.get("workspace_filtered", 0),
+        "timezone": tz_resolved,
+        "tenant_id": tenant_id,
     }
 
 
@@ -697,14 +771,26 @@ def send_digest_all(
     min_per_workspace: Optional[int] = None,
     ignore_quiet_hours: bool = False,
     quiet_hours: Optional[str] = None,
+    timezone_name: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    if not ignore_quiet_hours and is_quiet_hours(quiet_spec=quiet_hours):
+    tz_resolved = resolve_digest_timezone(
+        timezone_name=timezone_name,
+        tenant_id=tenant_id,
+    )
+    if not ignore_quiet_hours and is_quiet_hours(
+        quiet_spec=quiet_hours,
+        timezone_name=tz_resolved,
+        tenant_id=tenant_id,
+    ):
         return {
             "users": [],
             "sent": 0,
             "results": {},
             "reason": "quiet_hours",
             "quiet_hours": quiet_hours or NOTIFY_DIGEST_QUIET_HOURS,
+            "timezone": tz_resolved,
+            "tenant_id": tenant_id,
         }
     users = list_digest_target_users(hours=hours, base=base)
     results: Dict[str, Any] = {}
@@ -718,8 +804,16 @@ def send_digest_all(
             group_by=group_by,
             min_per_workspace=min_per_workspace,
             ignore_quiet_hours=True,
+            timezone_name=tz_resolved,
+            tenant_id=tenant_id,
         )
         results[user] = r
         if r.get("sent"):
             sent += 1
-    return {"users": users, "sent": sent, "results": results}
+    return {
+        "users": users,
+        "sent": sent,
+        "results": results,
+        "timezone": tz_resolved,
+        "tenant_id": tenant_id,
+    }

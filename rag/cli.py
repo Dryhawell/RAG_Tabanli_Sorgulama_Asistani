@@ -307,8 +307,28 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
             user,
             args.register_push_token,
             platform=args.push_platform or "fcm",
+            label=args.push_label,
+            ttl_days=args.push_ttl_days,
         )
         print(json.dumps(rec, ensure_ascii=False))
+        return 0
+    if args.list_push_devices:
+        from rag.collab_notify_push import summarize_user_devices
+
+        devices = summarize_user_devices(user)
+        print(json.dumps(devices, ensure_ascii=False, indent=2))
+        return 0
+    if args.revoke_push_token:
+        from rag.collab_notify_push import revoke_device_token
+
+        ok = revoke_device_token(user, args.revoke_push_token)
+        print(json.dumps({"revoked": ok}, ensure_ascii=False))
+        return 0 if ok else 1
+    if args.prune_push_tokens:
+        from rag.collab_notify_push import prune_expired_tokens
+
+        result = prune_expired_tokens(username=user if not args.prune_all_users else None)
+        print(json.dumps(result, ensure_ascii=False))
         return 0
     if args.test_push:
         from rag.collab_notify_push import dispatch_push
@@ -332,6 +352,8 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
             min_per_workspace=args.digest_min_per_workspace,
             ignore_quiet_hours=args.digest_force,
             quiet_hours=args.digest_quiet_hours,
+            timezone_name=args.digest_timezone,
+            tenant_id=args.digest_tenant,
         )
         print(json.dumps(result, ensure_ascii=False))
         empty_reasons = {
@@ -351,6 +373,8 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
             min_per_workspace=args.digest_min_per_workspace,
             ignore_quiet_hours=args.digest_force,
             quiet_hours=args.digest_quiet_hours,
+            timezone_name=args.digest_timezone,
+            tenant_id=args.digest_tenant,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
@@ -740,6 +764,10 @@ def cmd_lora_dp_eval(args: argparse.Namespace) -> int:
             per_case_path=args.per_case_output,
             rollback_path=args.rollback_output,
             auto_rollback=bool(args.auto_rollback or LORA_DP_EVAL_AUTO_ROLLBACK),
+            apply_env_patch=args.apply_env_patch,
+            rebuild_dry_run=args.rebuild_dry_run,
+            env_path=args.env_patch_output,
+            data_dir=args.data_dir,
             top_k=args.top_k,
             threshold=args.threshold,
             use_hybrid=not args.no_hybrid,
@@ -777,6 +805,18 @@ def cmd_lora_dp_eval(args: argparse.Namespace) -> int:
             print(f"  → {act}", file=sys.stderr)
         if report.get("rollback_path"):
             print(f"Rollback JSON: {report['rollback_path']}", file=sys.stderr)
+        exec_result = report.get("rollback_execution") or {}
+        if exec_result.get("env", {}).get("applied"):
+            print(
+                f"Env patch yazıldı: {exec_result['env'].get('env_path')}",
+                file=sys.stderr,
+            )
+        if exec_result.get("rebuild", {}).get("would_rebuild"):
+            rb = exec_result["rebuild"]
+            print(
+                f"Rebuild dry-run: {rb.get('source_count', 0)} dosya — {rb.get('command')}",
+                file=sys.stderr,
+            )
     if not check_lora_eval_gates(report, min_acc, min_delta):
         if not check_lora_eval_gate(report, min_acc):
             print(
@@ -967,7 +1007,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_cnot.add_argument(
         "--digest-quiet-hours",
         default=None,
-        help="Quiet hours UTC HH:MM-HH:MM (ör. 22:00-07:00)",
+        help="Quiet hours UTC/yerel HH:MM-HH:MM (ör. 22:00-07:00)",
+    )
+    p_cnot.add_argument(
+        "--digest-timezone",
+        default=None,
+        help="IANA timezone (ör. Europe/Istanbul)",
+    )
+    p_cnot.add_argument(
+        "--digest-tenant",
+        default=None,
+        help="Tenant id (yerel saat eşlemesi için)",
     )
     p_cnot.add_argument(
         "--digest-force",
@@ -984,6 +1034,28 @@ def build_parser() -> argparse.ArgumentParser:
         default="fcm",
         choices=["fcm", "apns", "generic"],
         help="Push platform",
+    )
+    p_cnot.add_argument("--push-label", default=None, help="Cihaz etiketi")
+    p_cnot.add_argument("--push-ttl-days", type=int, default=None, help="Token TTL (gün)")
+    p_cnot.add_argument(
+        "--list-push-devices",
+        action="store_true",
+        help="Kayıtlı cihazları listele",
+    )
+    p_cnot.add_argument(
+        "--revoke-push-token",
+        default=None,
+        help="Belirli token'ı iptal et",
+    )
+    p_cnot.add_argument(
+        "--prune-push-tokens",
+        action="store_true",
+        help="Süresi dolmuş token'ları temizle",
+    )
+    p_cnot.add_argument(
+        "--prune-all-users",
+        action="store_true",
+        help="Tüm kullanıcıların süresi dolmuş token'larını temizle",
     )
     p_cnot.add_argument(
         "--test-push",
@@ -1232,6 +1304,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-rollback",
         action="store_true",
         help="Gate/regression başarısızsa rollback_suggestion.json yaz",
+    )
+    p_loraev.add_argument(
+        "--apply-env-patch",
+        action="store_true",
+        help="Rollback env_patch'i dosyaya yaz ve os.environ'a uygula",
+    )
+    p_loraev.add_argument(
+        "--env-patch-output",
+        default=None,
+        help="Env patch çıktı yolu (varsayılan metadata/lora_rollback.env)",
+    )
+    p_loraev.add_argument(
+        "--rebuild-dry-run",
+        action="store_true",
+        help="Rollback sonrası rebuild dry-run (indeks yazmaz)",
+    )
+    p_loraev.add_argument(
+        "--data-dir",
+        default=None,
+        help="Rebuild dry-run için data dizini",
     )
     p_loraev.set_defaults(func=cmd_lora_dp_eval)
 

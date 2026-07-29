@@ -492,27 +492,80 @@ with st.sidebar:
                             preview=_gn.get("body_preview") or "",
                         )
                     )
-                    if st.button(
-                        t("collab_mark_read_all"),
-                        key="collab_mark_read_all",
-                        use_container_width=True,
-                    ):
-                        mark_notifications_read_global(_nc_user)
-                        st.rerun()
-                    if st.button(
-                        t("collab_send_digest"),
-                        key="collab_send_digest",
-                        use_container_width=True,
-                    ):
-                        from rag.collab_notify_digest import send_digest_email
+                if st.button(
+                    t("collab_mark_read_all"),
+                    key="collab_mark_read_all",
+                    use_container_width=True,
+                ):
+                    mark_notifications_read_global(_nc_user)
+                    st.rerun()
+                if st.button(
+                    t("collab_send_digest"),
+                    key="collab_send_digest",
+                    use_container_width=True,
+                ):
+                    from rag.collab_notify_digest import send_digest_email
 
-                        _dig = send_digest_email(_nc_user)
-                        if _dig.get("sent"):
-                            st.success(t("collab_digest_sent", count=_dig.get("count") or 0))
-                        else:
-                            st.info(t("collab_digest_skip", reason=_dig.get("reason") or "?"))
+                    _dig = send_digest_email(_nc_user)
+                    if _dig.get("sent"):
+                        st.success(t("collab_digest_sent", count=_dig.get("count") or 0))
+                    else:
+                        st.info(t("collab_digest_skip", reason=_dig.get("reason") or "?"))
             else:
                 st.caption(t("collab_no_notifications"))
+            from rag.collab_notify_push import (
+                prune_expired_tokens,
+                register_device_token,
+                revoke_device_token,
+                summarize_user_devices,
+            )
+
+            st.markdown(t("collab_push_devices"))
+            _devices = summarize_user_devices(_nc_user)
+            if _devices:
+                for _dv in _devices:
+                    _status = (
+                        t("collab_push_expired")
+                        if _dv.get("expired") or _dv.get("revoked")
+                        else t("collab_push_active")
+                    )
+                    st.caption(
+                        f"{_dv.get('platform')} · {_dv.get('token_preview')} · "
+                        f"{_dv.get('label') or '-'} · {_status}"
+                    )
+                    if not _dv.get("revoked") and st.button(
+                        t("collab_push_revoke"),
+                        key=f"push_rev_{_dv.get('token_preview')}",
+                        use_container_width=True,
+                    ):
+                        revoke_device_token(_nc_user, str(_dv.get("token") or ""))
+                        st.rerun()
+            else:
+                st.caption(t("collab_push_no_devices"))
+            _new_tok = st.text_input(t("collab_push_token"), key="push_token_input")
+            _new_plat = st.selectbox(
+                t("collab_push_platform"),
+                ["fcm", "apns", "generic"],
+                key="push_platform_input",
+            )
+            _new_label = st.text_input(t("collab_push_label"), key="push_label_input")
+            cpush1, cpush2 = st.columns(2)
+            with cpush1:
+                if st.button(t("collab_push_register"), use_container_width=True, key="push_reg"):
+                    if _new_tok.strip():
+                        register_device_token(
+                            _nc_user,
+                            _new_tok.strip(),
+                            platform=_new_plat,
+                            label=_new_label or None,
+                        )
+                        st.rerun()
+                    else:
+                        st.warning(t("collab_push_token_required"))
+            with cpush2:
+                if st.button(t("collab_push_prune"), use_container_width=True, key="push_prune"):
+                    prune_expired_tokens(username=_nc_user)
+                    st.rerun()
     provider_options = ["ollama", "openai"]
     provider_index = (
         provider_options.index(DEFAULT_LLM_PROVIDER)

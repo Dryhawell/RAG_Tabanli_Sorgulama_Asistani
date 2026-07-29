@@ -329,10 +329,15 @@ NOTIFY_DIGEST_HTML = os.getenv("RAG_NOTIFY_DIGEST_HTML", "1") not in {
 }
 # Quiet hours: HH:MM-HH:MM (UTC), örn. 22:00-07:00 — boş = kapalı
 NOTIFY_DIGEST_QUIET_HOURS = os.getenv("RAG_NOTIFY_DIGEST_QUIET_HOURS", "").strip()
+# Quiet hours timezone (IANA, örn. Europe/Istanbul); boş = UTC
+NOTIFY_DIGEST_TIMEZONE = os.getenv("RAG_NOTIFY_DIGEST_TIMEZONE", "UTC").strip() or "UTC"
+# Tenant → timezone JSON veya "id:tz,id2:tz2"
+NOTIFY_TENANT_TIMEZONES = os.getenv("RAG_NOTIFY_TENANT_TIMEZONES", "").strip()
 # Mobil push PoC (FCM HTTP / generic push endpoint)
 NOTIFY_PUSH_URL = os.getenv("RAG_NOTIFY_PUSH_URL", "").strip()
 NOTIFY_PUSH_API_KEY = os.getenv("RAG_NOTIFY_PUSH_API_KEY", "").strip()
 NOTIFY_PUSH_PROVIDER = os.getenv("RAG_NOTIFY_PUSH_PROVIDER", "generic").strip().lower()
+NOTIFY_PUSH_TOKEN_TTL_DAYS = int(os.getenv("RAG_NOTIFY_PUSH_TOKEN_TTL_DAYS", "90"))
 LORA_DP_EVAL_AUTO_ROLLBACK = os.getenv("RAG_LORA_DP_EVAL_AUTO_ROLLBACK", "0") not in {
     "0",
     "false",
