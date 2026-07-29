@@ -22,6 +22,32 @@ def test_register_and_list_device_tokens(tmp_path, monkeypatch):
     assert len(rows) == 1
     assert rows[0]["token"] == "tok-1"
     assert rows[0].get("expires_at")
+    assert rows[0].get("last_seen_at")
+
+
+def test_device_meta_and_last_seen(tmp_path, monkeypatch):
+    monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_URL", "http://push.test/send")
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_PROVIDER", "generic")
+    register_device_token(
+        "dave",
+        "tok-meta",
+        device_name="Pixel 8",
+        os_name="Android",
+        os_version="14",
+        app_version="1.2.3",
+    )
+    devices = summarize_user_devices("dave")
+    assert devices[0]["device_name"] == "Pixel 8"
+    assert devices[0]["os_name"] == "Android"
+
+    class FakeResp:
+        status_code = 200
+
+    monkeypatch.setattr("requests.post", lambda *a, **k: FakeResp())
+    assert dispatch_push("dave", title="x", body="y") is True
+    devices2 = summarize_user_devices("dave")
+    assert devices2[0].get("last_seen_at")
 
 
 def test_build_fcm_payload():

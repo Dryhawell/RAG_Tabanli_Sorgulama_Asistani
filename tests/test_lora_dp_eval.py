@@ -223,3 +223,15 @@ def test_apply_lora_rollback_env_and_dry_run(tmp_path):
     assert result["rebuild"]["source_count"] >= 1
     assert "rebuild" in result["rebuild"]["command"]
 
+
+def test_execute_lora_rebuild_requires_confirm():
+    from rag.lora_dp_eval import execute_lora_rebuild
+
+    suggestion = {
+        "should_rollback": True,
+        "rebuild_embedding": "mini-en",
+    }
+    dry = execute_lora_rebuild(suggestion, confirm=False, data_dir="data")
+    assert dry.get("executed") is False
+    assert dry.get("reason") == "confirmation_required"
+

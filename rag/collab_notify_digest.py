@@ -114,10 +114,20 @@ def resolve_digest_timezone(
     *,
     timezone_name: Optional[str] = None,
     tenant_id: Optional[str] = None,
+    username: Optional[str] = None,
 ) -> str:
-    """Tenant yerel saati veya global timezone."""
+    """Öncelik: açık timezone > kullanıcı profili > tenant eşlemesi > global."""
     if timezone_name:
         return timezone_name.strip() or "UTC"
+    if username:
+        try:
+            from rag.auth import get_user_timezone
+
+            user_tz = get_user_timezone(username)
+            if user_tz:
+                return user_tz
+        except Exception:
+            pass
     if tenant_id:
         mapping = parse_tenant_timezones()
         if tenant_id in mapping:
@@ -142,8 +152,9 @@ def is_quiet_hours(
     quiet_spec: Optional[str] = None,
     timezone_name: Optional[str] = None,
     tenant_id: Optional[str] = None,
+    username: Optional[str] = None,
 ) -> bool:
-    """Yerel (tenant) saati quiet hours aralığındaysa True."""
+    """Yerel (kullanıcı/tenant) saati quiet hours aralığındaysa True."""
     bounds = parse_quiet_hours(quiet_spec)
     if bounds is None:
         return False
@@ -151,6 +162,7 @@ def is_quiet_hours(
     tz_name = resolve_digest_timezone(
         timezone_name=timezone_name,
         tenant_id=tenant_id,
+        username=username,
     )
     tz = _zoneinfo(tz_name)
     dt = now or datetime.now(timezone.utc)
@@ -674,11 +686,13 @@ def send_digest_email(
     tz_resolved = resolve_digest_timezone(
         timezone_name=timezone_name,
         tenant_id=tenant_id,
+        username=username,
     )
     if not ignore_quiet_hours and is_quiet_hours(
         quiet_spec=quiet_hours,
         timezone_name=tz_resolved,
         tenant_id=tenant_id,
+        username=username,
     ):
         return {
             "sent": False,

@@ -253,6 +253,42 @@ def update_user_acl(
     return user_from_meta(uname, meta)
 
 
+def get_user_timezone(username: str, path: Optional[str] = None) -> Optional[str]:
+    """Kullanıcı profilindeki IANA timezone (yoksa None)."""
+    users = ensure_users_file(path or USERS_PATH)
+    uname = _safe_username(username)
+    meta = users.get(uname)
+    if not isinstance(meta, dict):
+        return None
+    tz = str(meta.get("timezone") or "").strip()
+    return tz or None
+
+
+def update_user_timezone(
+    username: str,
+    timezone_name: Optional[str],
+    *,
+    path: Optional[str] = None,
+) -> User:
+    """Kullanıcı quiet-hours / digest timezone tercihini kaydeder."""
+    users_path = path or USERS_PATH
+    users = ensure_users_file(users_path)
+    uname = _safe_username(username)
+    if uname not in users:
+        raise ValueError("Kullanıcı bulunamadı")
+    meta = users[uname]
+    if not isinstance(meta, dict):
+        raise ValueError("Geçersiz kullanıcı kaydı")
+    tz = (timezone_name or "").strip()
+    if tz:
+        meta["timezone"] = tz
+    else:
+        meta.pop("timezone", None)
+    users[uname] = meta
+    save_users(users, users_path)
+    return user_from_meta(uname, meta)
+
+
 def delete_user(
     username: str,
     *,

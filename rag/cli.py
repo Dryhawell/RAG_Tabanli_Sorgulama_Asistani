@@ -308,6 +308,10 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
             args.register_push_token,
             platform=args.push_platform or "fcm",
             label=args.push_label,
+            device_name=args.push_device_name,
+            os_name=args.push_os_name,
+            os_version=args.push_os_version,
+            app_version=args.push_app_version,
             ttl_days=args.push_ttl_days,
         )
         print(json.dumps(rec, ensure_ascii=False))
@@ -766,6 +770,7 @@ def cmd_lora_dp_eval(args: argparse.Namespace) -> int:
             auto_rollback=bool(args.auto_rollback or LORA_DP_EVAL_AUTO_ROLLBACK),
             apply_env_patch=args.apply_env_patch,
             rebuild_dry_run=args.rebuild_dry_run,
+            rebuild_confirm=args.confirm_rebuild,
             env_path=args.env_patch_output,
             data_dir=args.data_dir,
             top_k=args.top_k,
@@ -1036,6 +1041,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Push platform",
     )
     p_cnot.add_argument("--push-label", default=None, help="Cihaz etiketi")
+    p_cnot.add_argument("--push-device-name", default=None, help="Cihaz adı")
+    p_cnot.add_argument("--push-os-name", default=None, help="OS adı (iOS/Android)")
+    p_cnot.add_argument("--push-os-version", default=None, help="OS sürümü")
+    p_cnot.add_argument("--push-app-version", default=None, help="Uygulama sürümü")
     p_cnot.add_argument("--push-ttl-days", type=int, default=None, help="Token TTL (gün)")
     p_cnot.add_argument(
         "--list-push-devices",
@@ -1321,9 +1330,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rollback sonrası rebuild dry-run (indeks yazmaz)",
     )
     p_loraev.add_argument(
+        "--confirm-rebuild",
+        action="store_true",
+        help="Onaylı gerçek rebuild (indeks yazar; dikkatli kullanın)",
+    )
+    p_loraev.add_argument(
         "--data-dir",
         default=None,
-        help="Rebuild dry-run için data dizini",
+        help="Rebuild dry-run/confirm için data dizini",
     )
     p_loraev.set_defaults(func=cmd_lora_dp_eval)
 

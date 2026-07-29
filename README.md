@@ -293,9 +293,9 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - **Bildirim merkezi**: `python -m rag.cli collab-notifications --user alice`
 - **E-posta/webhook**: `RAG_NOTIFY_SMTP_HOST`, `RAG_NOTIFY_WEBHOOK_URL` (Slack/Discord/generic)
 - **Digest**: `python -m rag.cli collab-notifications --digest --user alice --digest-mentions-only --digest-group-by thread` (e-posta + Slack/Discord/Teams + mobil push)
-- **Quiet hours**: `RAG_NOTIFY_DIGEST_QUIET_HOURS=22:00-07:00` + `RAG_NOTIFY_DIGEST_TIMEZONE=Europe/Istanbul` / `--digest-tenant default`
-- **Mobil push PoC**: `--register-push-token <token> --push-platform fcm --push-ttl-days 90` / UI cihaz yönetimi
-- **LoRA rollback**: `lora-dp-eval --auto-rollback --apply-env-patch --rebuild-dry-run`
+- **Quiet hours**: profil timezone (hesap ayarı) > tenant eşlemesi > `RAG_NOTIFY_DIGEST_TIMEZONE`
+- **Mobil push PoC**: cihaz adı/OS/app meta + `last_seen_at`; CLI `--push-device-name` / UI
+- **LoRA rollback**: Actions → `LoRA Rollback Rebuild` (`confirm_rebuild=true` ile gerçek rebuild)
 - GitHub Actions: `collab-notify-digest.yml` (günlük schedule)
 - **Mark katmanları**: çoklu stil birleşimi (bold+italic) canlı editör + katman haritası + audit diff görselleştirme
 
@@ -476,6 +476,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Digest quiet hours kullanıcı tercihi (profil timezone)
-- LoRA rollback gerçek rebuild tetikleyici (onaylı CI job)
-- Push token cihaz adı/OS meta + son görülme zamanı
+- Digest quiet hours kullanıcı başına özel aralık (profil quiet_hours)
+- LoRA rollback PR yorumu / status check entegrasyonu
+- Push token geofencing / sessiz saat cihaz bazlı override

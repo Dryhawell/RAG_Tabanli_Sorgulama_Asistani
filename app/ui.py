@@ -529,9 +529,13 @@ with st.sidebar:
                         if _dv.get("expired") or _dv.get("revoked")
                         else t("collab_push_active")
                     )
+                    _os = " ".join(
+                        x for x in [_dv.get("os_name"), _dv.get("os_version")] if x
+                    ) or "-"
                     st.caption(
+                        f"{_dv.get('device_name') or _dv.get('label') or '-'} · "
                         f"{_dv.get('platform')} · {_dv.get('token_preview')} · "
-                        f"{_dv.get('label') or '-'} · {_status}"
+                        f"{_os} · last={_dv.get('last_seen_at') or '-'} · {_status}"
                     )
                     if not _dv.get("revoked") and st.button(
                         t("collab_push_revoke"),
@@ -549,6 +553,10 @@ with st.sidebar:
                 key="push_platform_input",
             )
             _new_label = st.text_input(t("collab_push_label"), key="push_label_input")
+            _new_dname = st.text_input(t("collab_push_device_name"), key="push_dname_input")
+            _new_os = st.text_input(t("collab_push_os_name"), key="push_os_input")
+            _new_osv = st.text_input(t("collab_push_os_version"), key="push_osv_input")
+            _new_appv = st.text_input(t("collab_push_app_version"), key="push_appv_input")
             cpush1, cpush2 = st.columns(2)
             with cpush1:
                 if st.button(t("collab_push_register"), use_container_width=True, key="push_reg"):
@@ -558,6 +566,10 @@ with st.sidebar:
                             _new_tok.strip(),
                             platform=_new_plat,
                             label=_new_label or None,
+                            device_name=_new_dname or None,
+                            os_name=_new_os or None,
+                            os_version=_new_osv or None,
+                            app_version=_new_appv or None,
                         )
                         st.rerun()
                     else:
@@ -649,6 +661,30 @@ with st.sidebar:
         st.write(f"Kullanıcı: **{current_user.username}** (`{current_user.role}`)")
         if ENABLE_TENANTS:
             st.caption(f"Tenant: `{current_user.tenant_id}`")
+        from rag.auth import get_user_timezone, update_user_timezone
+
+        _cur_tz = get_user_timezone(current_user.username) or ""
+        _tz_opts = [
+            "",
+            "UTC",
+            "Europe/Istanbul",
+            "Europe/London",
+            "Europe/Berlin",
+            "America/New_York",
+            "America/Los_Angeles",
+            "Asia/Tokyo",
+        ]
+        _tz_index = _tz_opts.index(_cur_tz) if _cur_tz in _tz_opts else 0
+        _new_tz = st.selectbox(
+            t("account_timezone"),
+            _tz_opts,
+            index=_tz_index,
+            format_func=lambda x: t("account_timezone_default") if x == "" else x,
+            key="account_timezone_select",
+        )
+        if st.button(t("account_timezone_save"), use_container_width=True, key="save_tz"):
+            update_user_timezone(current_user.username, _new_tz or None)
+            st.success(t("account_timezone_saved", tz=_new_tz or "default"))
         if ws.shared:
             st.caption("İndeks paylaşımlı (aynı tenant içindeki kullanıcılar).")
         else:

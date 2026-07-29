@@ -224,6 +224,29 @@ def test_quiet_hours_tenant_timezone(monkeypatch):
     )
 
 
+def test_quiet_hours_user_profile_timezone(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    from rag.auth import update_user_timezone
+    from rag.collab_notify_digest import is_quiet_hours, resolve_digest_timezone
+
+    users_path = str(tmp_path / "users.json")
+    with open(users_path, "w", encoding="utf-8") as f:
+        f.write('{"alice": {"password_hash": "x$y", "role": "user", "tenant_id": "default"}}')
+    monkeypatch.setattr("rag.auth.USERS_PATH", users_path)
+    update_user_timezone("alice", "Europe/Istanbul", path=users_path)
+    assert resolve_digest_timezone(username="alice") == "Europe/Istanbul"
+    utc_evening = datetime(2026, 1, 1, 21, 30, tzinfo=timezone.utc)
+    assert (
+        is_quiet_hours(
+            now=utc_evening,
+            quiet_spec="22:00-07:00",
+            username="alice",
+        )
+        is True
+    )
+
+
 def test_send_digest_skips_quiet_hours(monkeypatch):
     from rag.collab_notify_digest import send_digest_email
 

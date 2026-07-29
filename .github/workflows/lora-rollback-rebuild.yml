@@ -1,0 +1,60 @@
+"""Onaylı LoRA rollback + base embedding rebuild."""
+
+name: LoRA Rollback Rebuild
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_rebuild:
+        description: "GERÇEK rebuild onayı (true yazın)"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      embedding:
+        description: "Base embedding preset"
+        required: false
+        default: "mini-en"
+        type: string
+      lora_dir:
+        description: "LoRA çıktı dizini"
+        required: false
+        default: "models/lora-dp-embed"
+        type: string
+      apply_env_patch:
+        description: "Env patch uygula"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  rollback-rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Rollback plan (dry-run or confirmed rebuild)
+        env:
+          CONFIRM_REBUILD: ${{ inputs.confirm_rebuild }}
+          APPLY_ENV_PATCH: ${{ inputs.apply_env_patch }}
+          LORA_DIR: ${{ inputs.lora_dir || 'models/lora-dp-embed' }}
+          EMBEDDING: ${{ inputs.embedding || 'mini-en' }}
+        run: python scripts/ci_lora_rollback.py
+      - name: Upload rollback artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lora-rollback-${{ github.run_id }}
+          path: |
+            metadata/lora_rollback.json
+            metadata/lora_rollback.env
+          if-no-files-found: ignore

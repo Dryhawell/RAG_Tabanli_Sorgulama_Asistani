@@ -303,6 +303,54 @@ def dry_run_lora_rebuild(
     }
 
 
+def execute_lora_rebuild(
+    suggestion: Dict[str, Any],
+    *,
+    confirm: bool = False,
+    data_dir: Optional[str] = None,
+    embedding: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Onaylı gerçek rebuild. confirm=False ise dry-run döner."""
+    dry = dry_run_lora_rebuild(
+        suggestion,
+        data_dir=data_dir,
+        embedding=embedding,
+    )
+    if not dry.get("would_rebuild"):
+        return {**dry, "executed": False}
+    if not confirm:
+        return {
+            **dry,
+            "executed": False,
+            "reason": "confirmation_required",
+            "note": "Onay gerekli: confirm=True veya CI confirm_rebuild",
+        }
+    emb = dry.get("embedding") or "mini-en"
+    root = dry.get("data_dir") or data_dir or "data"
+    try:
+        from rag.embed import Embedder
+        from rag.ingest import rebuild_from_data_dir
+
+        emb_obj = Embedder(model_name=emb)
+        index, reports = rebuild_from_data_dir(root, emb_obj)
+        return {
+            **dry,
+            "executed": True,
+            "rebuild_report": {
+                "files": len(reports or []),
+                "index_size": getattr(index, "size", None),
+            },
+            "note": "Rebuild tamamlandı",
+        }
+    except Exception as exc:
+        return {
+            **dry,
+            "executed": False,
+            "error": str(exc),
+            "note": "Rebuild başarısız",
+        }
+
+
 def execute_lora_rollback(
     report: Dict[str, Any],
     *,
@@ -310,9 +358,10 @@ def execute_lora_rollback(
     env_path: Optional[str] = None,
     apply_os_environ: bool = False,
     rebuild_dry_run: bool = True,
+    rebuild_confirm: bool = False,
     data_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Öneriyi uygular: env patch + isteğe bağlı rebuild dry-run."""
+    """Öneriyi uygular: env patch + dry-run veya onaylı gerçek rebuild."""
     suggestion = suggest_lora_rollback(report, lora_output_dir=lora_output_dir)
     env_result = apply_lora_rollback_env_patch(
         suggestion,
@@ -320,11 +369,18 @@ def execute_lora_rollback(
         apply_os_environ=apply_os_environ,
     )
     rebuild_result = None
-    if rebuild_dry_run and suggestion.get("should_rollback"):
-        rebuild_result = dry_run_lora_rebuild(
-            suggestion,
-            data_dir=data_dir,
-        )
+    if suggestion.get("should_rollback"):
+        if rebuild_confirm:
+            rebuild_result = execute_lora_rebuild(
+                suggestion,
+                confirm=True,
+                data_dir=data_dir,
+            )
+        elif rebuild_dry_run:
+            rebuild_result = dry_run_lora_rebuild(
+                suggestion,
+                data_dir=data_dir,
+            )
     return {
         "suggestion": suggestion,
         "env": env_result,
@@ -356,6 +412,7 @@ def run_lora_dp_eval_report(
     auto_rollback: bool = False,
     apply_env_patch: bool = False,
     rebuild_dry_run: bool = False,
+    rebuild_confirm: bool = False,
     env_path: Optional[str] = None,
     data_dir: Optional[str] = None,
     **kwargs,
@@ -397,13 +454,16 @@ def run_lora_dp_eval_report(
             lora_output_dir=lora_output_dir,
         )
         report["rollback_path"] = out
-    if (apply_env_patch or rebuild_dry_run) and suggestion.get("should_rollback"):
+    if (
+        apply_env_patch or rebuild_dry_run or rebuild_confirm
+    ) and suggestion.get("should_rollback"):
         exec_result = execute_lora_rollback(
             report,
             lora_output_dir=lora_output_dir,
             env_path=env_path,
             apply_os_environ=apply_env_patch,
-            rebuild_dry_run=rebuild_dry_run,
+            rebuild_dry_run=rebuild_dry_run and not rebuild_confirm,
+            rebuild_confirm=rebuild_confirm,
             data_dir=data_dir,
         )
         report["rollback_execution"] = exec_result

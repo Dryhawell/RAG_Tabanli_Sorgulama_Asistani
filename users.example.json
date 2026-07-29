@@ -2,12 +2,14 @@
   "admin": {
     "password": "admin",
     "role": "admin",
-    "tenant_id": "default"
+    "tenant_id": "default",
+    "timezone": "Europe/Istanbul"
   },
   "demo": {
     "password": "demo",
     "role": "user",
     "tenant_id": "default",
+    "timezone": "Europe/Istanbul",
     "allowed_folders": ["genel", "urun"],
     "allowed_tags": ["public"]
   }

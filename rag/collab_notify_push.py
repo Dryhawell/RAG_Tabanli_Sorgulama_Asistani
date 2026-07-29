@@ -56,10 +56,14 @@ def register_device_token(
     *,
     platform: str = "fcm",
     label: Optional[str] = None,
+    device_name: Optional[str] = None,
+    os_name: Optional[str] = None,
+    os_version: Optional[str] = None,
+    app_version: Optional[str] = None,
     ttl_days: Optional[int] = None,
     base: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Kullanıcı cihaz token'ını kaydeder (TTL + etiket)."""
+    """Kullanıcı cihaz token'ını kaydeder (TTL + cihaz meta)."""
     user = (username or "").strip()
     tok = (token or "").strip()
     if not user or not tok:
@@ -72,8 +76,13 @@ def register_device_token(
         "token": tok,
         "platform": (platform or "fcm").strip().lower(),
         "label": (label or "").strip() or None,
+        "device_name": (device_name or "").strip() or None,
+        "os_name": (os_name or "").strip() or None,
+        "os_version": (os_version or "").strip() or None,
+        "app_version": (app_version or "").strip() or None,
         "created_at": now.isoformat(),
         "expires_at": expires.isoformat(),
+        "last_seen_at": now.isoformat(),
         "revoked": False,
     }
     path = device_tokens_path(base=base)
@@ -86,13 +95,41 @@ def register_device_token(
             str(row.get("username") or "").strip().lower() == user.lower()
             and str(row.get("token") or "") == tok
         ):
+            # created_at koru
+            created = row.get("created_at") or record["created_at"]
             row.update(record)
+            row["created_at"] = created
             updated = True
         new_rows.append(row)
     if not updated:
         new_rows.append(record)
     _write_all_tokens(new_rows, base=base)
     return record
+
+
+def touch_device_last_seen(
+    username: str,
+    token: str,
+    *,
+    base: Optional[str] = None,
+) -> bool:
+    """Başarılı push sonrası last_seen_at günceller."""
+    user_key = (username or "").strip().lower()
+    tok = (token or "").strip()
+    rows = _read_all_tokens(base=base)
+    changed = False
+    now = _utcnow_iso()
+    for row in rows:
+        if (
+            str(row.get("username") or "").strip().lower() == user_key
+            and str(row.get("token") or "") == tok
+            and not row.get("revoked")
+        ):
+            row["last_seen_at"] = now
+            changed = True
+    if changed:
+        _write_all_tokens(rows, base=base)
+    return changed
 
 
 def _read_all_tokens(base: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -209,8 +246,13 @@ def summarize_user_devices(
                 "token_preview": preview,
                 "platform": row.get("platform") or "generic",
                 "label": row.get("label"),
+                "device_name": row.get("device_name"),
+                "os_name": row.get("os_name"),
+                "os_version": row.get("os_version"),
+                "app_version": row.get("app_version"),
                 "created_at": row.get("created_at"),
                 "expires_at": row.get("expires_at"),
+                "last_seen_at": row.get("last_seen_at"),
                 "expired": is_token_expired(row),
                 "revoked": bool(row.get("revoked")),
             }
@@ -306,7 +348,9 @@ def dispatch_push(
                     continue
                 payload = build_fcm_payload(t, title=title, body=body, data=data)
                 r = requests.post(url, json=payload, headers=headers, timeout=10)
-                ok_any = ok_any or r.status_code < 400
+                if r.status_code < 400:
+                    ok_any = True
+                    touch_device_last_seen(username, t, base=base)
         elif provider == "apns":
             for tok in tokens:
                 t = str(tok.get("token") or "").strip()
@@ -314,7 +358,9 @@ def dispatch_push(
                     continue
                 payload = build_apns_payload(t, title=title, body=body, data=data)
                 r = requests.post(url, json=payload, headers=headers, timeout=10)
-                ok_any = ok_any or r.status_code < 400
+                if r.status_code < 400:
+                    ok_any = True
+                    touch_device_last_seen(username, t, base=base)
         else:
             payload = build_generic_push_payload(
                 username,
@@ -324,7 +370,12 @@ def dispatch_push(
                 data=data,
             )
             r = requests.post(url, json=payload, headers=headers, timeout=10)
-            ok_any = r.status_code < 400
+            if r.status_code < 400:
+                ok_any = True
+                for tok in tokens:
+                    t = str(tok.get("token") or "").strip()
+                    if t:
+                        touch_device_last_seen(username, t, base=base)
         return ok_any
     except Exception:
         return False
