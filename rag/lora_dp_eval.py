@@ -198,6 +198,7 @@ def run_lora_dp_eval_report(
     fixture_dir: str,
     cases_path: str,
     report_path: Optional[str] = None,
+    per_case_path: Optional[str] = None,
     **kwargs,
 ) -> Dict[str, Any]:
     report = compare_lora_dp_eval(
@@ -211,4 +212,16 @@ def run_lora_dp_eval_report(
         os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
         with open(report_path, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
+    if per_case_path:
+        os.makedirs(os.path.dirname(per_case_path) or ".", exist_ok=True)
+        per_case_doc = {
+            "per_case_deltas": report.get("per_case_deltas") or [],
+            "regressions": report.get("regressions") or [],
+            "regression_count": report.get("regression_count", 0),
+            "delta_accuracy": report.get("delta_accuracy"),
+            "base_model": report.get("base_model"),
+            "lora_model": report.get("lora_model"),
+        }
+        with open(per_case_path, "w", encoding="utf-8") as f:
+            json.dump(per_case_doc, f, ensure_ascii=False, indent=2)
     return report

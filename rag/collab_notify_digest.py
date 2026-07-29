@@ -11,7 +11,9 @@ try:
     from app.config import (
         NOTIFY_DIGEST_GROUP_BY,
         NOTIFY_DIGEST_HOURS,
+        NOTIFY_DIGEST_HTML,
         NOTIFY_DIGEST_MENTIONS_ONLY,
+        NOTIFY_DIGEST_MIN_PER_WORKSPACE,
         NOTIFY_FROM_EMAIL,
         NOTIFY_SMTP_HOST,
         NOTIFY_WEBHOOK_URL,
@@ -20,6 +22,8 @@ except ImportError:
     NOTIFY_DIGEST_HOURS = 24
     NOTIFY_DIGEST_MENTIONS_ONLY = False
     NOTIFY_DIGEST_GROUP_BY = "thread"
+    NOTIFY_DIGEST_MIN_PER_WORKSPACE = 1
+    NOTIFY_DIGEST_HTML = True
     NOTIFY_SMTP_HOST = ""
     NOTIFY_FROM_EMAIL = "noreply@localhost"
     NOTIFY_WEBHOOK_URL = ""
@@ -108,6 +112,26 @@ def filter_mention_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
+def apply_workspace_min_threshold(
+    events: List[Dict[str, Any]],
+    min_per_workspace: int,
+) -> List[Dict[str, Any]]:
+    """Workspace bazında min bildirim eşiğini uygular."""
+    threshold = int(min_per_workspace)
+    if threshold <= 1:
+        return list(events)
+    counts: Dict[str, int] = {}
+    for ev in events:
+        ws = str(ev.get("workspace_key") or "-")
+        counts[ws] = counts.get(ws, 0) + 1
+    allowed = {ws for ws, n in counts.items() if n >= threshold}
+    return [
+        ev
+        for ev in events
+        if str(ev.get("workspace_key") or "-") in allowed
+    ]
+
+
 def _digest_group_key(ev: Dict[str, Any], group_by: str) -> str:
     if group_by == "workspace":
         return str(ev.get("workspace_key") or "-")
@@ -139,18 +163,28 @@ def prepare_digest_events(
     *,
     mentions_only: Optional[bool] = None,
     group_by: Optional[str] = None,
+    min_per_workspace: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Mention filtreleme + gruplama meta ile hazırlar."""
     use_mentions = (
         mentions_only if mentions_only is not None else NOTIFY_DIGEST_MENTIONS_ONLY
     )
     filtered = filter_mention_events(events) if use_mentions else list(events)
+    min_ws = (
+        int(min_per_workspace)
+        if min_per_workspace is not None
+        else NOTIFY_DIGEST_MIN_PER_WORKSPACE
+    )
+    before_ws = len(filtered)
+    filtered = apply_workspace_min_threshold(filtered, min_ws)
     grouped = group_digest_events(filtered, group_by=group_by)
     return {
         "events": filtered,
         "grouped": grouped,
         "mentions_only": use_mentions,
         "group_by": group_by or NOTIFY_DIGEST_GROUP_BY,
+        "min_per_workspace": min_ws,
+        "workspace_filtered": before_ws - len(filtered),
         "total": len(filtered),
     }
 
@@ -161,11 +195,13 @@ def build_digest_body(
     *,
     mentions_only: Optional[bool] = None,
     group_by: Optional[str] = None,
+    min_per_workspace: Optional[int] = None,
 ) -> str:
     prep = prepare_digest_events(
         events,
         mentions_only=mentions_only,
         group_by=group_by,
+        min_per_workspace=min_per_workspace,
     )
     filtered = prep["events"]
     grouped = prep["grouped"]
@@ -191,6 +227,69 @@ def build_digest_body(
                 )
             lines.append("")
     return "\n".join(lines).strip()
+
+
+def build_digest_html(
+    events: List[Dict[str, Any]],
+    username: str,
+    *,
+    mentions_only: Optional[bool] = None,
+    group_by: Optional[str] = None,
+    min_per_workspace: Optional[int] = None,
+) -> str:
+    """Digest özet e-postası HTML şablonu."""
+    prep = prepare_digest_events(
+        events,
+        mentions_only=mentions_only,
+        group_by=group_by,
+        min_per_workspace=min_per_workspace,
+    )
+    filtered = prep["events"]
+    grouped = prep["grouped"]
+    parts = [
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>",
+        "<style>",
+        "body{font-family:system-ui,sans-serif;color:#222;line-height:1.45}",
+        "h1{font-size:1.2em;margin:0 0 8px}",
+        ".meta{color:#666;font-size:0.9em;margin-bottom:16px}",
+        ".group{margin:12px 0;padding:10px 12px;background:#f6f8fa;border-radius:6px}",
+        ".group h2{font-size:0.95em;margin:0 0 8px;color:#444}",
+        "ul{margin:0;padding-left:18px}",
+        "li{margin:4px 0}",
+        ".from{font-weight:600}",
+        ".ws{color:#666;font-size:0.85em}",
+        "</style></head><body>",
+        f"<h1>Bildirim özeti — {username}</h1>",
+        f"<div class='meta'>Toplam: {prep['total']}",
+    ]
+    if prep["mentions_only"]:
+        parts.append(" · yalnızca @mention")
+    if prep.get("min_per_workspace", 1) > 1:
+        parts.append(f" · min/workspace={prep['min_per_workspace']}")
+    parts.append("</div>")
+    if len(grouped) == 1 and "all" in grouped:
+        parts.append("<ul>")
+        for ev in filtered:
+            ws = ev.get("workspace_key") or "-"
+            fr = ev.get("from_user") or "-"
+            preview = ev.get("body_preview") or ""
+            parts.append(
+                f"<li><span class='from'>{fr}</span> "
+                f"<span class='ws'>[{ws}]</span> {preview}</li>"
+            )
+        parts.append("</ul>")
+    else:
+        for group_key, group_events in grouped.items():
+            parts.append(
+                f"<div class='group'><h2>{group_key} ({len(group_events)})</h2><ul>"
+            )
+            for ev in group_events:
+                fr = ev.get("from_user") or "-"
+                preview = ev.get("body_preview") or ""
+                parts.append(f"<li><span class='from'>{fr}</span>: {preview}</li>")
+            parts.append("</ul></div>")
+    parts.append("</body></html>")
+    return "".join(parts)
 
 
 def build_digest_slack_blocks(
@@ -446,6 +545,7 @@ def send_digest_email(
     base: Optional[str] = None,
     mentions_only: Optional[bool] = None,
     group_by: Optional[str] = None,
+    min_per_workspace: Optional[int] = None,
 ) -> Dict[str, Any]:
     events = collect_digest_events(username, hours=hours, base=base)
     if not events:
@@ -454,10 +554,16 @@ def send_digest_email(
         events,
         mentions_only=mentions_only,
         group_by=group_by,
+        min_per_workspace=min_per_workspace,
     )
     filtered = prep["events"]
     if not filtered:
-        return {"sent": False, "count": 0, "reason": "empty_after_filter"}
+        reason = (
+            "below_workspace_threshold"
+            if prep.get("workspace_filtered", 0) > 0
+            else "empty_after_filter"
+        )
+        return {"sent": False, "count": 0, "reason": reason}
     email_ok = False
     webhook_ok = False
     if NOTIFY_SMTP_HOST:
@@ -468,6 +574,7 @@ def send_digest_email(
             events,
             mentions_only=mentions_only,
             group_by=group_by,
+            min_per_workspace=min_per_workspace,
         )
     if NOTIFY_WEBHOOK_URL:
         from rag.collab_notify_dispatch import dispatch_digest_webhook
@@ -477,6 +584,7 @@ def send_digest_email(
             events,
             mentions_only=mentions_only,
             group_by=group_by,
+            min_per_workspace=min_per_workspace,
         )
     if not NOTIFY_SMTP_HOST and not NOTIFY_WEBHOOK_URL:
         return {"sent": False, "count": len(filtered), "reason": "no_channel"}
@@ -490,6 +598,8 @@ def send_digest_email(
         "reason": reason,
         "mentions_only": prep["mentions_only"],
         "group_by": prep["group_by"],
+        "min_per_workspace": prep.get("min_per_workspace"),
+        "workspace_filtered": prep.get("workspace_filtered", 0),
     }
 
 
@@ -499,6 +609,7 @@ def send_digest_all(
     base: Optional[str] = None,
     mentions_only: Optional[bool] = None,
     group_by: Optional[str] = None,
+    min_per_workspace: Optional[int] = None,
 ) -> Dict[str, Any]:
     users = list_digest_target_users(hours=hours, base=base)
     results: Dict[str, Any] = {}
@@ -510,6 +621,7 @@ def send_digest_all(
             base=base,
             mentions_only=mentions_only,
             group_by=group_by,
+            min_per_workspace=min_per_workspace,
         )
         results[user] = r
         if r.get("sent"):

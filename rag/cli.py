@@ -307,9 +307,14 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
             hours=args.digest_hours,
             mentions_only=args.digest_mentions_only,
             group_by=args.digest_group_by,
+            min_per_workspace=args.digest_min_per_workspace,
         )
         print(json.dumps(result, ensure_ascii=False))
-        empty_reasons = {"empty", "empty_after_filter"}
+        empty_reasons = {
+            "empty",
+            "empty_after_filter",
+            "below_workspace_threshold",
+        }
         return 0 if result.get("sent") or result.get("reason") in empty_reasons else 1
     if args.digest_all:
         from rag.collab_notify_digest import send_digest_all
@@ -318,6 +323,7 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
             hours=args.digest_hours,
             mentions_only=args.digest_mentions_only,
             group_by=args.digest_group_by,
+            min_per_workspace=args.digest_min_per_workspace,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
@@ -704,6 +710,7 @@ def cmd_lora_dp_eval(args: argparse.Namespace) -> int:
             args.fixtures or DEFAULT_EVAL_FIXTURES,
             args.cases or DEFAULT_EVAL_CASES,
             report_path=args.output,
+            per_case_path=args.per_case_output,
             top_k=args.top_k,
             threshold=args.threshold,
             use_hybrid=not args.no_hybrid,
@@ -742,6 +749,8 @@ def cmd_lora_dp_eval(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
         return 1
+    if args.per_case_output:
+        print(f"Per-case rapor: {args.per_case_output}")
     return 0
 
 
@@ -908,6 +917,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=["thread", "workspace", "none"],
         help="Digest gruplama (thread / workspace / none)",
+    )
+    p_cnot.add_argument(
+        "--digest-min-per-workspace",
+        type=int,
+        default=None,
+        help="Workspace min bildirim eşiği (varsayılan RAG_NOTIFY_DIGEST_MIN_PER_WORKSPACE)",
     )
     p_cnot.add_argument("--ids", nargs="*", default=None, help="Belirli bildirim id'leri")
     p_cnot.add_argument("--json", action="store_true", help="JSON çıktı")
@@ -1137,6 +1152,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_loraev.add_argument("--no-hybrid", action="store_true")
     p_loraev.add_argument("--output", default=None, help="JSON rapor")
+    p_loraev.add_argument(
+        "--per-case-output",
+        default=None,
+        help="Case-level delta JSON raporu (per_case_deltas + regressions)",
+    )
     p_loraev.set_defaults(func=cmd_lora_dp_eval)
 
     p_dom = sub.add_parser("domain-collect", help="Sohbet/audit/metrikten domain çiftleri topla")

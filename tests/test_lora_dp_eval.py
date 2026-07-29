@@ -100,3 +100,72 @@ def test_build_per_case_delta_report():
     assert len(regressed) == 1
     assert regressed[0]["case_id"] == "b"
 
+
+def test_run_lora_dp_eval_per_case_output(tmp_path):
+    from rag.lora_dp_eval import run_lora_dp_eval_report
+
+    base = {
+        "results": [
+            {"case_id": "a", "question": "q", "passed": True, "gate_score": 0.9, "top_sources": []},
+        ],
+        "summary": {"accuracy": 1.0, "ok": True},
+    }
+    lora = {
+        "results": [
+            {"case_id": "a", "question": "q", "passed": False, "gate_score": 0.2, "top_sources": []},
+        ],
+        "summary": {"accuracy": 0.0, "ok": False},
+    }
+
+    class FakeEmb:
+        model_name = "fake"
+        dim = 8
+
+        def encode(self, texts):
+            import numpy as np
+
+            return np.zeros((len(texts), 8), dtype=np.float32)
+
+    import rag.lora_dp_eval as lev
+
+    orig_compare = lev.compare_lora_dp_eval
+
+    def fake_compare(*args, **kwargs):
+        return {
+            "base_model": "b",
+            "lora_model": "l",
+            "base_summary": base["summary"],
+            "lora_summary": lora["summary"],
+            "delta_accuracy": -1.0,
+            "per_case_deltas": [
+                {
+                    "case_id": "a",
+                    "regressed": True,
+                    "base_gate": 0.9,
+                    "lora_gate": 0.2,
+                }
+            ],
+            "regressions": [{"case_id": "a"}],
+            "regression_count": 1,
+        }
+
+    lev.compare_lora_dp_eval = fake_compare
+    out_path = str(tmp_path / "per_case.json")
+    try:
+        run_lora_dp_eval_report(
+            "hash",
+            "models/x",
+            "evals/fixtures",
+            "evals/cases.json",
+            per_case_path=out_path,
+        )
+    finally:
+        lev.compare_lora_dp_eval = orig_compare
+    assert (tmp_path / "per_case.json").exists()
+    import json
+
+    with open(out_path, encoding="utf-8") as f:
+        doc = json.load(f)
+    assert doc["regression_count"] == 1
+    assert len(doc["per_case_deltas"]) == 1
+

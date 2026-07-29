@@ -136,3 +136,40 @@ def test_build_digest_teams_adaptive_card():
     assert any(
         b.get("type") == "FactSet" for b in card.get("body") or []
     )
+
+
+def test_apply_workspace_min_threshold():
+    from rag.collab_notify_digest import (
+        apply_workspace_min_threshold,
+        prepare_digest_events,
+    )
+
+    events = [
+        {"workspace_key": "ws1", "kind": "mention", "from_user": "a"},
+        {"workspace_key": "ws2", "kind": "mention", "from_user": "b"},
+        {"workspace_key": "ws2", "kind": "mention", "from_user": "c"},
+    ]
+    out = apply_workspace_min_threshold(events, 2)
+    assert len(out) == 2
+    assert all(ev.get("workspace_key") == "ws2" for ev in out)
+    prep = prepare_digest_events(events, min_per_workspace=2)
+    assert prep["total"] == 2
+    assert prep["workspace_filtered"] == 1
+
+
+def test_build_digest_html():
+    from rag.collab_notify_digest import build_digest_html
+
+    events = [
+        {
+            "workspace_key": "ws",
+            "from_user": "bob",
+            "body_preview": "hello",
+            "kind": "mention",
+        }
+    ]
+    html = build_digest_html(events, "alice")
+    assert "<html>" in html
+    assert "alice" in html
+    assert "bob" in html
+    assert "hello" in html

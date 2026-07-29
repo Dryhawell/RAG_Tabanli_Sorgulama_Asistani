@@ -321,4 +321,10 @@ NOTIFY_DIGEST_MENTIONS_ONLY = os.getenv("RAG_NOTIFY_DIGEST_MENTIONS_ONLY", "0") 
     "False",
 }
 NOTIFY_DIGEST_GROUP_BY = os.getenv("RAG_NOTIFY_DIGEST_GROUP_BY", "thread").strip().lower()
+NOTIFY_DIGEST_MIN_PER_WORKSPACE = int(os.getenv("RAG_NOTIFY_DIGEST_MIN_PER_WORKSPACE", "1"))
+NOTIFY_DIGEST_HTML = os.getenv("RAG_NOTIFY_DIGEST_HTML", "1") not in {
+    "0",
+    "false",
+    "False",
+}
 

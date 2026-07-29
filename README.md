@@ -288,7 +288,7 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - **DP-SGD eğitim**: `python -m rag.cli dp-train --no-opacus` (Opacus varsa `--opacus`)
 - **ST + Opacus**: `python -m rag.cli st-dp-train --embedding mini-en` (frozen backbone + DP head)
 - **LoRA + DP**: `python -m rag.cli lora-dp-train --mock` (CI) veya `--no-mock --production --opacus`
-- **LoRA eval**: `python -m rag.cli lora-dp-eval --lora-dir models/lora-dp-embed --min-accuracy 0.8 --min-delta 0.0`
+- **LoRA eval**: `python -m rag.cli lora-dp-eval --lora-dir models/lora-dp-embed --min-accuracy 0.8 --min-delta 0.0 --per-case-output metadata/lora_per_case.json`
 - **@mention**: yorumlarda `@kullanici` → bildirim + WebSocket `mention_notify`
 - **Bildirim merkezi**: `python -m rag.cli collab-notifications --user alice`
 - **E-posta/webhook**: `RAG_NOTIFY_SMTP_HOST`, `RAG_NOTIFY_WEBHOOK_URL` (Slack/Discord/generic)
@@ -419,6 +419,8 @@ export RAG_ENABLE_COLLAB_RICHTEXT=1
 | `RAG_NOTIFY_DIGEST_HOURS` | Digest özet penceresi (saat, varsayılan 24) |
 | `RAG_NOTIFY_DIGEST_MENTIONS_ONLY` | Digest yalnızca @mention (1/0) |
 | `RAG_NOTIFY_DIGEST_GROUP_BY` | Digest gruplama: `thread` / `workspace` / `none` |
+| `RAG_NOTIFY_DIGEST_MIN_PER_WORKSPACE` | Workspace min bildirim eşiği (varsayılan 1) |
+| `RAG_NOTIFY_DIGEST_HTML` | Digest e-posta HTML şablonu (1/0, varsayılan açık) |
 | `RAG_EMBED_PIPELINE_REPORT_PATH` | Pipeline JSON rapor yolu |
 | `RAG_DOMAIN_EMBEDDING_MODEL` | Domain/fine-tuned embedding model yolu veya Hub adı |
 | `RAG_ENABLE_DOMAIN_EMBEDDING` | Domain embedding varsayılan preset (1/0) |
@@ -463,6 +465,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Digest per-workspace özet eşiği (min bildirim sayısı)
-- LoRA eval case-level JSON rapor export (`--per-case-output`)
-- Bildirim digest e-posta HTML şablonu
+- Digest quiet hours (saat aralığında gönderim atlama)
+- LoRA eval regression auto-rollback önerisi
+- Bildirim digest mobil push (FCM/APNs) PoC

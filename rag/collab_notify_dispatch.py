@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import smtplib
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any, Dict, List, Optional
 
@@ -161,6 +162,7 @@ def dispatch_digest_email(
     *,
     mentions_only: Optional[bool] = None,
     group_by: Optional[str] = None,
+    min_per_workspace: Optional[int] = None,
 ) -> bool:
     """Okunmamış bildirimlerin günlük özet e-postası."""
     if not NOTIFY_SMTP_HOST or not events:
@@ -168,22 +170,41 @@ def dispatch_digest_email(
     to_addr = resolve_notify_email(username)
     if not to_addr:
         return False
-    from rag.collab_notify_digest import build_digest_body, prepare_digest_events
+    from rag.collab_notify_digest import (
+        NOTIFY_DIGEST_HTML,
+        build_digest_body,
+        build_digest_html,
+        prepare_digest_events,
+    )
 
     body = build_digest_body(
         events,
         username,
         mentions_only=mentions_only,
         group_by=group_by,
+        min_per_workspace=min_per_workspace,
     )
     prep = prepare_digest_events(
         events,
         mentions_only=mentions_only,
         group_by=group_by,
+        min_per_workspace=min_per_workspace,
     )
     count = prep["total"]
     subject = f"[RAG Collab] Bildirim özeti ({count})"
-    msg = MIMEText(body, "plain", "utf-8")
+    if NOTIFY_DIGEST_HTML:
+        html = build_digest_html(
+            events,
+            username,
+            mentions_only=mentions_only,
+            group_by=group_by,
+            min_per_workspace=min_per_workspace,
+        )
+        msg = MIMEMultipart("alternative")
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+        msg.attach(MIMEText(html, "html", "utf-8"))
+    else:
+        msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = NOTIFY_FROM_EMAIL
     msg["To"] = to_addr
@@ -204,6 +225,7 @@ def dispatch_digest_webhook(
     *,
     mentions_only: Optional[bool] = None,
     group_by: Optional[str] = None,
+    min_per_workspace: Optional[int] = None,
 ) -> bool:
     """Digest özetini webhook'a gönderir (Teams/Slack/Discord/generic)."""
     url = (NOTIFY_WEBHOOK_URL or "").strip()
@@ -227,12 +249,14 @@ def dispatch_digest_webhook(
             events,
             mentions_only=mentions_only,
             group_by=group_by,
+            min_per_workspace=min_per_workspace,
         )
         text = build_digest_body(
             events,
             username,
             mentions_only=mentions_only,
             group_by=group_by,
+            min_per_workspace=min_per_workspace,
         )
         if is_teams_webhook_url(url):
             payload = build_digest_teams_payload(

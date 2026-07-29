@@ -132,3 +132,47 @@ def test_dispatch_digest_webhook_teams_adaptive(monkeypatch):
     assert ok is True
     assert calls[0]["json"]["type"] == "message"
     assert calls[0]["json"]["attachments"][0]["content"]["type"] == "AdaptiveCard"
+
+
+def test_dispatch_digest_email_html(monkeypatch):
+    from rag.collab_notify_dispatch import dispatch_digest_email
+
+    monkeypatch.setattr("rag.collab_notify_dispatch.NOTIFY_SMTP_HOST", "smtp.test")
+    monkeypatch.setattr("rag.collab_notify_dispatch.resolve_notify_email", lambda u: "a@test.com")
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=15):
+            pass
+
+        def starttls(self):
+            return None
+
+        def login(self, user, password):
+            return None
+
+        def sendmail(self, from_addr, to_addrs, msg):
+            sent.append(msg)
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr("smtplib.SMTP", FakeSMTP)
+    monkeypatch.setattr("rag.collab_notify_digest.NOTIFY_DIGEST_HTML", True)
+    events = [
+        {
+            "workspace_key": "ws",
+            "from_user": "bob",
+            "body_preview": "ping",
+            "kind": "mention",
+        }
+    ]
+    ok = dispatch_digest_email("alice@test.com", events)
+    assert ok is True
+    assert len(sent) == 1
+    assert "multipart/alternative" in sent[0]
+    assert "text/html" in sent[0]
