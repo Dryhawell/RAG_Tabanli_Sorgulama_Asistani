@@ -162,6 +162,39 @@ def is_slack_webhook_url(url: Optional[str]) -> bool:
     return "hooks.slack.com" in (url or "")
 
 
+def is_discord_webhook_url(url: Optional[str]) -> bool:
+    return "discord.com/api/webhooks" in (url or "")
+
+
+def build_digest_discord_embed(
+    events: List[Dict[str, Any]],
+    username: str,
+) -> List[Dict[str, Any]]:
+    """Discord webhook embed payload."""
+    fields: List[Dict[str, Any]] = []
+    for ev in events[:25]:
+        workspace = ev.get("workspace_key") or "-"
+        from_user = ev.get("from_user") or "-"
+        preview = (ev.get("body_preview") or "").strip() or "—"
+        fields.append(
+            {
+                "name": f"{from_user} · {workspace}",
+                "value": preview[:1024],
+            }
+        )
+    description = f"Toplam **{len(events)}** okunmamış bildirim"
+    if len(events) > 25:
+        description += f" (+{len(events) - 25} daha)"
+    return [
+        {
+            "title": f"Bildirim özeti — {username}",
+            "description": description,
+            "color": 5814783,
+            "fields": fields,
+        }
+    ]
+
+
 def send_digest_email(
     username: str,
     *,

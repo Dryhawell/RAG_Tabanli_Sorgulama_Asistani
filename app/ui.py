@@ -102,8 +102,8 @@ from rag.collab_richtext import (
     resolve_comment,
     summarize_mark_layers,
 )
-from rag.collab_richtext_audit import read_mark_audit
-from rag.collab_richtext_diff import summarize_mark_audit_diffs
+from rag.collab_richtext_audit import read_mark_audit, read_comment_audit
+from rag.collab_richtext_diff import summarize_mark_audit_diffs, summarize_comment_audit_diffs
 from rag.collab_notify import list_notifications, mark_notifications_read, notify_mentions
 from rag.collab_notify import list_notifications_global, mark_notifications_read_global
 from rag.collab_ws import ensure_collab_ws_server, websockets_available
@@ -1084,6 +1084,16 @@ with st.sidebar:
                         mark_notifications_read(ws.key, _uname)
                         st.rerun()
                 _rt = load_richtext(ws.key)
+                _cmt_hist = read_comment_audit(ws.key, limit=15)
+                if _cmt_hist:
+                    with st.expander(t("collab_comment_history"), expanded=False):
+                        _cmt_diffs = summarize_comment_audit_diffs(
+                            _cmt_hist,
+                            _note_content,
+                            limit=15,
+                        )
+                        for _cd in reversed(_cmt_diffs):
+                            st.markdown(_cd["html"], unsafe_allow_html=True)
                 for _th in _rt.comments:
                     _label = f"{'[✓] ' if _th.resolved else ''}{_th.author or '-'}: {_th.body[:80]}"
                     with st.expander(_label, expanded=False):
@@ -1130,6 +1140,19 @@ with st.sidebar:
                             ):
                                 resolve_comment(ws.key, _th.id, resolved=True)
                                 st.rerun()
+                        _thread_hist = [
+                            r for r in _cmt_hist
+                            if (r.get("thread") or {}).get("id") == _th.id
+                        ]
+                        if _thread_hist:
+                            with st.expander(t("collab_thread_diff"), expanded=False):
+                                _td = summarize_comment_audit_diffs(
+                                    _thread_hist,
+                                    _note_content,
+                                    limit=20,
+                                )
+                                for _tdi in reversed(_td):
+                                    st.markdown(_tdi["html"], unsafe_allow_html=True)
 
     # Dışa aktarma mevcut oturum üzerinden (session yüklendikten sonra da çalışır)
 

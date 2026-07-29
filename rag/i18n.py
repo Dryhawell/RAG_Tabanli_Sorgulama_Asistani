@@ -99,6 +99,8 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "collab_digest_skip": "Özet gönderilmedi: {reason}",
         "collab_mark_history": "Biçim geçmişi (audit)",
         "collab_mark_diff_stats": "+{added} −{removed} ~{changed}",
+        "collab_comment_history": "Yorum geçmişi (audit diff)",
+        "collab_thread_diff": "Thread değişiklikleri",
     },
     "en": {
         "app_title": "LLM-Powered PDF / Notes Query Assistant (RAG)",
@@ -192,6 +194,8 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "collab_digest_skip": "Digest not sent: {reason}",
         "collab_mark_history": "Style history (audit)",
         "collab_mark_diff_stats": "+{added} −{removed} ~{changed}",
+        "collab_comment_history": "Comment history (audit diff)",
+        "collab_thread_diff": "Thread changes",
     },
 }
 

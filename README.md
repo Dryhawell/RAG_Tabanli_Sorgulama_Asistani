@@ -288,11 +288,11 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - **DP-SGD eğitim**: `python -m rag.cli dp-train --no-opacus` (Opacus varsa `--opacus`)
 - **ST + Opacus**: `python -m rag.cli st-dp-train --embedding mini-en` (frozen backbone + DP head)
 - **LoRA + DP**: `python -m rag.cli lora-dp-train --mock` (CI) veya `--no-mock --production --opacus`
-- **LoRA eval**: `python -m rag.cli lora-dp-eval --lora-dir models/lora-dp-embed --min-accuracy 0.8`
+- **LoRA eval**: `python -m rag.cli lora-dp-eval --lora-dir models/lora-dp-embed --min-accuracy 0.8 --min-delta 0.0`
 - **@mention**: yorumlarda `@kullanici` → bildirim + WebSocket `mention_notify`
 - **Bildirim merkezi**: `python -m rag.cli collab-notifications --user alice`
 - **E-posta/webhook**: `RAG_NOTIFY_SMTP_HOST`, `RAG_NOTIFY_WEBHOOK_URL` (Slack/Discord/generic)
-- **Digest**: `python -m rag.cli collab-notifications --digest --user alice` veya `--digest-all` (e-posta + Slack webhook)
+- **Digest**: `python -m rag.cli collab-notifications --digest --user alice` veya `--digest-all` (e-posta + Slack/Discord webhook)
 - GitHub Actions: `collab-notify-digest.yml` (günlük schedule)
 - **Mark katmanları**: çoklu stil birleşimi (bold+italic) canlı editör + katman haritası + audit diff görselleştirme
 
@@ -408,6 +408,7 @@ export RAG_ENABLE_COLLAB_RICHTEXT=1
 | `RAG_LORA_DP_SECURE_MODE` | Opacus secure RNG (1/0) |
 | `RAG_LORA_DP_GRAD_SAMPLE_MODE` | Opacus grad_sample_mode (varsayılan hooks) |
 | `RAG_LORA_DP_EVAL_MIN_ACCURACY` | LoRA eval CI regression eşiği (varsayılan 0.0) |
+| `RAG_LORA_DP_EVAL_MIN_DELTA` | Base'e göre min delta (varsayılan 0.0; negatif = düşüş toleransı) |
 | `RAG_ENABLE_COLLAB_NOTIFY_DISPATCH` | E-posta/webhook bildirim dağıtımı (1/0) |
 | `RAG_NOTIFY_SMTP_HOST` | SMTP sunucusu (boş = e-posta kapalı) |
 | `RAG_NOTIFY_SMTP_PORT` | SMTP portu |
@@ -460,6 +461,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Rich-text yorum thread diff görselleştirme
-- LoRA eval delta-accuracy regression gate (base'e göre düşüş eşiği)
-- Bildirim digest Discord embed formatı
+- Yorum thread @mention filtreleme ve digest gruplama
+- LoRA eval per-case delta raporu (hangi case regresse etti)
+- Bildirim digest Microsoft Teams adaptive card formatı

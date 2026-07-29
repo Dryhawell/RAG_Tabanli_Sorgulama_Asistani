@@ -60,6 +60,7 @@ from app.config import (
     LORA_DP_SECURE_MODE,
     LORA_DP_GRAD_SAMPLE_MODE,
     LORA_DP_EVAL_MIN_ACCURACY,
+    LORA_DP_EVAL_MIN_DELTA,
 )
 from rag.embed import Embedder, resolve_embedding_model
 from rag.eval import run_regression
@@ -668,7 +669,9 @@ def cmd_lora_dp_train(args: argparse.Namespace) -> int:
 
 def cmd_lora_dp_eval(args: argparse.Namespace) -> int:
     from rag.lora_dp_eval import (
+        check_lora_delta_gate,
         check_lora_eval_gate,
+        check_lora_eval_gates,
         lora_adapter_available,
         run_lora_dp_eval_report,
     )
@@ -682,6 +685,11 @@ def cmd_lora_dp_eval(args: argparse.Namespace) -> int:
         if args.min_accuracy is not None
         else LORA_DP_EVAL_MIN_ACCURACY
     )
+    min_delta = (
+        args.min_delta
+        if args.min_delta is not None
+        else LORA_DP_EVAL_MIN_DELTA
+    )
     try:
         report = run_lora_dp_eval_report(
             args.embedding,
@@ -693,21 +701,31 @@ def cmd_lora_dp_eval(args: argparse.Namespace) -> int:
             threshold=args.threshold,
             use_hybrid=not args.no_hybrid,
             min_accuracy=min_acc,
+            min_delta=min_delta,
         )
     except Exception as exc:
         print(f"LoRA+DP eval hatası: {exc}", file=sys.stderr)
         return 1
     b = report["base_summary"]["accuracy"]
     l = report["lora_summary"]["accuracy"]
+    d = report["delta_accuracy"]
     print(
-        f"LoRA eval: base={b:.2%} lora={l:.2%} delta={report['delta_accuracy']:+.2%} "
-        f"improved={report['improved']} min={min_acc:.2%} ok={report.get('lora_ok')}"
+        f"LoRA eval: base={b:.2%} lora={l:.2%} delta={d:+.2%} "
+        f"improved={report['improved']} min_acc={min_acc:.2%} "
+        f"lora_ok={report.get('lora_ok')} min_delta={min_delta:+.2%} "
+        f"delta_ok={report.get('delta_ok')}"
     )
-    if not check_lora_eval_gate(report, min_acc):
-        print(
-            f"LoRA eval gate başarısız: lora={l:.2%} < min={min_acc:.2%}",
-            file=sys.stderr,
-        )
+    if not check_lora_eval_gates(report, min_acc, min_delta):
+        if not check_lora_eval_gate(report, min_acc):
+            print(
+                f"LoRA accuracy gate başarısız: lora={l:.2%} < min={min_acc:.2%}",
+                file=sys.stderr,
+            )
+        if not check_lora_delta_gate(report, min_delta):
+            print(
+                f"LoRA delta gate başarısız: delta={d:+.2%} < min_delta={min_delta:+.2%}",
+                file=sys.stderr,
+            )
         return 1
     return 0
 
@@ -1084,6 +1102,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="LoRA accuracy eşiği (varsayılan RAG_LORA_DP_EVAL_MIN_ACCURACY)",
+    )
+    p_loraev.add_argument(
+        "--min-delta",
+        type=float,
+        default=None,
+        help="Base'e göre min delta (varsayılan RAG_LORA_DP_EVAL_MIN_DELTA)",
     )
     p_loraev.add_argument("--no-hybrid", action="store_true")
     p_loraev.add_argument("--output", default=None, help="JSON rapor")

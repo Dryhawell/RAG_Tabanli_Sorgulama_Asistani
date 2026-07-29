@@ -10,6 +10,9 @@ ACTION_COLORS = {
     "remove": "#e74c3c",
     "remap_prune": "#f39c12",
     "test": "#3498db",
+    "reply": "#9b59b6",
+    "resolve": "#1abc9c",
+    "reopen": "#e67e22",
 }
 
 
@@ -118,6 +121,140 @@ def summarize_mark_audit_diffs(
                 "added": len(diff.get("added") or []),
                 "removed": len(diff.get("removed") or []),
                 "changed": len(diff.get("changed") or []),
+            }
+        )
+    return out
+
+
+def format_comment_diff_line(entry: Dict[str, Any], text: str) -> str:
+    action = str(entry.get("action") or "?")
+    thread = entry.get("thread") or {}
+    reply = entry.get("reply") or {}
+    author = entry.get("author") or "-"
+    thread_id = thread.get("id") or reply.get("thread_id") or "-"
+    body = reply.get("body") or thread.get("body") or ""
+    start = thread.get("start", "")
+    end = thread.get("end", "")
+    snippet = snippet_at(
+        text,
+        int(thread.get("start") or 0),
+        int(thread.get("end") or 0),
+    )
+    preview = (body[:40] + "…") if len(body) > 40 else body
+    return (
+        f"{action} · thread={thread_id} [{start}:{end}] «{snippet}» "
+        f"— {preview} · {author}"
+    )
+
+
+def html_comment_diff_entry(entry: Dict[str, Any], text: str) -> str:
+    action = str(entry.get("action") or "?")
+    color = ACTION_COLORS.get(action, "#95a5a6")
+    thread = entry.get("thread") or {}
+    reply = entry.get("reply") or {}
+    author = html.escape(str(entry.get("author") or "-"))
+    thread_id = html.escape(str(thread.get("id") or "-"))
+    body = reply.get("body") or thread.get("body") or ""
+    preview = html.escape((body[:80] + "…") if len(body) > 80 else body)
+    start = int(thread.get("start") or 0)
+    end = int(thread.get("end") or start)
+    snippet = html.escape(snippet_at(text, start, end))
+    label = f"{action} · thread {thread_id} [{start}:{end}]"
+    return (
+        f'<div style="margin:4px 0;padding:6px 8px;border-left:3px solid {color};'
+        f'background:{color}12;">'
+        f'<span style="color:{color};font-weight:600;">{html.escape(label)}</span> '
+        f'<span style="background:{color}33;padding:2px 6px;border-radius:3px;">'
+        f"{snippet or '—'}</span> "
+        f'<span style="color:#444;">{preview or "—"}</span> '
+        f'<span style="color:#666;font-size:0.85em;">{author}</span>'
+        f"</div>"
+    )
+
+
+def summarize_comment_audit_diffs(
+    audit_rows: List[Dict[str, Any]],
+    text: str,
+    *,
+    limit: int = 15,
+) -> List[Dict[str, Any]]:
+    rows = audit_rows[-limit:]
+    out: List[Dict[str, Any]] = []
+    for entry in rows:
+        out.append(
+            {
+                "ts": entry.get("ts"),
+                "action": entry.get("action"),
+                "thread_id": (entry.get("thread") or {}).get("id"),
+                "line": format_comment_diff_line(entry, text),
+                "html": html_comment_diff_entry(entry, text),
+            }
+        )
+    return out
+
+
+def format_comment_diff_line(entry: Dict[str, Any], text: str) -> str:
+    action = str(entry.get("action") or "?")
+    thread = entry.get("thread") or {}
+    reply = entry.get("reply") or {}
+    author = entry.get("author") or "-"
+    thread_id = thread.get("id") or reply.get("thread_id") or "-"
+    body = reply.get("body") or thread.get("body") or ""
+    start = thread.get("start", "")
+    end = thread.get("end", "")
+    snippet = snippet_at(
+        text,
+        int(thread.get("start") or 0),
+        int(thread.get("end") or 0),
+    )
+    preview = (body[:40] + "…") if len(body) > 40 else body
+    return (
+        f"{action} · thread={thread_id} [{start}:{end}] «{snippet}» "
+        f"— {preview} · {author}"
+    )
+
+
+def html_comment_diff_entry(entry: Dict[str, Any], text: str) -> str:
+    action = str(entry.get("action") or "?")
+    color = ACTION_COLORS.get(action, "#95a5a6")
+    thread = entry.get("thread") or {}
+    reply = entry.get("reply") or {}
+    author = html.escape(str(entry.get("author") or "-"))
+    thread_id = html.escape(str(thread.get("id") or "-"))
+    body = reply.get("body") or thread.get("body") or ""
+    preview = html.escape((body[:80] + "…") if len(body) > 80 else body)
+    start = int(thread.get("start") or 0)
+    end = int(thread.get("end") or start)
+    snippet = html.escape(snippet_at(text, start, end))
+    label = f"{action} · thread {thread_id} [{start}:{end}]"
+    return (
+        f'<div style="margin:4px 0;padding:6px 8px;border-left:3px solid {color};'
+        f'background:{color}12;">'
+        f'<span style="color:{color};font-weight:600;">{html.escape(label)}</span> '
+        f'<span style="background:{color}33;padding:2px 6px;border-radius:3px;">'
+        f"{snippet or '—'}</span> "
+        f'<span style="color:#444;">{preview or "—"}</span> '
+        f'<span style="color:#666;font-size:0.85em;">{author}</span>'
+        f"</div>"
+    )
+
+
+def summarize_comment_audit_diffs(
+    audit_rows: List[Dict[str, Any]],
+    text: str,
+    *,
+    limit: int = 15,
+) -> List[Dict[str, Any]]:
+    rows = audit_rows[-limit:]
+    out: List[Dict[str, Any]] = []
+    for entry in rows:
+        out.append(
+            {
+                "ts": entry.get("ts"),
+                "action": entry.get("action"),
+                "thread_id": (entry.get("thread") or {}).get("id"),
+                "line": format_comment_diff_line(entry, text),
+                "html": html_comment_diff_entry(entry, text),
             }
         )
     return out

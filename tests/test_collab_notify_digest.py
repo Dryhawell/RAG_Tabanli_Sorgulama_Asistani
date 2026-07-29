@@ -54,3 +54,19 @@ def test_build_digest_slack_blocks():
     assert any(b.get("type") == "section" for b in blocks)
     section = next(b for b in blocks if b.get("type") == "section" and "bob" in b["text"]["text"])
     assert "hello" in section["text"]["text"]
+
+
+def test_build_digest_discord_embed():
+    from rag.collab_notify_digest import build_digest_discord_embed
+
+    events = [
+        {
+            "workspace_key": "ws",
+            "from_user": "bob",
+            "body_preview": "ping",
+        }
+    ]
+    embeds = build_digest_discord_embed(events, "alice")
+    assert len(embeds) == 1
+    assert "alice" in embeds[0]["title"]
+    assert embeds[0]["fields"][0]["name"].startswith("bob")

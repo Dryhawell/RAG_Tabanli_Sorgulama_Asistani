@@ -188,9 +188,11 @@ def test_lora_dp_eval_regression_minilm(tmp_path):
         threshold=0.25,
         use_hybrid=True,
         min_accuracy=0.8,
+        min_delta=0.0,
     )
     assert "base_summary" in report
     assert "lora_summary" in report
     assert report["lora_summary"]["total"] >= 1
     assert report.get("lora_ok") is True
+    assert report.get("delta_ok") is True
     assert report["lora_summary"]["accuracy"] >= 0.8

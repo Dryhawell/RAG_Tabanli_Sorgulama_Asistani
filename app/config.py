@@ -300,6 +300,7 @@ LORA_DP_SECURE_MODE = os.getenv("RAG_LORA_DP_SECURE_MODE", "0") not in {
 }
 LORA_DP_GRAD_SAMPLE_MODE = os.getenv("RAG_LORA_DP_GRAD_SAMPLE_MODE", "hooks")
 LORA_DP_EVAL_MIN_ACCURACY = float(os.getenv("RAG_LORA_DP_EVAL_MIN_ACCURACY", "0.0"))
+LORA_DP_EVAL_MIN_DELTA = float(os.getenv("RAG_LORA_DP_EVAL_MIN_DELTA", "0.0"))
 
 # Collab bildirim dağıtımı (e-posta / webhook)
 ENABLE_COLLAB_NOTIFY_DISPATCH = os.getenv("RAG_ENABLE_COLLAB_NOTIFY_DISPATCH", "1") not in {

@@ -71,3 +71,33 @@ def test_dispatch_digest_webhook_slack_blocks(monkeypatch):
     assert calls[0]["json"]["type"] == "collab_digest"
     assert "blocks" in calls[0]["json"]
     assert calls[0]["json"]["blocks"][0]["type"] == "header"
+
+
+def test_dispatch_digest_webhook_discord_embed(monkeypatch):
+    from rag.collab_notify_dispatch import dispatch_digest_webhook
+
+    monkeypatch.setattr(
+        "rag.collab_notify_dispatch.NOTIFY_WEBHOOK_URL",
+        "https://discord.com/api/webhooks/123/abc",
+    )
+    calls = []
+
+    class FakeResp:
+        status_code = 200
+
+    def fake_post(url, json=None, timeout=10):
+        calls.append({"url": url, "json": json})
+        return FakeResp()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    events = [
+        {
+            "workspace_key": "ws",
+            "from_user": "bob",
+            "body_preview": "ping",
+        }
+    ]
+    ok = dispatch_digest_webhook("alice", events)
+    assert ok is True
+    assert "embeds" in calls[0]["json"]
+    assert calls[0]["json"]["embeds"][0]["title"].startswith("Bildirim")

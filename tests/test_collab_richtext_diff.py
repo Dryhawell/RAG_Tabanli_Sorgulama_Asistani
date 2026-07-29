@@ -68,3 +68,25 @@ def test_format_and_html_mark_diff_line():
     html = html_mark_diff_entry(entry, "ab")
     assert "bold" in html
     assert "ab" in html
+
+
+def test_summarize_comment_audit_diffs():
+    from rag.collab_richtext_diff import summarize_comment_audit_diffs
+
+    rows = [
+        {
+            "action": "add",
+            "thread": {"id": "t1", "body": "yorum", "start": 0, "end": 4},
+            "author": "alice",
+        },
+        {
+            "action": "reply",
+            "thread": {"id": "t1", "start": 0, "end": 4},
+            "reply": {"body": "yanıt"},
+            "author": "bob",
+        },
+    ]
+    out = summarize_comment_audit_diffs(rows, "test metin")
+    assert len(out) == 2
+    assert "add" in out[0]["line"]
+    assert "reply" in out[1]["line"]

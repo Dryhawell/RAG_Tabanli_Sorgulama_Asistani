@@ -23,3 +23,18 @@ def test_log_mark_audit_direct(tmp_path, monkeypatch):
     rows = read_mark_audit("ws")
     assert len(rows) == 1
     assert rows[0]["action"] == "test"
+
+
+def test_comment_audit_log(tmp_path, monkeypatch):
+    monkeypatch.setattr("rag.collab_richtext_audit.METADATA_DIR", str(tmp_path))
+    from rag.collab_richtext_audit import log_comment_audit, read_comment_audit
+
+    log_comment_audit(
+        "ws-c",
+        "add",
+        thread={"id": "t1", "body": "hello", "start": 0, "end": 3},
+        author="alice",
+    )
+    rows = read_comment_audit("ws-c")
+    assert len(rows) == 1
+    assert rows[0]["action"] == "add"

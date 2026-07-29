@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from app.config import METADATA_DIR
 from rag.collab_crdt import _safe_slug, load_crdt
 from rag.collab_notify import notify_mentions
-from rag.collab_richtext_audit import log_mark_audit
+from rag.collab_richtext_audit import log_mark_audit, log_comment_audit
 
 
 def _utcnow_iso() -> str:
@@ -421,6 +421,13 @@ def add_comment(
     )
     store.comments.append(thread)
     save_richtext(store, base=base)
+    log_comment_audit(
+        workspace_key,
+        "add",
+        thread=thread.to_dict(),
+        author=author,
+        base=base,
+    )
     return thread
 
 
@@ -446,7 +453,16 @@ def reply_comment(
                     created_at=_utcnow_iso(),
                 )
             )
+            reply = thread.replies[-1]
             save_richtext(store, base=base)
+            log_comment_audit(
+                workspace_key,
+                "reply",
+                thread={"id": thread.id, "start": thread.start, "end": thread.end},
+                reply=reply.to_dict(),
+                author=author,
+                base=base,
+            )
             return thread
     raise KeyError(f"Thread yok: {thread_id}")
 
@@ -463,6 +479,14 @@ def resolve_comment(
         if thread.id == thread_id:
             thread.resolved = resolved
             save_richtext(store, base=base)
+            log_comment_audit(
+                workspace_key,
+                "resolve" if resolved else "reopen",
+                thread=thread.to_dict(),
+                author=thread.author,
+                details={"resolved": resolved},
+                base=base,
+            )
             return thread
     raise KeyError(f"Thread yok: {thread_id}")
 

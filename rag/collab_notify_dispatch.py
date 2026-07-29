@@ -83,7 +83,7 @@ def dispatch_webhook(event: Dict[str, Any]) -> bool:
     try:
         import requests
 
-        from rag.collab_notify_digest import is_slack_webhook_url
+        from rag.collab_notify_digest import is_slack_webhook_url, is_discord_webhook_url
 
         preview = event.get("body_preview") or ""
         text = (
@@ -109,6 +109,33 @@ def dispatch_webhook(event: Dict[str, Any]) -> bool:
                     },
                 }
             ]
+        elif is_discord_webhook_url(url):
+            payload = {
+                "embeds": [
+                    {
+                        "title": "Collab mention",
+                        "description": preview or "—",
+                        "color": 3447003,
+                        "fields": [
+                            {
+                                "name": "From",
+                                "value": str(event.get("from_user") or "-"),
+                                "inline": True,
+                            },
+                            {
+                                "name": "Target",
+                                "value": str(event.get("target_user") or "-"),
+                                "inline": True,
+                            },
+                            {
+                                "name": "Workspace",
+                                "value": str(event.get("workspace_key") or "-"),
+                                "inline": True,
+                            },
+                        ],
+                    }
+                ]
+            }
         r = requests.post(url, json=payload, timeout=10)
         return r.status_code < 400
     except Exception:
@@ -164,19 +191,27 @@ def dispatch_digest_webhook(username: str, events: List[Dict[str, Any]]) -> bool
 
         from rag.collab_notify_digest import (
             build_digest_body,
+            build_digest_discord_embed,
             build_digest_slack_blocks,
+            is_discord_webhook_url,
             is_slack_webhook_url,
         )
 
         text = build_digest_body(events, username)
-        payload: Dict[str, Any] = {
-            "type": "collab_digest",
-            "username": username,
-            "count": len(events),
-            "text": text,
-        }
-        if is_slack_webhook_url(url):
-            payload["blocks"] = build_digest_slack_blocks(events, username)
+        if is_discord_webhook_url(url):
+            payload = {
+                "content": f"Bildirim özeti — {username} ({len(events)})",
+                "embeds": build_digest_discord_embed(events, username),
+            }
+        else:
+            payload: Dict[str, Any] = {
+                "type": "collab_digest",
+                "username": username,
+                "count": len(events),
+                "text": text,
+            }
+            if is_slack_webhook_url(url):
+                payload["blocks"] = build_digest_slack_blocks(events, username)
         r = requests.post(url, json=payload, timeout=10)
         return r.status_code < 400
     except Exception:

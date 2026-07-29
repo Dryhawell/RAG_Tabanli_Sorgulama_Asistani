@@ -60,6 +60,7 @@ def compare_lora_dp_eval(
     threshold: float = 0.30,
     use_hybrid: bool = True,
     min_accuracy: float = 0.0,
+    min_delta: float = 0.0,
 ) -> Dict[str, Any]:
     """Base vs LoRA+DP adapter retrieval karşılaştırması."""
     emb_base = Embedder(model_name=base_model)
@@ -86,17 +87,22 @@ def compare_lora_dp_eval(
 
     b_acc = report_base["summary"]["accuracy"]
     f_acc = report_lora["summary"]["accuracy"]
+    delta = f_acc - b_acc
     lora_ok = f_acc + 1e-9 >= float(min_accuracy)
+    delta_ok = delta + 1e-9 >= float(min_delta)
     return {
         "base_model": emb_base.model_name,
         "lora_dir": lora_output_dir,
         "lora_model": emb_lora.model_name,
         "base_summary": report_base["summary"],
         "lora_summary": report_lora["summary"],
-        "delta_accuracy": f_acc - b_acc,
+        "delta_accuracy": delta,
         "improved": f_acc >= b_acc,
         "min_lora_accuracy": float(min_accuracy),
+        "min_delta": float(min_delta),
         "lora_ok": lora_ok,
+        "delta_ok": delta_ok,
+        "gate_ok": lora_ok and delta_ok,
         "base_ok": report_base["summary"].get("ok", True),
     }
 
@@ -110,6 +116,25 @@ def check_lora_eval_gate(report: Dict[str, Any], min_accuracy: float) -> bool:
         return bool(report["lora_ok"])
     lora_acc = float(report.get("lora_summary", {}).get("accuracy", 0.0))
     return lora_acc + 1e-9 >= threshold
+
+
+def check_lora_delta_gate(report: Dict[str, Any], min_delta: float) -> bool:
+    """Base'e göre max düşüş eşiğini kontrol eder (delta_accuracy >= min_delta)."""
+    threshold = float(min_delta)
+    if report.get("delta_ok") is not None:
+        return bool(report["delta_ok"])
+    delta = float(report.get("delta_accuracy", 0.0))
+    return delta + 1e-9 >= threshold
+
+
+def check_lora_eval_gates(
+    report: Dict[str, Any],
+    min_accuracy: float,
+    min_delta: float,
+) -> bool:
+    return check_lora_eval_gate(report, min_accuracy) and check_lora_delta_gate(
+        report, min_delta
+    )
 
 
 def run_lora_dp_eval_report(
