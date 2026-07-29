@@ -173,3 +173,28 @@ def test_build_digest_html():
     assert "alice" in html
     assert "bob" in html
     assert "hello" in html
+
+
+def test_quiet_hours_overnight():
+    from datetime import datetime, timezone
+
+    from rag.collab_notify_digest import is_quiet_hours, parse_quiet_hours
+
+    assert parse_quiet_hours("22:00-07:00") == (22 * 60, 7 * 60)
+    night = datetime(2026, 1, 1, 23, 30, tzinfo=timezone.utc)
+    morning = datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc)
+    assert is_quiet_hours(now=night, quiet_spec="22:00-07:00") is True
+    assert is_quiet_hours(now=morning, quiet_spec="22:00-07:00") is False
+    assert is_quiet_hours(now=night, quiet_spec="") is False
+
+
+def test_send_digest_skips_quiet_hours(monkeypatch):
+    from rag.collab_notify_digest import send_digest_email
+
+    monkeypatch.setattr(
+        "rag.collab_notify_digest.is_quiet_hours",
+        lambda **kwargs: True,
+    )
+    result = send_digest_email("alice", quiet_hours="22:00-07:00")
+    assert result["sent"] is False
+    assert result["reason"] == "quiet_hours"

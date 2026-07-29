@@ -292,7 +292,10 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - **@mention**: yorumlarda `@kullanici` → bildirim + WebSocket `mention_notify`
 - **Bildirim merkezi**: `python -m rag.cli collab-notifications --user alice`
 - **E-posta/webhook**: `RAG_NOTIFY_SMTP_HOST`, `RAG_NOTIFY_WEBHOOK_URL` (Slack/Discord/generic)
-- **Digest**: `python -m rag.cli collab-notifications --digest --user alice --digest-mentions-only --digest-group-by thread` (e-posta + Slack/Discord/Teams webhook)
+- **Digest**: `python -m rag.cli collab-notifications --digest --user alice --digest-mentions-only --digest-group-by thread` (e-posta + Slack/Discord/Teams + mobil push)
+- **Quiet hours**: `RAG_NOTIFY_DIGEST_QUIET_HOURS=22:00-07:00` veya `--digest-force`
+- **Mobil push PoC**: `--register-push-token <token> --push-platform fcm` / `--test-push`
+- **LoRA rollback**: `lora-dp-eval --auto-rollback --rollback-output metadata/lora_rollback.json`
 - GitHub Actions: `collab-notify-digest.yml` (günlük schedule)
 - **Mark katmanları**: çoklu stil birleşimi (bold+italic) canlı editör + katman haritası + audit diff görselleştirme
 
@@ -421,6 +424,11 @@ export RAG_ENABLE_COLLAB_RICHTEXT=1
 | `RAG_NOTIFY_DIGEST_GROUP_BY` | Digest gruplama: `thread` / `workspace` / `none` |
 | `RAG_NOTIFY_DIGEST_MIN_PER_WORKSPACE` | Workspace min bildirim eşiği (varsayılan 1) |
 | `RAG_NOTIFY_DIGEST_HTML` | Digest e-posta HTML şablonu (1/0, varsayılan açık) |
+| `RAG_NOTIFY_DIGEST_QUIET_HOURS` | Quiet hours UTC `HH:MM-HH:MM` (örn. `22:00-07:00`, boş=kapalı) |
+| `RAG_NOTIFY_PUSH_URL` | Mobil push endpoint (FCM/APNs gateway / generic) |
+| `RAG_NOTIFY_PUSH_API_KEY` | Push API anahtarı / Bearer token |
+| `RAG_NOTIFY_PUSH_PROVIDER` | `generic` / `fcm` / `apns` |
+| `RAG_LORA_DP_EVAL_AUTO_ROLLBACK` | Gate başarısızsa rollback_suggestion.json yaz (1/0) |
 | `RAG_EMBED_PIPELINE_REPORT_PATH` | Pipeline JSON rapor yolu |
 | `RAG_DOMAIN_EMBEDDING_MODEL` | Domain/fine-tuned embedding model yolu veya Hub adı |
 | `RAG_ENABLE_DOMAIN_EMBEDDING` | Domain embedding varsayılan preset (1/0) |
@@ -436,7 +444,7 @@ export RAG_ENABLE_COLLAB_RICHTEXT=1
 - `rag/tools.py`, `rag/agent.py`, `rag/highlight.py`: araçlar, agent döngüsü, kaynak vurgulama
 - `rag/vision.py`, `rag/vision_llm.py`, `rag/memory.py`, `rag/planner.py`, `rag/profile_memory.py`
 - `rag/share_links.py`, `rag/collab_notes.py`, `rag/collab_ws.py`, `rag/collab_crdt.py`, `rag/collab_component.py`
-- `rag/embed_finetune.py`, `rag/domain_collect.py`, `rag/federated_pool.py`, `rag/privacy_federated.py`, `rag/dp_train.py`, `rag/st_dp_train.py`, `rag/st_lora_dp.py`, `rag/lora_dp_opacus.py`, `rag/lora_dp_eval.py`, `rag/collab_presence.py`, `rag/collab_undo.py`, `rag/collab_ime.py`, `rag/collab_richtext.py`, `rag/collab_richtext_audit.py`, `rag/collab_richtext_diff.py`, `rag/collab_notify.py`, `rag/collab_notify_dispatch.py`, `rag/collab_notify_digest.py`
+- `rag/embed_finetune.py`, `rag/domain_collect.py`, `rag/federated_pool.py`, `rag/privacy_federated.py`, `rag/dp_train.py`, `rag/st_dp_train.py`, `rag/st_lora_dp.py`, `rag/lora_dp_opacus.py`, `rag/lora_dp_eval.py`, `rag/collab_presence.py`, `rag/collab_undo.py`, `rag/collab_ime.py`, `rag/collab_richtext.py`, `rag/collab_richtext_audit.py`, `rag/collab_richtext_diff.py`, `rag/collab_notify.py`, `rag/collab_notify_dispatch.py`, `rag/collab_notify_digest.py`, `rag/collab_notify_push.py`
 - `rag/hybrid.py`, `rag/rerank.py`, `rag/retrieve.py`
 - `rag/ingest.py`, `rag/cli.py`: ingest pipeline
 - `rag/meta_store.py`: kaynak klasör/etiket sidecar (`metadata/sources.json`)
@@ -465,6 +473,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Digest quiet hours (saat aralığında gönderim atlama)
-- LoRA eval regression auto-rollback önerisi
-- Bildirim digest mobil push (FCM/APNs) PoC
+- Digest quiet hours timezone (tenant yerel saati)
+- LoRA rollback otomatik env patch + rebuild dry-run
+- Mobil push token TTL / çoklu cihaz yönetimi UI

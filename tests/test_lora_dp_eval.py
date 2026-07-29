@@ -169,3 +169,29 @@ def test_run_lora_dp_eval_per_case_output(tmp_path):
     assert doc["regression_count"] == 1
     assert len(doc["per_case_deltas"]) == 1
 
+
+def test_suggest_lora_rollback():
+    from rag.lora_dp_eval import suggest_lora_rollback
+
+    report = {
+        "gate_ok": False,
+        "lora_ok": False,
+        "delta_ok": True,
+        "delta_accuracy": -0.2,
+        "regressions": [{"case_id": "x"}],
+        "lora_dir": "models/lora-dp-embed",
+    }
+    suggestion = suggest_lora_rollback(report)
+    assert suggestion["should_rollback"] is True
+    assert suggestion["env_patch"]["RAG_ENABLE_DOMAIN_EMBEDDING"] == "0"
+    assert suggestion["rebuild_command"]
+    assert any("rebuild" in a for a in suggestion["actions"])
+
+    ok_report = {
+        "gate_ok": True,
+        "lora_ok": True,
+        "delta_ok": True,
+        "regressions": [],
+    }
+    assert suggest_lora_rollback(ok_report)["should_rollback"] is False
+

@@ -61,6 +61,7 @@ from app.config import (
     LORA_DP_GRAD_SAMPLE_MODE,
     LORA_DP_EVAL_MIN_ACCURACY,
     LORA_DP_EVAL_MIN_DELTA,
+    LORA_DP_EVAL_AUTO_ROLLBACK,
 )
 from rag.embed import Embedder, resolve_embedding_model
 from rag.eval import run_regression
@@ -299,6 +300,27 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
         result = dispatch_notification(sample)
         print(json.dumps(result, ensure_ascii=False))
         return 0
+    if args.register_push_token:
+        from rag.collab_notify_push import register_device_token
+
+        rec = register_device_token(
+            user,
+            args.register_push_token,
+            platform=args.push_platform or "fcm",
+        )
+        print(json.dumps(rec, ensure_ascii=False))
+        return 0
+    if args.test_push:
+        from rag.collab_notify_push import dispatch_push
+
+        ok = dispatch_push(
+            user,
+            title="RAG Collab test",
+            body="Test mobil push bildirimi",
+            data={"type": "test"},
+        )
+        print(json.dumps({"sent": ok}, ensure_ascii=False))
+        return 0 if ok else 1
     if args.digest:
         from rag.collab_notify_digest import send_digest_email
 
@@ -308,12 +330,15 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
             mentions_only=args.digest_mentions_only,
             group_by=args.digest_group_by,
             min_per_workspace=args.digest_min_per_workspace,
+            ignore_quiet_hours=args.digest_force,
+            quiet_hours=args.digest_quiet_hours,
         )
         print(json.dumps(result, ensure_ascii=False))
         empty_reasons = {
             "empty",
             "empty_after_filter",
             "below_workspace_threshold",
+            "quiet_hours",
         }
         return 0 if result.get("sent") or result.get("reason") in empty_reasons else 1
     if args.digest_all:
@@ -324,6 +349,8 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
             mentions_only=args.digest_mentions_only,
             group_by=args.digest_group_by,
             min_per_workspace=args.digest_min_per_workspace,
+            ignore_quiet_hours=args.digest_force,
+            quiet_hours=args.digest_quiet_hours,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
@@ -711,6 +738,8 @@ def cmd_lora_dp_eval(args: argparse.Namespace) -> int:
             args.cases or DEFAULT_EVAL_CASES,
             report_path=args.output,
             per_case_path=args.per_case_output,
+            rollback_path=args.rollback_output,
+            auto_rollback=bool(args.auto_rollback or LORA_DP_EVAL_AUTO_ROLLBACK),
             top_k=args.top_k,
             threshold=args.threshold,
             use_hybrid=not args.no_hybrid,
@@ -737,6 +766,17 @@ def cmd_lora_dp_eval(args: argparse.Namespace) -> int:
             f"Δgate={reg.get('gate_delta', 0):+.3f}",
             file=sys.stderr,
         )
+    suggestion = report.get("rollback_suggestion") or {}
+    if suggestion.get("should_rollback"):
+        print(
+            f"Rollback önerisi: reason={suggestion.get('reason')} "
+            f"actions={len(suggestion.get('actions') or [])}",
+            file=sys.stderr,
+        )
+        for act in suggestion.get("actions") or []:
+            print(f"  → {act}", file=sys.stderr)
+        if report.get("rollback_path"):
+            print(f"Rollback JSON: {report['rollback_path']}", file=sys.stderr)
     if not check_lora_eval_gates(report, min_acc, min_delta):
         if not check_lora_eval_gate(report, min_acc):
             print(
@@ -923,6 +963,32 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Workspace min bildirim eşiği (varsayılan RAG_NOTIFY_DIGEST_MIN_PER_WORKSPACE)",
+    )
+    p_cnot.add_argument(
+        "--digest-quiet-hours",
+        default=None,
+        help="Quiet hours UTC HH:MM-HH:MM (ör. 22:00-07:00)",
+    )
+    p_cnot.add_argument(
+        "--digest-force",
+        action="store_true",
+        help="Quiet hours'ı yok sayarak digest gönder",
+    )
+    p_cnot.add_argument(
+        "--register-push-token",
+        default=None,
+        help="Mobil cihaz token kaydet (FCM/APNs PoC)",
+    )
+    p_cnot.add_argument(
+        "--push-platform",
+        default="fcm",
+        choices=["fcm", "apns", "generic"],
+        help="Push platform",
+    )
+    p_cnot.add_argument(
+        "--test-push",
+        action="store_true",
+        help="Kayıtlı token'a test push gönder",
     )
     p_cnot.add_argument("--ids", nargs="*", default=None, help="Belirli bildirim id'leri")
     p_cnot.add_argument("--json", action="store_true", help="JSON çıktı")
@@ -1156,6 +1222,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--per-case-output",
         default=None,
         help="Case-level delta JSON raporu (per_case_deltas + regressions)",
+    )
+    p_loraev.add_argument(
+        "--rollback-output",
+        default=None,
+        help="Rollback önerisi JSON yolu",
+    )
+    p_loraev.add_argument(
+        "--auto-rollback",
+        action="store_true",
+        help="Gate/regression başarısızsa rollback_suggestion.json yaz",
     )
     p_loraev.set_defaults(func=cmd_lora_dp_eval)
 

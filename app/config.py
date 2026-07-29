@@ -327,4 +327,15 @@ NOTIFY_DIGEST_HTML = os.getenv("RAG_NOTIFY_DIGEST_HTML", "1") not in {
     "false",
     "False",
 }
+# Quiet hours: HH:MM-HH:MM (UTC), örn. 22:00-07:00 — boş = kapalı
+NOTIFY_DIGEST_QUIET_HOURS = os.getenv("RAG_NOTIFY_DIGEST_QUIET_HOURS", "").strip()
+# Mobil push PoC (FCM HTTP / generic push endpoint)
+NOTIFY_PUSH_URL = os.getenv("RAG_NOTIFY_PUSH_URL", "").strip()
+NOTIFY_PUSH_API_KEY = os.getenv("RAG_NOTIFY_PUSH_API_KEY", "").strip()
+NOTIFY_PUSH_PROVIDER = os.getenv("RAG_NOTIFY_PUSH_PROVIDER", "generic").strip().lower()
+LORA_DP_EVAL_AUTO_ROLLBACK = os.getenv("RAG_LORA_DP_EVAL_AUTO_ROLLBACK", "0") not in {
+    "0",
+    "false",
+    "False",
+}
 

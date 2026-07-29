@@ -192,6 +192,70 @@ def check_lora_eval_gates(
     )
 
 
+def suggest_lora_rollback(
+    report: Dict[str, Any],
+    *,
+    lora_output_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Regression / gate başarısızlığında base modele dönüş önerisi üretir."""
+    regressions = report.get("regressions") or []
+    gate_ok = report.get("gate_ok")
+    if gate_ok is None:
+        gate_ok = bool(report.get("lora_ok", True)) and bool(report.get("delta_ok", True))
+    should_rollback = (not gate_ok) or bool(regressions)
+    lora_dir = lora_output_dir or report.get("lora_dir") or ""
+    actions = []
+    if should_rollback:
+        actions.extend(
+            [
+                "RAG_ENABLE_DOMAIN_EMBEDDING=0 (domain/LoRA preset kapat)",
+                "RAG_DOMAIN_EMBEDDING_MODEL= (boşalt; base MiniLM kullan)",
+                f"LoRA çıktısını arşivle/ayır: {lora_dir or 'models/lora-dp-embed'}",
+                "İndeksi base embedding ile yeniden kur: python -m rag.cli rebuild --embedding mini-en",
+            ]
+        )
+        if regressions:
+            actions.append(
+                "Regresse eden case'leri incele: "
+                + ", ".join(str(r.get("case_id") or "?") for r in regressions[:10])
+            )
+    return {
+        "should_rollback": should_rollback,
+        "reason": (
+            "gate_failed"
+            if not gate_ok
+            else ("regressions" if regressions else "ok")
+        ),
+        "regression_count": len(regressions),
+        "delta_accuracy": report.get("delta_accuracy"),
+        "lora_ok": report.get("lora_ok"),
+        "delta_ok": report.get("delta_ok"),
+        "actions": actions,
+        "env_patch": {
+            "RAG_ENABLE_DOMAIN_EMBEDDING": "0",
+            "RAG_DOMAIN_EMBEDDING_MODEL": "",
+        }
+        if should_rollback
+        else {},
+        "rebuild_command": "python -m rag.cli rebuild --embedding mini-en"
+        if should_rollback
+        else None,
+    }
+
+
+def write_rollback_suggestion(
+    report: Dict[str, Any],
+    path: str,
+    *,
+    lora_output_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    suggestion = suggest_lora_rollback(report, lora_output_dir=lora_output_dir)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(suggestion, f, ensure_ascii=False, indent=2)
+    return suggestion
+
+
 def run_lora_dp_eval_report(
     base_model: str,
     lora_output_dir: str,
@@ -199,6 +263,8 @@ def run_lora_dp_eval_report(
     cases_path: str,
     report_path: Optional[str] = None,
     per_case_path: Optional[str] = None,
+    rollback_path: Optional[str] = None,
+    auto_rollback: bool = False,
     **kwargs,
 ) -> Dict[str, Any]:
     report = compare_lora_dp_eval(
@@ -208,6 +274,8 @@ def run_lora_dp_eval_report(
         cases_path,
         **kwargs,
     )
+    suggestion = suggest_lora_rollback(report, lora_output_dir=lora_output_dir)
+    report["rollback_suggestion"] = suggestion
     if report_path:
         os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
         with open(report_path, "w", encoding="utf-8") as f:
@@ -221,7 +289,19 @@ def run_lora_dp_eval_report(
             "delta_accuracy": report.get("delta_accuracy"),
             "base_model": report.get("base_model"),
             "lora_model": report.get("lora_model"),
+            "rollback_suggestion": suggestion,
         }
         with open(per_case_path, "w", encoding="utf-8") as f:
             json.dump(per_case_doc, f, ensure_ascii=False, indent=2)
+    if rollback_path or (auto_rollback and suggestion.get("should_rollback")):
+        out = rollback_path or os.path.join(
+            lora_output_dir or ".",
+            "rollback_suggestion.json",
+        )
+        write_rollback_suggestion(
+            report,
+            out,
+            lora_output_dir=lora_output_dir,
+        )
+        report["rollback_path"] = out
     return report

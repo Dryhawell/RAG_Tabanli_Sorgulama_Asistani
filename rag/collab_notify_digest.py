@@ -14,6 +14,7 @@ try:
         NOTIFY_DIGEST_HTML,
         NOTIFY_DIGEST_MENTIONS_ONLY,
         NOTIFY_DIGEST_MIN_PER_WORKSPACE,
+        NOTIFY_DIGEST_QUIET_HOURS,
         NOTIFY_FROM_EMAIL,
         NOTIFY_SMTP_HOST,
         NOTIFY_WEBHOOK_URL,
@@ -24,6 +25,7 @@ except ImportError:
     NOTIFY_DIGEST_GROUP_BY = "thread"
     NOTIFY_DIGEST_MIN_PER_WORKSPACE = 1
     NOTIFY_DIGEST_HTML = True
+    NOTIFY_DIGEST_QUIET_HOURS = ""
     NOTIFY_SMTP_HOST = ""
     NOTIFY_FROM_EMAIL = "noreply@localhost"
     NOTIFY_WEBHOOK_URL = ""
@@ -43,6 +45,64 @@ def _parse_iso(ts: str) -> Optional[datetime]:
         return dt
     except Exception:
         return None
+
+
+def _parse_hhmm(value: str) -> Optional[int]:
+    """HH:MM veya HH → dakika-of-day (0–1439)."""
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        if ":" in raw:
+            hh, mm = raw.split(":", 1)
+            h, m = int(hh), int(mm)
+        else:
+            h, m = int(raw), 0
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            return None
+        return h * 60 + m
+    except Exception:
+        return None
+
+
+def parse_quiet_hours(spec: Optional[str] = None) -> Optional[tuple[int, int]]:
+    """'22:00-07:00' → (start_min, end_min). Geçersiz/boş → None."""
+    text = (spec if spec is not None else NOTIFY_DIGEST_QUIET_HOURS) or ""
+    text = text.strip()
+    if not text:
+        return None
+    if "-" not in text:
+        return None
+    left, right = text.split("-", 1)
+    start = _parse_hhmm(left)
+    end = _parse_hhmm(right)
+    if start is None or end is None:
+        return None
+    return start, end
+
+
+def is_quiet_hours(
+    *,
+    now: Optional[datetime] = None,
+    quiet_spec: Optional[str] = None,
+) -> bool:
+    """UTC saati quiet hours aralığındaysa True (gece yarısını aşan aralık desteklenir)."""
+    bounds = parse_quiet_hours(quiet_spec)
+    if bounds is None:
+        return False
+    start, end = bounds
+    dt = now or datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    minute = dt.hour * 60 + dt.minute
+    if start == end:
+        return True
+    if start < end:
+        return start <= minute < end
+    # örn. 22:00-07:00
+    return minute >= start or minute < end
 
 
 def collect_digest_events(
@@ -546,7 +606,16 @@ def send_digest_email(
     mentions_only: Optional[bool] = None,
     group_by: Optional[str] = None,
     min_per_workspace: Optional[int] = None,
+    ignore_quiet_hours: bool = False,
+    quiet_hours: Optional[str] = None,
 ) -> Dict[str, Any]:
+    if not ignore_quiet_hours and is_quiet_hours(quiet_spec=quiet_hours):
+        return {
+            "sent": False,
+            "count": 0,
+            "reason": "quiet_hours",
+            "quiet_hours": quiet_hours or NOTIFY_DIGEST_QUIET_HOURS,
+        }
     events = collect_digest_events(username, hours=hours, base=base)
     if not events:
         return {"sent": False, "count": 0, "reason": "empty"}
@@ -566,6 +635,7 @@ def send_digest_email(
         return {"sent": False, "count": 0, "reason": reason}
     email_ok = False
     webhook_ok = False
+    push_ok = False
     if NOTIFY_SMTP_HOST:
         from rag.collab_notify_dispatch import dispatch_digest_email
 
@@ -586,15 +656,30 @@ def send_digest_email(
             group_by=group_by,
             min_per_workspace=min_per_workspace,
         )
-    if not NOTIFY_SMTP_HOST and not NOTIFY_WEBHOOK_URL:
+    try:
+        from app.config import NOTIFY_PUSH_URL
+    except ImportError:
+        NOTIFY_PUSH_URL = ""
+    if NOTIFY_PUSH_URL:
+        from rag.collab_notify_push import dispatch_digest_push
+
+        push_ok = dispatch_digest_push(
+            username,
+            events,
+            mentions_only=mentions_only,
+            group_by=group_by,
+            min_per_workspace=min_per_workspace,
+        )
+    if not NOTIFY_SMTP_HOST and not NOTIFY_WEBHOOK_URL and not NOTIFY_PUSH_URL:
         return {"sent": False, "count": len(filtered), "reason": "no_channel"}
-    sent = email_ok or webhook_ok
+    sent = email_ok or webhook_ok or push_ok
     reason = None if sent else "send_failed"
     return {
         "sent": sent,
         "count": len(filtered),
         "email": email_ok,
         "webhook": webhook_ok,
+        "push": push_ok,
         "reason": reason,
         "mentions_only": prep["mentions_only"],
         "group_by": prep["group_by"],
@@ -610,7 +695,17 @@ def send_digest_all(
     mentions_only: Optional[bool] = None,
     group_by: Optional[str] = None,
     min_per_workspace: Optional[int] = None,
+    ignore_quiet_hours: bool = False,
+    quiet_hours: Optional[str] = None,
 ) -> Dict[str, Any]:
+    if not ignore_quiet_hours and is_quiet_hours(quiet_spec=quiet_hours):
+        return {
+            "users": [],
+            "sent": 0,
+            "results": {},
+            "reason": "quiet_hours",
+            "quiet_hours": quiet_hours or NOTIFY_DIGEST_QUIET_HOURS,
+        }
     users = list_digest_target_users(hours=hours, base=base)
     results: Dict[str, Any] = {}
     sent = 0
@@ -622,6 +717,7 @@ def send_digest_all(
             mentions_only=mentions_only,
             group_by=group_by,
             min_per_workspace=min_per_workspace,
+            ignore_quiet_hours=True,
         )
         results[user] = r
         if r.get("sent"):
