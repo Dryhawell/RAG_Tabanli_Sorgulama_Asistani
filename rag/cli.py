@@ -62,6 +62,8 @@ from app.config import (
     LORA_DP_EVAL_MIN_ACCURACY,
     LORA_DP_EVAL_MIN_DELTA,
     LORA_DP_EVAL_AUTO_ROLLBACK,
+    JUDGE_MIN_ACCURACY,
+    JUDGE_MODE,
 )
 from rag.embed import Embedder, resolve_embedding_model
 from rag.eval import run_regression
@@ -974,12 +976,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_judge.add_argument(
         "--mode",
         choices=["heuristic", "llm"],
-        default="heuristic",
+        default=JUDGE_MODE if JUDGE_MODE in {"heuristic", "llm"} else "heuristic",
         help="heuristic: hızlı token overlap; llm: model çağrısı",
     )
     p_judge.add_argument("--provider", default="ollama", choices=["ollama", "openai"])
     p_judge.add_argument("--model", default="phi3:mini", help="LLM model adı (mode=llm)")
-    p_judge.add_argument("--min-accuracy", type=float, default=1.0)
+    p_judge.add_argument(
+        "--min-accuracy",
+        type=float,
+        default=JUDGE_MIN_ACCURACY,
+        help="CI gate eşiği (RAG_JUDGE_MIN_ACCURACY)",
+    )
     p_judge.add_argument("--output", default=None, help="JSON rapor çıktı yolu")
     p_judge.set_defaults(func=cmd_judge)
 

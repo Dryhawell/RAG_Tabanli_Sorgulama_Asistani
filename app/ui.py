@@ -737,6 +737,35 @@ with st.sidebar:
                 )
             except ValueError as exc:
                 st.error(str(exc))
+        from rag.auth import get_user_digest_channels, update_user_digest_channels
+
+        _ch = get_user_digest_channels(current_user.username)
+        st.caption(t("account_digest_channels"))
+        _ch_email = st.checkbox(
+            t("account_digest_email"),
+            value=bool(_ch.get("email", True)),
+            key="account_digest_email",
+        )
+        _ch_webhook = st.checkbox(
+            t("account_digest_webhook"),
+            value=bool(_ch.get("webhook", True)),
+            key="account_digest_webhook",
+        )
+        _ch_push = st.checkbox(
+            t("account_digest_push"),
+            value=bool(_ch.get("push", True)),
+            key="account_digest_push",
+        )
+        if st.button(t("account_digest_channels_save"), use_container_width=True, key="save_ch"):
+            update_user_digest_channels(
+                current_user.username,
+                {
+                    "email": _ch_email,
+                    "webhook": _ch_webhook,
+                    "push": _ch_push,
+                },
+            )
+            st.success(t("account_digest_channels_saved"))
         if ws.shared:
             st.caption("İndeks paylaşımlı (aynı tenant içindeki kullanıcılar).")
         else:

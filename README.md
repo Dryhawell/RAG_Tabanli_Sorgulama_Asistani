@@ -293,11 +293,13 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - **Bildirim merkezi**: `python -m rag.cli collab-notifications --user alice`
 - **E-posta/webhook**: `RAG_NOTIFY_SMTP_HOST`, `RAG_NOTIFY_WEBHOOK_URL` (Slack/Discord/generic)
 - **Digest**: `python -m rag.cli collab-notifications --digest --user alice --digest-mentions-only --digest-group-by thread` (e-posta + Slack/Discord/Teams + mobil push)
-- **Quiet hours**: profil `quiet_hours` + timezone; thread reply özeti; bitince **otomatik tam digest flush** (`--digest-flush-quiet`)
-- **Mobil push PoC**: FCM v1 OAuth; **APNs HTTP/2** (.p8 JWT, `RAG_NOTIFY_PUSH_APNS_*`); cihaz quiet/geofence
-- **LoRA rollback**: CI status artifact + PR comment bot (marker upsert)
-- **Collab presence**: disk snapshot + typing indicator (`op: typing`)
-- GitHub Actions: `collab-notify-digest.yml` (flush + digest, force yok)
+- **Quiet hours**: profil `quiet_hours` + timezone; thread reply; bitince otomatik flush (`--digest-flush-quiet`)
+- **Digest kanalları**: kullanıcı `digest_channels` matrisi (email/webhook/push)
+- **Mobil push PoC**: FCM v1 OAuth + invalid-token revoke; APNs HTTP/2 (.p8)
+- **LoRA rollback**: CI status + PR comment bot
+- **Collab presence**: disk snapshot + typing
+- **Judge CI gate**: heuristic `scripts/ci_judge.py` (`RAG_JUDGE_MIN_ACCURACY`)
+- GitHub Actions: `collab-notify-digest.yml` (flush + digest)
 - **Mark katmanları**: çoklu stil birleşimi (bold+italic) canlı editör + katman haritası + audit diff görselleştirme
 
 ### CRDT işbirlikçi not
@@ -446,6 +448,8 @@ export RAG_ENABLE_COLLAB_RICHTEXT=1
 | `RAG_NOTIFY_PUSH_APNS_P8_CONTENT` | `.p8` PEM içeriği (inline) |
 | `RAG_NOTIFY_PUSH_APNS_USE_SANDBOX` | APNs sandbox host (1/0) |
 | `RAG_COLLAB_PRESENCE_TTL_SEC` | Presence snapshot TTL (saniye, varsayılan 90) |
+| `RAG_JUDGE_MIN_ACCURACY` | Judge CI gate eşiği (varsayılan 1.0) |
+| `RAG_JUDGE_MODE` | `heuristic` / `llm` (CI varsayılan heuristic) |
 | `RAG_LORA_DP_EVAL_AUTO_ROLLBACK` | Gate başarısızsa rollback_suggestion.json yaz (1/0) |
 | `RAG_EMBED_PIPELINE_REPORT_PATH` | Pipeline JSON rapor yolu |
 | `RAG_DOMAIN_EMBEDDING_MODEL` | Domain/fine-tuned embedding model yolu veya Hub adı |
@@ -491,7 +495,7 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Eval: LLM-as-judge CI gate
 - Collab: presence multi-worker (Redis) backend
-- Push: FCM invalid-token otomatik revoke
-- Digest: kullanıcı başına digest tercihleri (kanal matrisi)
+- Judge: LLM mode CI job (Ollama/OpenAI secrets)
+- Push: APNs BadDeviceToken metrikleri / prune job
+- Digest: kanal başına quiet-hours politikası

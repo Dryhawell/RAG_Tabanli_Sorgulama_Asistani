@@ -505,6 +505,106 @@ def build_fcm_payload(
     }
 
 
+_FCM_INVALID_TOKEN_CODES = frozenset(
+    {
+        "UNREGISTERED",
+        "INVALID_ARGUMENT",
+        "NOT_FOUND",
+        "SENDER_ID_MISMATCH",
+    }
+)
+_APNS_INVALID_REASONS = frozenset(
+    {
+        "BadDeviceToken",
+        "Unregistered",
+        "DeviceTokenNotForTopic",
+        "ExpiredProviderToken",
+    }
+)
+
+
+def parse_fcm_error_code(response: Any) -> Optional[str]:
+    """FCM HTTP v1 hata gövdesinden errorCode / status çıkarır."""
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+    except Exception:
+        status = 0
+    body: Any = None
+    try:
+        body = response.json()
+    except Exception:
+        text = getattr(response, "text", None) or getattr(response, "content", b"")
+        if isinstance(text, bytes):
+            try:
+                text = text.decode("utf-8", errors="ignore")
+            except Exception:
+                text = ""
+        if text:
+            try:
+                body = json.loads(text)
+            except Exception:
+                body = None
+    if not isinstance(body, dict):
+        if status in {400, 404}:
+            return "NOT_FOUND" if status == 404 else "INVALID_ARGUMENT"
+        return None
+    err = body.get("error") if isinstance(body.get("error"), dict) else {}
+    details = err.get("details") if isinstance(err, dict) else None
+    if isinstance(details, list):
+        for item in details:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("errorCode") or "").strip().upper()
+            if code:
+                return code
+    status_name = str((err or {}).get("status") or "").strip().upper()
+    if status_name:
+        return status_name
+    if status in {400, 404}:
+        return "NOT_FOUND" if status == 404 else "INVALID_ARGUMENT"
+    return None
+
+
+def is_fcm_invalid_token_response(response: Any) -> bool:
+    """Kalıcı geçersiz token hatası mı (revoke adayı)."""
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+    except Exception:
+        return False
+    if status < 400:
+        return False
+    if status >= 500:
+        return False
+    code = parse_fcm_error_code(response)
+    if not code:
+        return False
+    return code.upper() in _FCM_INVALID_TOKEN_CODES
+
+
+def parse_apns_error_reason(response: Any) -> Optional[str]:
+    try:
+        body = response.json()
+    except Exception:
+        return None
+    if isinstance(body, dict):
+        reason = str(body.get("reason") or "").strip()
+        return reason or None
+    return None
+
+
+def is_apns_invalid_token_response(response: Any) -> bool:
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+    except Exception:
+        return False
+    if status not in {400, 410}:
+        return False
+    reason = parse_apns_error_reason(response) or ""
+    if reason in _APNS_INVALID_REASONS:
+        return True
+    return status == 410
+
+
 def load_fcm_service_account_info(
     source: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
@@ -771,6 +871,8 @@ def _dispatch_apns_native(
                 if r.status_code < 400:
                     ok_any = True
                     touch_device_last_seen(username, t, base=base)
+                elif is_apns_invalid_token_response(r):
+                    revoke_device_token(username, t, base=base)
     except Exception:
         return False
     return ok_any
@@ -857,6 +959,8 @@ def dispatch_push(
                 if r.status_code < 400:
                     ok_any = True
                     touch_device_last_seen(username, t, base=base)
+                elif is_fcm_invalid_token_response(r):
+                    revoke_device_token(username, t, base=base)
         elif provider == "apns":
             for tok in tokens:
                 t = str(tok.get("token") or "").strip()
@@ -867,6 +971,8 @@ def dispatch_push(
                 if r.status_code < 400:
                     ok_any = True
                     touch_device_last_seen(username, t, base=base)
+                elif is_apns_invalid_token_response(r):
+                    revoke_device_token(username, t, base=base)
         else:
             payload = build_generic_push_payload(
                 username,

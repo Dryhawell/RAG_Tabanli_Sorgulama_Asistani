@@ -32,6 +32,19 @@ jobs:
           pip install -r requirements.txt
       - name: Fast tests
         run: pytest -q -m "not slow"
+      - name: Judge gate (heuristic)
+        env:
+          RAG_JUDGE_MODE: heuristic
+          RAG_JUDGE_MIN_ACCURACY: "1.0"
+          RAG_JUDGE_OUTPUT: metadata/judge_report.json
+        run: python scripts/ci_judge.py
+      - name: Upload judge report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-report-${{ github.run_id }}
+          path: metadata/judge_report.json
+          if-no-files-found: ignore
       - name: LoRA rollback PR status artifacts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

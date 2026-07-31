@@ -315,3 +315,58 @@ def test_dispatch_apns_native_httpx(tmp_path, monkeypatch):
     assert "authorization" in calls[0]["headers"]
     assert calls[0]["headers"]["apns-topic"] == "com.example.app"
     assert "aps" in calls[0]["json"]
+
+
+def test_fcm_invalid_token_auto_revoke(tmp_path, monkeypatch):
+    from rag.collab_notify_push import (
+        dispatch_push,
+        is_fcm_invalid_token_response,
+        list_device_tokens,
+        parse_fcm_error_code,
+        register_device_token,
+        summarize_user_devices,
+    )
+
+    class FakeResp:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+            self.content = b"x"
+
+        def json(self):
+            return self._payload
+
+    bad = FakeResp(
+        404,
+        {
+            "error": {
+                "code": 404,
+                "status": "NOT_FOUND",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
+                        "errorCode": "UNREGISTERED",
+                    }
+                ],
+            }
+        },
+    )
+    assert parse_fcm_error_code(bad) == "UNREGISTERED"
+    assert is_fcm_invalid_token_response(bad) is True
+
+    monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_PROVIDER", "fcm")
+    monkeypatch.setattr(
+        "rag.collab_notify_push.resolve_fcm_endpoint",
+        lambda **k: "https://fcm.googleapis.com/v1/projects/p/messages:send",
+    )
+    monkeypatch.setattr(
+        "rag.collab_notify_push.resolve_fcm_auth_header",
+        lambda **k: "Bearer x",
+    )
+    register_device_token("alice", "dead-token", platform="fcm")
+    monkeypatch.setattr("requests.post", lambda *a, **k: bad)
+    assert dispatch_push("alice", title="t", body="b") is False
+    devices = summarize_user_devices("alice")
+    assert devices and devices[0]["revoked"] is True
+    assert list_device_tokens("alice") == []

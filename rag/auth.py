@@ -8,7 +8,7 @@ import os
 import re
 import secrets
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.config import (
     AUTH_BOOTSTRAP_ADMIN,
@@ -336,6 +336,84 @@ def update_user_quiet_hours(
         meta["quiet_hours"] = qh
     else:
         meta.pop("quiet_hours", None)
+    users[uname] = meta
+    save_users(users, users_path)
+    return user_from_meta(uname, meta)
+
+
+_DEFAULT_DIGEST_CHANNELS = {"email": True, "webhook": True, "push": True}
+
+
+def normalize_digest_channels(raw: Any) -> Dict[str, bool]:
+    """digest_channels dict/JSON → {email, webhook, push} bool."""
+    out = dict(_DEFAULT_DIGEST_CHANNELS)
+    if raw is None:
+        return out
+    data = raw
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return out
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            # "email,push" veya "email" formu
+            parts = [p.strip().lower() for p in text.replace(";", ",").split(",") if p.strip()]
+            if parts:
+                out = {"email": False, "webhook": False, "push": False}
+                for p in parts:
+                    if p in out:
+                        out[p] = True
+            return out
+    if not isinstance(data, dict):
+        return out
+    for key in ("email", "webhook", "push"):
+        if key in data:
+            val = data[key]
+            if isinstance(val, str):
+                out[key] = val.strip().lower() not in {"0", "false", "no", "off", ""}
+            else:
+                out[key] = bool(val)
+    return out
+
+
+def get_user_digest_channels(
+    username: str,
+    path: Optional[str] = None,
+) -> Dict[str, bool]:
+    """Kullanıcı digest kanal tercihleri (yoksa tümü açık)."""
+    users = ensure_users_file(path or USERS_PATH)
+    uname = _safe_username(username)
+    meta = users.get(uname)
+    if not isinstance(meta, dict):
+        return dict(_DEFAULT_DIGEST_CHANNELS)
+    return normalize_digest_channels(meta.get("digest_channels"))
+
+
+def update_user_digest_channels(
+    username: str,
+    channels: Optional[Dict[str, Any]],
+    *,
+    path: Optional[str] = None,
+) -> User:
+    """Digest kanal tercihlerini kaydeder; None/boş = varsayılan (tümü)."""
+    users_path = path or USERS_PATH
+    users = ensure_users_file(users_path)
+    uname = _safe_username(username)
+    if uname not in users:
+        raise ValueError("Kullanıcı bulunamadı")
+    meta = users[uname]
+    if not isinstance(meta, dict):
+        raise ValueError("Geçersiz kullanıcı kaydı")
+    if channels is None:
+        meta.pop("digest_channels", None)
+    else:
+        normalized = normalize_digest_channels(channels)
+        # Hepsi True ise alanı kaldır (varsayılan)
+        if all(normalized.values()):
+            meta.pop("digest_channels", None)
+        else:
+            meta["digest_channels"] = normalized
     users[uname] = meta
     save_users(users, users_path)
     return user_from_meta(uname, meta)

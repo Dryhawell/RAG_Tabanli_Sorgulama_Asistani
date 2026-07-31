@@ -373,3 +373,61 @@ def test_quiet_hours_flush_after_transition(tmp_path, monkeypatch):
     result2 = maybe_flush_after_quiet_hours("alice", base=str(tmp_path), now=day)
     assert result2["flushed"] is False
     assert result2["reason"] == "not_pending"
+
+
+def test_digest_channel_preferences(tmp_path, monkeypatch):
+    from rag.auth import update_user_digest_channels
+    from rag.collab_notify_digest import resolve_digest_channels, send_digest_email
+
+    users_path = str(tmp_path / "users.json")
+    with open(users_path, "w", encoding="utf-8") as f:
+        f.write('{"alice": {"password_hash": "x$y", "role": "user", "tenant_id": "default"}}')
+    monkeypatch.setattr("rag.auth.USERS_PATH", users_path)
+    monkeypatch.setattr("rag.collab_notify_digest.METADATA_DIR", str(tmp_path))
+    monkeypatch.setattr("rag.collab_notify_digest.NOTIFY_SMTP_HOST", "smtp.test")
+    monkeypatch.setattr("rag.collab_notify_digest.NOTIFY_WEBHOOK_URL", "http://hook.test")
+    update_user_digest_channels(
+        "alice",
+        {"email": True, "webhook": False, "push": False},
+        path=users_path,
+    )
+    assert resolve_digest_channels("alice")["webhook"] is False
+
+    monkeypatch.setattr(
+        "rag.collab_notify_digest.collect_digest_events",
+        lambda *a, **k: [
+            {
+                "workspace_key": "ws",
+                "from_user": "bob",
+                "body_preview": "hi",
+                "kind": "mention",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "rag.collab_notify_digest.is_quiet_hours",
+        lambda **kwargs: False,
+    )
+    email_calls = []
+    webhook_calls = []
+    push_calls = []
+    monkeypatch.setattr(
+        "rag.collab_notify_dispatch.dispatch_digest_email",
+        lambda *a, **k: email_calls.append(1) or True,
+    )
+    monkeypatch.setattr(
+        "rag.collab_notify_dispatch.dispatch_digest_webhook",
+        lambda *a, **k: webhook_calls.append(1) or True,
+    )
+    monkeypatch.setattr(
+        "rag.collab_notify_push.dispatch_digest_push",
+        lambda *a, **k: push_calls.append(1) or True,
+    )
+    monkeypatch.setattr(
+        "rag.collab_notify_push.is_push_configured",
+        lambda: True,
+    )
+    result = send_digest_email("alice", skip_quiet_tracking=True)
+    assert result["sent"] is True
+    assert result["channels"]["webhook"] is False
+    assert email_calls and not webhook_calls and not push_calls

@@ -4,7 +4,8 @@
     "role": "admin",
     "tenant_id": "default",
     "timezone": "Europe/Istanbul",
-    "quiet_hours": "22:00-07:00"
+    "quiet_hours": "22:00-07:00",
+    "digest_channels": {"email": true, "webhook": true, "push": true}
   },
   "demo": {
     "password": "demo",
@@ -12,6 +13,7 @@
     "tenant_id": "default",
     "timezone": "Europe/Istanbul",
     "quiet_hours": "23:00-08:00",
+    "digest_channels": {"email": true, "webhook": false, "push": true},
     "allowed_folders": ["genel", "urun"],
     "allowed_tags": ["public"]
   }

@@ -67,3 +67,16 @@ def test_judge_cases_file_and_cli_helper():
 
     report = run_judge_file(path, mode="heuristic", min_accuracy=1.0)
     assert report["summary"]["ok"] is True
+
+
+def test_ci_judge_script(tmp_path, monkeypatch):
+    import scripts.ci_judge as ci_judge
+
+    monkeypatch.setenv("RAG_JUDGE_MODE", "heuristic")
+    monkeypatch.setenv("RAG_JUDGE_MIN_ACCURACY", "1.0")
+    out = tmp_path / "judge_report.json"
+    monkeypatch.setenv("RAG_JUDGE_OUTPUT", str(out))
+    monkeypatch.setenv("RAG_JUDGE_CASES", "evals/judge_cases.json")
+    code = ci_judge.main()
+    assert code == 0
+    assert out.exists()
