@@ -1,0 +1,81 @@
+"""Collab HTTP (Web Push SW / register) testleri."""
+
+import json
+import threading
+from http.client import HTTPConnection
+
+from rag.collab_http import (
+    handle_sw_js,
+    handle_webpush_register,
+)
+from rag.collab_notify_push import list_device_tokens, summarize_user_devices
+
+
+def test_handle_sw_js():
+    code, headers, body = handle_sw_js()
+    assert code == 200
+    assert "javascript" in headers["Content-Type"]
+    assert b"push" in body
+
+
+def test_handle_webpush_register(tmp_path, monkeypatch):
+    monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
+    sub = {
+        "endpoint": "https://push.example.com/x",
+        "keys": {"p256dh": "p", "auth": "a"},
+    }
+    code, headers, body = handle_webpush_register(
+        json.dumps({"username": "alice", "subscription": sub}).encode("utf-8")
+    )
+    assert code == 200
+    data = json.loads(body.decode("utf-8"))
+    assert data["ok"] is True
+    tokens = list_device_tokens("alice")
+    assert len(tokens) == 1
+    assert tokens[0]["platform"] == "webpush"
+
+
+def test_collab_http_server_get_sw(tmp_path, monkeypatch):
+    monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
+    from http.server import ThreadingHTTPServer
+
+    from rag.collab_http import CollabHTTPHandler
+
+    class H(CollabHTTPHandler):
+        public_base = "http://127.0.0.1:0"
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        conn = HTTPConnection("127.0.0.1", port, timeout=3)
+        conn.request("GET", "/sw.js")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        body = resp.read()
+        assert b"addEventListener" in body
+        conn.close()
+
+        sub = {
+            "endpoint": "https://push.example.com/y",
+            "keys": {"p256dh": "pp", "auth": "aa"},
+        }
+        conn = HTTPConnection("127.0.0.1", port, timeout=3)
+        payload = json.dumps({"username": "carol", "subscription": sub})
+        conn.request(
+            "POST",
+            "/webpush/register",
+            body=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        resp = conn.getresponse()
+        assert resp.status == 200
+        data = json.loads(resp.read().decode("utf-8"))
+        assert data["ok"] is True
+        conn.close()
+        devices = summarize_user_devices("carol")
+        assert devices and devices[0]["platform"] == "webpush"
+    finally:
+        server.shutdown()
+        server.server_close()

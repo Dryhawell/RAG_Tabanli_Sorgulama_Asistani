@@ -1018,10 +1018,14 @@ def read_digest_report(
     limit: Optional[int] = None,
     username: Optional[str] = None,
     tenant_id: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     path = digest_report_path(base=base)
     if not os.path.isfile(path):
         return []
+    since_dt = _parse_iso(since or "") if since else None
+    until_dt = _parse_iso(until or "") if until else None
     rows: List[Dict[str, Any]] = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -1040,6 +1044,14 @@ def read_digest_report(
                 tenant_id
             ):
                 continue
+            if since_dt or until_dt:
+                row_dt = _parse_iso(str(data.get("ts") or ""))
+                if row_dt is None:
+                    continue
+                if since_dt and row_dt < since_dt:
+                    continue
+                if until_dt and row_dt > until_dt:
+                    continue
             rows.append(data)
     if limit is not None and limit >= 0:
         rows = rows[-limit:]
@@ -1053,12 +1065,16 @@ def summarize_digest_report(
     username: Optional[str] = None,
     tenant_id: Optional[str] = None,
     limit: Optional[int] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
 ) -> Dict[str, Any]:
     data = rows if rows is not None else read_digest_report(
         base=base,
         limit=limit,
         username=username,
         tenant_id=tenant_id,
+        since=since,
+        until=until,
     )
     by_reason: Dict[str, int] = {}
     by_user: Dict[str, int] = {}
@@ -1102,12 +1118,28 @@ def list_digest_report_tenants(*, base: Optional[str] = None) -> List[str]:
     return sorted(tids)
 
 
+def list_digest_report_users(
+    *,
+    base: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> List[str]:
+    rows = read_digest_report(base=base, tenant_id=tenant_id)
+    users = {
+        str(r.get("username")).strip().lower()
+        for r in rows
+        if r.get("username") not in (None, "")
+    }
+    return sorted(users)
+
+
 def export_digest_report_csv(
     *,
     base: Optional[str] = None,
     limit: Optional[int] = None,
     username: Optional[str] = None,
     tenant_id: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
 ) -> str:
     """Digest rapor satırlarını CSV metnine çevirir."""
     import csv
@@ -1118,6 +1150,8 @@ def export_digest_report_csv(
         limit=limit,
         username=username,
         tenant_id=tenant_id,
+        since=since,
+        until=until,
     )
     fields = [
         "ts",

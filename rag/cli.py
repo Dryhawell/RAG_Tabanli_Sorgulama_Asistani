@@ -32,6 +32,7 @@ from app.config import (
     EMBED_PIPELINE_REPORT_PATH,
     COLLAB_WS_HOST,
     COLLAB_WS_PORT,
+    COLLAB_HTTP_PORT,
     DOMAIN_PAIRS_PATH,
     DOMAIN_COLLECT_MIN_GATE,
     CHAT_DIR,
@@ -274,8 +275,14 @@ def cmd_collab_serve(args: argparse.Namespace) -> int:
         return 2
     host = args.host or COLLAB_WS_HOST
     port = args.port or COLLAB_WS_PORT
+    http_port = args.http_port if args.http_port is not None else COLLAB_HTTP_PORT
     try:
-        run_collab_ws_server(host=host, port=port)
+        run_collab_ws_server(
+            host=host,
+            port=port,
+            http_port=http_port,
+            enable_http=not bool(args.no_http),
+        )
     except KeyboardInterrupt:
         print("\nKapatıldı.")
     return 0
@@ -362,6 +369,9 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
         if args.digest_report_csv:
             csv_text = export_digest_report_csv(
                 tenant_id=args.digest_tenant,
+                username=args.digest_report_user,
+                since=args.digest_since,
+                until=args.digest_until,
                 limit=args.digest_report_limit,
             )
             out = args.digest_report_csv
@@ -377,6 +387,9 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
             return 0
         summary = summarize_digest_report(
             tenant_id=args.digest_tenant,
+            username=args.digest_report_user,
+            since=args.digest_since,
+            until=args.digest_until,
             limit=args.digest_report_limit,
         )
         print(json.dumps(summary, ensure_ascii=False, indent=2))
@@ -1058,6 +1071,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_collab = sub.add_parser("collab-serve", help="İşbirlikçi not WebSocket sunucusu")
     p_collab.add_argument("--host", default=None, help=f"Bind host (varsayılan {COLLAB_WS_HOST})")
     p_collab.add_argument("--port", type=int, default=None, help=f"Port (varsayılan {COLLAB_WS_PORT})")
+    p_collab.add_argument(
+        "--http-port",
+        type=int,
+        default=None,
+        help=f"Web Push HTTP port (varsayılan {COLLAB_HTTP_PORT})",
+    )
+    p_collab.add_argument(
+        "--no-http",
+        action="store_true",
+        help="Collab HTTP (SW/webpush) sunucusunu başlatma",
+    )
     p_collab.set_defaults(func=cmd_collab_serve)
 
     p_cnot = sub.add_parser("collab-notifications", help="Çapraz workspace bildirim merkezi")
@@ -1127,6 +1151,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help="Digest raporunu CSV yaz (PATH veya -)",
+    )
+    p_cnot.add_argument(
+        "--digest-report-user",
+        default=None,
+        help="Digest rapor kullanıcı filtresi",
+    )
+    p_cnot.add_argument(
+        "--digest-since",
+        default=None,
+        help="Digest rapor başlangıç ISO zamanı",
+    )
+    p_cnot.add_argument(
+        "--digest-until",
+        default=None,
+        help="Digest rapor bitiş ISO zamanı",
     )
     p_cnot.add_argument(
         "--webpush-sw",

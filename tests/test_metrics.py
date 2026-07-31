@@ -80,3 +80,5 @@ def test_summarize_judge_run_metrics(tmp_path, monkeypatch):
     assert summary["judge"]["failed"] == 1
     assert summary["judge"]["soft_fail"] == 1
     assert summary["judge"]["avg_accuracy"] == 0.75
+    assert summary["judge"]["soft_fail_rate"] == 0.5
+    assert summary["judge"]["recent_accuracies"] == [1.0, 0.5]

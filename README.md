@@ -496,6 +496,7 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
-- Push: Web Push PWA aynı-origin SW host + otomatik token kayıt
-- Judge: LLM judge soft-fail trend grafiği / Prometheus gauge
-- Tenant: digest rapor zaman aralığı ve kullanıcı filtresi UI
+- Push: Web Push VAPID key üretimi CLI + Streamlit native register bridge
+- Judge: LLM judge soft-fail Grafana dashboard örneği
+- Tenant: digest rapor webhook alert eşikleri
+- Ingest: incremental chunk diff / delta rebuild

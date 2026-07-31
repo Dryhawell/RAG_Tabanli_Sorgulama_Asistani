@@ -484,10 +484,24 @@ def ensure_collab_ws_server(
         return True
 
 
-def run_collab_ws_server(host: str = "0.0.0.0", port: int = 8765) -> None:
-    """CLI: bloklayarak WebSocket sunucusu çalıştır."""
+def run_collab_ws_server(
+    host: str = "0.0.0.0",
+    port: int = 8765,
+    *,
+    http_port: Optional[int] = None,
+    enable_http: bool = True,
+) -> None:
+    """CLI: bloklayarak WebSocket (+ opsiyonel HTTP SW) sunucusu çalıştır."""
     if not websockets_available():
         raise RuntimeError("websockets kurulu değil. pip install websockets")
+    if enable_http:
+        try:
+            from rag.collab_http import ensure_collab_http_server
+
+            ensure_collab_http_server(host=host, port=http_port, enabled=True)
+            print(f"Collab HTTP (SW/webpush): port {http_port or 'config'}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Collab HTTP başlatılamadı: {exc}")
     print(f"Collab WebSocket dinleniyor: ws://{host}:{port}")
     print("Mesaj: join → edit → sync/conflict")
     asyncio.run(_serve(host, port))

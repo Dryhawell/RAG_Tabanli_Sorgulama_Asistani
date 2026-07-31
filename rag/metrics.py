@@ -162,6 +162,7 @@ def summarize_metrics(
                     pass
 
     recent = list(reversed(rows[-10:]))
+    recent_acc = judge_accuracies[-20:]
 
     return {
         "total_events": len(rows),
@@ -186,7 +187,11 @@ def summarize_metrics(
             "ok": judge_ok,
             "failed": max(0, judge_runs - judge_ok),
             "soft_fail": judge_soft_fail,
+            "soft_fail_rate": round(
+                (judge_soft_fail / judge_runs) if judge_runs else 0.0, 4
+            ),
             "avg_accuracy": round(_avg(judge_accuracies), 4),
+            "recent_accuracies": [round(a, 4) for a in recent_acc],
         },
         "recent": recent,
     }

@@ -24,14 +24,17 @@ _WEBPUSH_HTML = """
   <p style="margin:0 0 8px;color:#444;">__STATUS__</p>
   <button id="wp-sub" type="button" style="padding:6px 12px;margin-right:6px;">Abone ol</button>
   <button id="wp-copy" type="button" style="padding:6px 12px;">JSON kopyala</button>
-  <textarea id="wp-out" rows="6" style="width:100%;margin-top:8px;font-family:ui-monospace,Menlo,monospace;font-size:11px;"
-    placeholder="PushSubscription JSON burada görünecek — token alanına yapıştırın"></textarea>
+  <textarea id="wp-out" rows="5" style="width:100%;margin-top:8px;font-family:ui-monospace,Menlo,monospace;font-size:11px;"
+    placeholder="PushSubscription JSON"></textarea>
   <p id="wp-msg" style="margin:6px 0 0;color:#666;min-height:18px;"></p>
 </div>
 <script>
 (function() {
   const VAPID = __VAPID__;
+  const SW_URL = __SW_URL__;
   const SW_BLOB = __SW_BLOB__;
+  const REG_URL = __REG_URL__;
+  const USERNAME = __USERNAME__;
   const out = document.getElementById("wp-out");
   const msg = document.getElementById("wp-msg");
   function setMsg(t, ok) {
@@ -48,7 +51,15 @@ _WEBPUSH_HTML = """
   }
   async function ensureSW() {
     if (!("serviceWorker" in navigator)) throw new Error("Service Worker desteklenmiyor");
-    // iframe kökeninde blob SW (Streamlit PoC)
+    if (SW_URL) {
+      try {
+        const reg = await navigator.serviceWorker.register(SW_URL, { scope: "/" });
+        await navigator.serviceWorker.ready;
+        return reg;
+      } catch (err) {
+        // cross-origin / MIME — blob fallback
+      }
+    }
     const blob = new Blob([SW_BLOB], { type: "application/javascript" });
     const url = URL.createObjectURL(blob);
     const reg = await navigator.serviceWorker.register(url, { scope: "/" });
@@ -58,7 +69,8 @@ _WEBPUSH_HTML = """
   document.getElementById("wp-sub").onclick = async function() {
     try {
       if (!VAPID) throw new Error("VAPID public key yok");
-      if (!window.isSecureContext) throw new Error("HTTPS / localhost gerekli");
+      if (!window.isSecureContext && location.hostname !== "localhost")
+        throw new Error("HTTPS / localhost gerekli");
       const perm = await Notification.requestPermission();
       if (perm !== "granted") throw new Error("Bildirim izni reddedildi");
       const reg = await ensureSW();
@@ -69,8 +81,26 @@ _WEBPUSH_HTML = """
           applicationServerKey: urlBase64ToUint8Array(VAPID)
         });
       }
-      out.value = JSON.stringify(sub.toJSON());
-      setMsg("Abonelik hazır — JSON'u token alanına yapıştırıp kaydedin", true);
+      const json = sub.toJSON();
+      out.value = JSON.stringify(json);
+      if (REG_URL && USERNAME) {
+        const r = await fetch(REG_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: USERNAME,
+            subscription: json,
+            label: "browser-widget"
+          })
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || !data.ok) {
+          throw new Error((data && data.error) || ("register HTTP " + r.status));
+        }
+        setMsg("Abonelik kaydedildi (otomatik register)", true);
+      } else {
+        setMsg("Abonelik hazır — JSON'u token alanına yapıştırın", true);
+      }
     } catch (err) {
       setMsg(String(err && err.message ? err.message : err), false);
     }
@@ -88,7 +118,13 @@ _WEBPUSH_HTML = """
 """
 
 
-def render_webpush_subscribe_widget(*, height: int = 240) -> None:
+def render_webpush_subscribe_widget(
+    *,
+    height: int = 260,
+    username: Optional[str] = None,
+    sw_url: Optional[str] = None,
+    register_url: Optional[str] = None,
+) -> None:
     """Streamlit içinde Web Push abonelik PoC widget'ı."""
     if not vapid_configured():
         components.html(
@@ -99,10 +135,17 @@ def render_webpush_subscribe_widget(*, height: int = 240) -> None:
         return
     app_key = vapid_application_server_key()
     sw_js = load_service_worker_js() or "self.addEventListener('install',()=>self.skipWaiting());"
+    if not sw_url or not register_url:
+        try:
+            from rag.collab_http import collab_http_public_base
+
+            base = collab_http_public_base()
+            sw_url = sw_url or f"{base}/sw.js"
+            register_url = register_url or f"{base}/webpush/register"
+        except Exception:
+            pass
     status = (
-        f"VAPID public: {(vapid_public_key() or '')[:24]}…"
-        if vapid_public_key()
-        else "VAPID public eksik"
+        f"VAPID: {(vapid_public_key() or '')[:20]}… · SW: {sw_url or 'blob'}"
     )
     if not app_key:
         components.html(
@@ -114,6 +157,9 @@ def render_webpush_subscribe_widget(*, height: int = 240) -> None:
     html = (
         _WEBPUSH_HTML.replace("__STATUS__", status)
         .replace("__VAPID__", _js_str(app_key))
+        .replace("__SW_URL__", _js_str(sw_url))
         .replace("__SW_BLOB__", _js_str(sw_js))
+        .replace("__REG_URL__", _js_str(register_url))
+        .replace("__USERNAME__", _js_str(username))
     )
     components.html(html, height=height)

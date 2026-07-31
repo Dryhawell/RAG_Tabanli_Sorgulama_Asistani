@@ -15,9 +15,22 @@ def test_prometheus_observe_and_dump(monkeypatch):
         enabled=True,
     )
     observe_metric("ingest", values={"chunks_added": 3}, enabled=True)
+    observe_metric(
+        "judge_run",
+        values={"mode": "heuristic", "accuracy": 0.9, "ok": True, "soft_fail": False},
+        enabled=True,
+    )
+    observe_metric(
+        "judge_run",
+        values={"mode": "llm", "accuracy": 0.4, "ok": False, "soft_fail": True},
+        enabled=True,
+    )
     body = render_prometheus().decode("utf-8")
     assert "rag_queries_total" in body
     assert "rag_ingest_total" in body
+    assert "rag_judge_accuracy" in body
+    assert "rag_judge_soft_fail_total" in body
+    assert "rag_judge_runs_total" in body
 
 
 def test_record_metric_forwards_to_prometheus(tmp_path, monkeypatch):

@@ -186,6 +186,13 @@ ENABLE_COLLAB_WS = os.getenv("RAG_ENABLE_COLLAB_WS", "0") not in {
 COLLAB_WS_HOST = os.getenv("RAG_COLLAB_WS_HOST", "0.0.0.0")
 COLLAB_WS_PORT = int(os.getenv("RAG_COLLAB_WS_PORT", "8765"))
 COLLAB_WS_PUBLIC_HOST = os.getenv("RAG_COLLAB_WS_PUBLIC_HOST", "localhost")
+# Web Push aynı-origin SW / register HTTP (WS portundan ayrı)
+COLLAB_HTTP_PORT = int(os.getenv("RAG_COLLAB_HTTP_PORT", "8766"))
+ENABLE_COLLAB_HTTP = os.getenv("RAG_ENABLE_COLLAB_HTTP", "1") not in {
+    "0",
+    "false",
+    "False",
+}
 ENABLE_COLLAB_CRDT = os.getenv("RAG_ENABLE_COLLAB_CRDT", "1") not in {
     "0",
     "false",

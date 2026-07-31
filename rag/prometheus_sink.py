@@ -26,6 +26,9 @@ _delete_total = None
 _events_total = None
 _push_revoked_total = None
 _push_prune_total = None
+_judge_accuracy = None
+_judge_soft_fail_total = None
+_judge_runs_total = None
 
 
 def prometheus_available() -> bool:
@@ -44,12 +47,13 @@ def _ensure_metrics():
     global _query_total, _query_latency, _query_gate
     global _ingest_total, _ingest_chunks, _rebuild_total, _delete_total, _events_total
     global _push_revoked_total, _push_prune_total
+    global _judge_accuracy, _judge_soft_fail_total, _judge_runs_total
     if _events_total is not None:
         return
     if not prometheus_available():
         raise RuntimeError("prometheus_client kurulu değil")
 
-    from prometheus_client import Counter, Histogram
+    from prometheus_client import Counter, Gauge, Histogram
 
     _events_total = Counter(
         "rag_events_total",
@@ -84,6 +88,21 @@ def _ensure_metrics():
         "rag_push_token_prune_total",
         "Push token prune ile silinen kayıt sayısı",
         ["kind"],
+    )
+    _judge_accuracy = Gauge(
+        "rag_judge_accuracy",
+        "Son judge koşusu accuracy",
+        ["mode"],
+    )
+    _judge_soft_fail_total = Counter(
+        "rag_judge_soft_fail_total",
+        "Judge soft-fail sayısı",
+        ["mode"],
+    )
+    _judge_runs_total = Counter(
+        "rag_judge_runs_total",
+        "Judge koşu sayısı",
+        ["mode", "ok"],
     )
 
 
@@ -139,6 +158,20 @@ def observe_metric(
                 _push_prune_total.labels(kind="revoked").inc(revoked_n)
             if expired_n:
                 _push_prune_total.labels(kind="expired").inc(expired_n)
+        elif kind == "judge_run":
+            assert _judge_accuracy is not None
+            assert _judge_soft_fail_total is not None
+            assert _judge_runs_total is not None
+            mode = str(vals.get("mode") or "heuristic")
+            ok_label = "1" if vals.get("ok") else "0"
+            _judge_runs_total.labels(mode=mode, ok=ok_label).inc()
+            if vals.get("accuracy") is not None:
+                try:
+                    _judge_accuracy.labels(mode=mode).set(float(vals["accuracy"]))
+                except (TypeError, ValueError):
+                    pass
+            if vals.get("soft_fail"):
+                _judge_soft_fail_total.labels(mode=mode).inc()
 
 
 def render_prometheus() -> bytes:

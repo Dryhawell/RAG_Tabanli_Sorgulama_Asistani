@@ -567,3 +567,61 @@ def test_digest_report_csv_and_tenant_filter(tmp_path, monkeypatch):
     assert summary["total"] == 1
     assert summary["sent"] == 1
 
+
+def test_digest_report_time_and_user_filter(tmp_path, monkeypatch):
+    import json
+
+    from rag.collab_notify_digest import (
+        append_digest_report,
+        digest_report_path,
+        export_digest_report_csv,
+        list_digest_report_users,
+        read_digest_report,
+        summarize_digest_report,
+    )
+
+    monkeypatch.setattr("rag.collab_notify_digest.METADATA_DIR", str(tmp_path))
+    append_digest_report(
+        "alice",
+        {"sent": True, "count": 1, "tenant_id": "acme"},
+        base=str(tmp_path),
+    )
+    append_digest_report(
+        "bob",
+        {"sent": False, "count": 0, "reason": "empty", "tenant_id": "acme"},
+        base=str(tmp_path),
+    )
+    path = digest_report_path(base=str(tmp_path))
+    with open(path, "r", encoding="utf-8") as f:
+        rows = [json.loads(x) for x in f if x.strip()]
+    rows[0]["ts"] = "2026-01-01T12:00:00+00:00"
+    rows[1]["ts"] = "2026-06-01T12:00:00+00:00"
+    with open(path, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+
+    assert list_digest_report_users(base=str(tmp_path), tenant_id="acme") == [
+        "alice",
+        "bob",
+    ]
+    only_alice = read_digest_report(base=str(tmp_path), username="alice")
+    assert len(only_alice) == 1
+    window = read_digest_report(
+        base=str(tmp_path),
+        since="2026-05-01T00:00:00+00:00",
+        until="2026-07-01T00:00:00+00:00",
+    )
+    assert len(window) == 1 and window[0]["username"] == "bob"
+    summary = summarize_digest_report(
+        base=str(tmp_path),
+        username="bob",
+        since="2026-01-01T00:00:00+00:00",
+    )
+    assert summary["total"] == 1
+    csv_text = export_digest_report_csv(
+        base=str(tmp_path),
+        since="2026-01-01T00:00:00+00:00",
+        until="2026-02-01T00:00:00+00:00",
+    )
+    assert "alice" in csv_text and "bob" not in csv_text
+

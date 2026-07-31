@@ -516,6 +516,7 @@ with st.sidebar:
             from rag.collab_notify_digest import (
                 export_digest_report_csv,
                 list_digest_report_tenants,
+                list_digest_report_users,
                 summarize_digest_report,
             )
 
@@ -536,7 +537,35 @@ with st.sidebar:
                     key="digest_report_tenant",
                 )
                 _filter_tid = None if _sel_tenant == "(all)" else _sel_tenant
-                _rep = summarize_digest_report(limit=100, tenant_id=_filter_tid)
+                _user_opts = ["(all)"] + list_digest_report_users(tenant_id=_filter_tid)
+                _sel_user = st.selectbox(
+                    t("collab_digest_report_user"),
+                    _user_opts,
+                    key="digest_report_user",
+                )
+                _filter_user = None if _sel_user == "(all)" else _sel_user
+                _dcols = st.columns(2)
+                with _dcols[0]:
+                    _since = st.text_input(
+                        t("collab_digest_report_since"),
+                        key="digest_report_since",
+                        placeholder="2026-01-01T00:00:00+00:00",
+                    )
+                with _dcols[1]:
+                    _until = st.text_input(
+                        t("collab_digest_report_until"),
+                        key="digest_report_until",
+                        placeholder="2026-12-31T23:59:59+00:00",
+                    )
+                _since_v = _since.strip() or None
+                _until_v = _until.strip() or None
+                _rep = summarize_digest_report(
+                    limit=100,
+                    tenant_id=_filter_tid,
+                    username=_filter_user,
+                    since=_since_v,
+                    until=_until_v,
+                )
                 st.caption(
                     t(
                         "collab_digest_report_summary",
@@ -564,7 +593,13 @@ with st.sidebar:
                         f"sent={_row.get('sent')} · count={_row.get('count')} · "
                         f"reason={_row.get('reason') or '-'}"
                     )
-                _csv = export_digest_report_csv(limit=500, tenant_id=_filter_tid)
+                _csv = export_digest_report_csv(
+                    limit=500,
+                    tenant_id=_filter_tid,
+                    username=_filter_user,
+                    since=_since_v,
+                    until=_until_v,
+                )
                 st.download_button(
                     t("collab_digest_export_csv"),
                     data=_csv,
@@ -587,6 +622,18 @@ with st.sidebar:
             if vapid_configured():
                 with st.expander(t("collab_push_browser"), expanded=False):
                     st.caption(t("collab_push_browser_help"))
+                    try:
+                        from rag.collab_http import collab_http_public_base
+
+                        _http_base = collab_http_public_base()
+                        st.markdown(
+                            t(
+                                "collab_push_pwa_link",
+                                url=f"{_http_base}/webpush?user={_nc_user}",
+                            )
+                        )
+                    except Exception:
+                        _http_base = ""
                     st.code(vapid_public_key()[:64] + ("…" if len(vapid_public_key()) > 64 else ""))
                     _sw = load_service_worker_js()
                     if _sw:
@@ -601,7 +648,7 @@ with st.sidebar:
                     try:
                         from rag.webpush_browser import render_webpush_subscribe_widget
 
-                        render_webpush_subscribe_widget()
+                        render_webpush_subscribe_widget(username=_nc_user)
                     except Exception as _wp_exc:
                         st.caption(f"{t('collab_push_browser_error')}: {_wp_exc}")
             else:
@@ -1060,6 +1107,16 @@ with st.sidebar:
                                 avg=f"{float(jg.get('avg_accuracy') or 0):.2%}",
                             )
                         )
+                        st.caption(
+                            t(
+                                "metrics_judge_soft_fail_rate",
+                                rate=f"{float(jg.get('soft_fail_rate') or 0):.0%}",
+                            )
+                        )
+                        _accs = jg.get("recent_accuracies") or []
+                        if len(_accs) >= 2:
+                            st.caption(t("metrics_judge_trend"))
+                            st.line_chart({"accuracy": _accs})
                     if summary["recent"]:
                         st.markdown("**Son kayıtlar**")
                         for row in reversed(summary["recent"]):
