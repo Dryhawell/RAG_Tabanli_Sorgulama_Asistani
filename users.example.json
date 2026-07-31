@@ -3,13 +3,15 @@
     "password": "admin",
     "role": "admin",
     "tenant_id": "default",
-    "timezone": "Europe/Istanbul"
+    "timezone": "Europe/Istanbul",
+    "quiet_hours": "22:00-07:00"
   },
   "demo": {
     "password": "demo",
     "role": "user",
     "tenant_id": "default",
     "timezone": "Europe/Istanbul",
+    "quiet_hours": "23:00-08:00",
     "allowed_folders": ["genel", "urun"],
     "allowed_tags": ["public"]
   }

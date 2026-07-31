@@ -146,6 +146,33 @@ def _zoneinfo(name: str):
         return timezone.utc
 
 
+def resolve_quiet_hours_spec(
+    *,
+    quiet_spec: Optional[str] = None,
+    username: Optional[str] = None,
+) -> Optional[str]:
+    """Öncelik: açık spec > kullanıcı profili quiet_hours > global NOTIFY_DIGEST_QUIET_HOURS.
+
+    Açık spec boş / off / none / disabled ise quiet hours kapalı (fallback yok).
+    """
+    if quiet_spec is not None:
+        s = str(quiet_spec).strip()
+        if not s or s.lower() in {"off", "none", "disabled"}:
+            return None
+        return s
+    if username:
+        try:
+            from rag.auth import get_user_quiet_hours
+
+            user_qh = get_user_quiet_hours(username)
+            if user_qh:
+                return user_qh
+        except Exception:
+            pass
+    global_qh = (NOTIFY_DIGEST_QUIET_HOURS or "").strip()
+    return global_qh or None
+
+
 def is_quiet_hours(
     *,
     now: Optional[datetime] = None,
@@ -155,7 +182,8 @@ def is_quiet_hours(
     username: Optional[str] = None,
 ) -> bool:
     """Yerel (kullanıcı/tenant) saati quiet hours aralığındaysa True."""
-    bounds = parse_quiet_hours(quiet_spec)
+    resolved = resolve_quiet_hours_spec(quiet_spec=quiet_spec, username=username)
+    bounds = parse_quiet_hours(resolved)
     if bounds is None:
         return False
     start, end = bounds
@@ -688,17 +716,25 @@ def send_digest_email(
         tenant_id=tenant_id,
         username=username,
     )
-    if not ignore_quiet_hours and is_quiet_hours(
+    resolved_qh = resolve_quiet_hours_spec(quiet_spec=quiet_hours, username=username)
+    in_quiet = (not ignore_quiet_hours) and is_quiet_hours(
         quiet_spec=quiet_hours,
         timezone_name=tz_resolved,
         tenant_id=tenant_id,
         username=username,
-    ):
+    )
+    try:
+        from app.config import NOTIFY_PUSH_URL
+    except ImportError:
+        NOTIFY_PUSH_URL = ""
+    push_configured = bool((NOTIFY_PUSH_URL or "").strip())
+    # Push yoksa quiet hours'ta erken çık (cihaz override yok).
+    if in_quiet and not push_configured:
         return {
             "sent": False,
             "count": 0,
             "reason": "quiet_hours",
-            "quiet_hours": quiet_hours or NOTIFY_DIGEST_QUIET_HOURS,
+            "quiet_hours": resolved_qh,
             "timezone": tz_resolved,
             "tenant_id": tenant_id,
         }
@@ -722,31 +758,30 @@ def send_digest_email(
     email_ok = False
     webhook_ok = False
     push_ok = False
-    if NOTIFY_SMTP_HOST:
-        from rag.collab_notify_dispatch import dispatch_digest_email
+    # E-posta/webhook: kullanıcı quiet hours'ta atlanır.
+    # Push: cihaz bazlı sessiz saat / geofence override ile filtrelenir.
+    if not in_quiet:
+        if NOTIFY_SMTP_HOST:
+            from rag.collab_notify_dispatch import dispatch_digest_email
 
-        email_ok = dispatch_digest_email(
-            username,
-            events,
-            mentions_only=mentions_only,
-            group_by=group_by,
-            min_per_workspace=min_per_workspace,
-        )
-    if NOTIFY_WEBHOOK_URL:
-        from rag.collab_notify_dispatch import dispatch_digest_webhook
+            email_ok = dispatch_digest_email(
+                username,
+                events,
+                mentions_only=mentions_only,
+                group_by=group_by,
+                min_per_workspace=min_per_workspace,
+            )
+        if NOTIFY_WEBHOOK_URL:
+            from rag.collab_notify_dispatch import dispatch_digest_webhook
 
-        webhook_ok = dispatch_digest_webhook(
-            username,
-            events,
-            mentions_only=mentions_only,
-            group_by=group_by,
-            min_per_workspace=min_per_workspace,
-        )
-    try:
-        from app.config import NOTIFY_PUSH_URL
-    except ImportError:
-        NOTIFY_PUSH_URL = ""
-    if NOTIFY_PUSH_URL:
+            webhook_ok = dispatch_digest_webhook(
+                username,
+                events,
+                mentions_only=mentions_only,
+                group_by=group_by,
+                min_per_workspace=min_per_workspace,
+            )
+    if push_configured:
         from rag.collab_notify_push import dispatch_digest_push
 
         push_ok = dispatch_digest_push(
@@ -755,11 +790,15 @@ def send_digest_email(
             mentions_only=mentions_only,
             group_by=group_by,
             min_per_workspace=min_per_workspace,
+            base=base,
         )
-    if not NOTIFY_SMTP_HOST and not NOTIFY_WEBHOOK_URL and not NOTIFY_PUSH_URL:
+    if not NOTIFY_SMTP_HOST and not NOTIFY_WEBHOOK_URL and not push_configured:
         return {"sent": False, "count": len(filtered), "reason": "no_channel"}
     sent = email_ok or webhook_ok or push_ok
-    reason = None if sent else "send_failed"
+    if not sent and in_quiet:
+        reason = "quiet_hours"
+    else:
+        reason = None if sent else "send_failed"
     return {
         "sent": sent,
         "count": len(filtered),
@@ -767,6 +806,7 @@ def send_digest_email(
         "webhook": webhook_ok,
         "push": push_ok,
         "reason": reason,
+        "quiet_hours": resolved_qh,
         "mentions_only": prep["mentions_only"],
         "group_by": prep["group_by"],
         "min_per_workspace": prep.get("min_per_workspace"),
@@ -788,27 +828,15 @@ def send_digest_all(
     timezone_name: Optional[str] = None,
     tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """Her kullanıcı için profil quiet_hours / timezone ile digest dener."""
     tz_resolved = resolve_digest_timezone(
         timezone_name=timezone_name,
         tenant_id=tenant_id,
     )
-    if not ignore_quiet_hours and is_quiet_hours(
-        quiet_spec=quiet_hours,
-        timezone_name=tz_resolved,
-        tenant_id=tenant_id,
-    ):
-        return {
-            "users": [],
-            "sent": 0,
-            "results": {},
-            "reason": "quiet_hours",
-            "quiet_hours": quiet_hours or NOTIFY_DIGEST_QUIET_HOURS,
-            "timezone": tz_resolved,
-            "tenant_id": tenant_id,
-        }
     users = list_digest_target_users(hours=hours, base=base)
     results: Dict[str, Any] = {}
     sent = 0
+    skipped_quiet = 0
     for user in users:
         r = send_digest_email(
             user,
@@ -817,17 +845,27 @@ def send_digest_all(
             mentions_only=mentions_only,
             group_by=group_by,
             min_per_workspace=min_per_workspace,
-            ignore_quiet_hours=True,
-            timezone_name=tz_resolved,
+            ignore_quiet_hours=ignore_quiet_hours,
+            quiet_hours=quiet_hours,
+            timezone_name=timezone_name,
             tenant_id=tenant_id,
         )
         results[user] = r
         if r.get("sent"):
             sent += 1
-    return {
+        elif r.get("reason") == "quiet_hours":
+            skipped_quiet += 1
+    out: Dict[str, Any] = {
         "users": users,
         "sent": sent,
         "results": results,
         "timezone": tz_resolved,
         "tenant_id": tenant_id,
+        "skipped_quiet_hours": skipped_quiet,
     }
+    if not users:
+        out["reason"] = "empty"
+    elif sent == 0 and skipped_quiet == len(users):
+        out["reason"] = "quiet_hours"
+        out["quiet_hours"] = quiet_hours or NOTIFY_DIGEST_QUIET_HOURS
+    return out

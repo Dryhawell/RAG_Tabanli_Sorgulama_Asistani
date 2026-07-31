@@ -28,6 +28,24 @@ jobs:
           pip install -r requirements.txt
       - name: Fast tests
         run: pytest -q -m "not slow"
+      - name: LoRA rollback PR status artifacts
+        env:
+          LORA_PR_STATUS_POST: "0"
+          LORA_PR_COMMENT_POST: "0"
+          LORA_PR_STATUS_FAIL_ON_ROLLBACK: "0"
+        run: |
+          python scripts/ci_lora_rollback.py || true
+          python scripts/ci_lora_pr_status.py
+      - name: Upload LoRA PR status
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lora-pr-status-${{ github.run_id }}
+          path: |
+            metadata/lora_rollback.json
+            metadata/lora_pr_status.json
+            metadata/lora_pr_comment.md
+          if-no-files-found: ignore
       - name: Embed pairs smoke
         run: |
           python -m rag.cli embed-pipeline --pairs-only \

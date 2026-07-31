@@ -257,3 +257,27 @@ def test_send_digest_skips_quiet_hours(monkeypatch):
     result = send_digest_email("alice", quiet_hours="22:00-07:00")
     assert result["sent"] is False
     assert result["reason"] == "quiet_hours"
+
+
+def test_quiet_hours_user_profile_spec(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    from rag.auth import update_user_quiet_hours
+    from rag.collab_notify_digest import is_quiet_hours, resolve_quiet_hours_spec
+
+    users_path = str(tmp_path / "users.json")
+    with open(users_path, "w", encoding="utf-8") as f:
+        f.write('{"alice": {"password_hash": "x$y", "role": "user", "tenant_id": "default"}}')
+    monkeypatch.setattr("rag.auth.USERS_PATH", users_path)
+    monkeypatch.setattr(
+        "rag.collab_notify_digest.NOTIFY_DIGEST_QUIET_HOURS",
+        "00:00-01:00",
+    )
+    update_user_quiet_hours("alice", "22:00-07:00", path=users_path)
+    assert resolve_quiet_hours_spec(username="alice") == "22:00-07:00"
+    night = datetime(2026, 1, 1, 23, 0, tzinfo=timezone.utc)
+    assert is_quiet_hours(now=night, username="alice", timezone_name="UTC") is True
+    # açık off quiet hours'ı kapatır
+    assert resolve_quiet_hours_spec(quiet_spec="off", username="alice") is None
+    assert is_quiet_hours(now=night, quiet_spec="off", username="alice") is False
+

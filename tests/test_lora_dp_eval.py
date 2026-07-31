@@ -196,7 +196,33 @@ def test_suggest_lora_rollback():
     assert suggest_lora_rollback(ok_report)["should_rollback"] is False
 
 
-def test_apply_lora_rollback_env_and_dry_run(tmp_path):
+def test_build_lora_pr_status(tmp_path):
+    from rag.lora_dp_eval import build_lora_pr_status, write_lora_pr_status
+
+    bad = build_lora_pr_status(
+        {
+            "should_rollback": True,
+            "reason": "gate_failed",
+            "regression_count": 2,
+            "delta_accuracy": -0.1,
+            "actions": ["rebuild"],
+            "rebuild_command": "python -m rag.cli rebuild --embedding mini-en",
+        }
+    )
+    assert bad["state"] == "failure"
+    assert "rollback" in bad["description"].lower() or "LoRA" in bad["description"]
+    assert "### LoRA rollback status" in bad["comment_markdown"]
+
+    ok = build_lora_pr_status({"should_rollback": False, "reason": "ok", "regression_count": 0})
+    assert ok["state"] == "success"
+
+    status_path = str(tmp_path / "lora_pr_status.json")
+    comment_path = str(tmp_path / "lora_pr_comment.md")
+    written = write_lora_pr_status(bad, status_path=status_path, comment_path=comment_path)
+    assert written["state"] == "failure"
+    assert (tmp_path / "lora_pr_status.json").exists()
+    assert "should_rollback" in (tmp_path / "lora_pr_comment.md").read_text(encoding="utf-8")
+
     from rag.lora_dp_eval import execute_lora_rollback
 
     report = {

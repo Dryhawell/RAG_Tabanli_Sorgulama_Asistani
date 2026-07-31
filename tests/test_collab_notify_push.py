@@ -97,3 +97,78 @@ def test_token_ttl_revoke_and_prune(tmp_path, monkeypatch):
     assert revoke_device_token("carol", "tok-new") is True
     devices = summarize_user_devices("carol")
     assert any(d.get("revoked") for d in devices)
+
+
+def test_device_quiet_hours_and_geofence(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    from rag.collab_notify_push import (
+        device_inside_geofence,
+        dispatch_push,
+        haversine_m,
+        is_device_in_quiet_hours,
+        register_device_token,
+        update_device_location,
+    )
+
+    monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_URL", "http://push.test/send")
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_PROVIDER", "generic")
+    monkeypatch.setattr(
+        "rag.collab_notify_digest.NOTIFY_DIGEST_QUIET_HOURS",
+        "22:00-07:00",
+    )
+
+    assert haversine_m(41.0, 29.0, 41.0, 29.0) < 1.0
+
+    register_device_token(
+        "eve",
+        "tok-qh",
+        quiet_hours="off",
+        geofence_lat=41.0,
+        geofence_lon=29.0,
+        geofence_radius_m=500,
+        last_lat=41.0,
+        last_lon=29.0,
+    )
+    night = datetime(2026, 1, 1, 23, 30, tzinfo=timezone.utc)
+    # cihaz off → quiet değil
+    rows = list_device_tokens("eve")
+    assert is_device_in_quiet_hours(rows[0], "eve", now=night, timezone_name="UTC") is False
+
+    register_device_token(
+        "eve",
+        "tok-geo",
+        quiet_hours="22:00-07:00",
+        geofence_lat=41.0,
+        geofence_lon=29.0,
+        geofence_radius_m=200,
+        last_lat=41.0,
+        last_lon=29.0,
+    )
+    rows2 = [r for r in list_device_tokens("eve") if r["token"] == "tok-geo"]
+    assert device_inside_geofence(rows2[0]) is True
+    assert is_device_in_quiet_hours(rows2[0], "eve", now=night, timezone_name="UTC") is True
+    # geofence dışı → quiet hours yok (seyahat)
+    assert update_device_location("eve", "tok-geo", lat=42.0, lon=30.0) is True
+    rows3 = [r for r in list_device_tokens("eve") if r["token"] == "tok-geo"]
+    assert device_inside_geofence(rows3[0]) is False
+    assert is_device_in_quiet_hours(rows3[0], "eve", now=night, timezone_name="UTC") is False
+
+    calls = []
+
+    class FakeResp:
+        status_code = 200
+
+    def fake_post(url, json=None, headers=None, timeout=10):
+        calls.append(json)
+        return FakeResp()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    # tok-geo quiet değil (dışarıda), tok-qh off → ikisi de gidebilir
+    assert dispatch_push("eve", title="t", body="b") is True
+    assert calls
+    tok_list = [t["token"] for t in calls[0]["tokens"]]
+    assert "tok-qh" in tok_list
+    assert "tok-geo" in tok_list
+

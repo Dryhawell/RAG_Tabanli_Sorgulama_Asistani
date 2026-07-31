@@ -264,6 +264,17 @@ def get_user_timezone(username: str, path: Optional[str] = None) -> Optional[str
     return tz or None
 
 
+def get_user_quiet_hours(username: str, path: Optional[str] = None) -> Optional[str]:
+    """Kullanıcı profilindeki quiet hours (HH:MM-HH:MM, yoksa None)."""
+    users = ensure_users_file(path or USERS_PATH)
+    uname = _safe_username(username)
+    meta = users.get(uname)
+    if not isinstance(meta, dict):
+        return None
+    qh = str(meta.get("quiet_hours") or "").strip()
+    return qh or None
+
+
 def update_user_timezone(
     username: str,
     timezone_name: Optional[str],
@@ -284,6 +295,47 @@ def update_user_timezone(
         meta["timezone"] = tz
     else:
         meta.pop("timezone", None)
+    users[uname] = meta
+    save_users(users, users_path)
+    return user_from_meta(uname, meta)
+
+
+def _validate_quiet_hours_value(quiet_hours: str) -> str:
+    """HH:MM-HH:MM veya off/none/disabled; geçersizse ValueError."""
+    qh = (quiet_hours or "").strip()
+    if not qh:
+        return ""
+    if qh.lower() in {"off", "none", "disabled"}:
+        return qh.lower()
+    m = re.match(r"^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$", qh)
+    if not m:
+        raise ValueError("quiet_hours HH:MM-HH:MM formatında olmalı (ör. 22:00-07:00)")
+    h1, m1, h2, m2 = (int(m.group(i)) for i in range(1, 5))
+    if not (0 <= h1 <= 23 and 0 <= h2 <= 23 and 0 <= m1 <= 59 and 0 <= m2 <= 59):
+        raise ValueError("quiet_hours saat/dakika aralığı geçersiz")
+    return f"{h1:02d}:{m1:02d}-{h2:02d}:{m2:02d}"
+
+
+def update_user_quiet_hours(
+    username: str,
+    quiet_hours: Optional[str],
+    *,
+    path: Optional[str] = None,
+) -> User:
+    """Kullanıcı başına özel quiet hours aralığını kaydeder (HH:MM-HH:MM)."""
+    users_path = path or USERS_PATH
+    users = ensure_users_file(users_path)
+    uname = _safe_username(username)
+    if uname not in users:
+        raise ValueError("Kullanıcı bulunamadı")
+    meta = users[uname]
+    if not isinstance(meta, dict):
+        raise ValueError("Geçersiz kullanıcı kaydı")
+    qh = _validate_quiet_hours_value(quiet_hours or "")
+    if qh:
+        meta["quiet_hours"] = qh
+    else:
+        meta.pop("quiet_hours", None)
     users[uname] = meta
     save_users(users, users_path)
     return user_from_meta(uname, meta)

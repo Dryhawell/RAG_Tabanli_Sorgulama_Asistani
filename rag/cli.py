@@ -312,6 +312,12 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
             os_name=args.push_os_name,
             os_version=args.push_os_version,
             app_version=args.push_app_version,
+            quiet_hours=args.push_quiet_hours,
+            geofence_lat=args.push_geofence_lat,
+            geofence_lon=args.push_geofence_lon,
+            geofence_radius_m=args.push_geofence_radius,
+            last_lat=args.push_last_lat,
+            last_lon=args.push_last_lon,
             ttl_days=args.push_ttl_days,
         )
         print(json.dumps(rec, ensure_ascii=False))
@@ -1045,6 +1051,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_cnot.add_argument("--push-os-name", default=None, help="OS adı (iOS/Android)")
     p_cnot.add_argument("--push-os-version", default=None, help="OS sürümü")
     p_cnot.add_argument("--push-app-version", default=None, help="Uygulama sürümü")
+    p_cnot.add_argument(
+        "--push-quiet-hours",
+        default=None,
+        help="Cihaz quiet hours override (HH:MM-HH:MM veya off)",
+    )
+    p_cnot.add_argument("--push-geofence-lat", type=float, default=None, help="Geofence enlem")
+    p_cnot.add_argument("--push-geofence-lon", type=float, default=None, help="Geofence boylam")
+    p_cnot.add_argument(
+        "--push-geofence-radius",
+        type=float,
+        default=None,
+        help="Geofence yarıçap (metre)",
+    )
+    p_cnot.add_argument("--push-last-lat", type=float, default=None, help="Son konum enlem")
+    p_cnot.add_argument("--push-last-lon", type=float, default=None, help="Son konum boylam")
     p_cnot.add_argument("--push-ttl-days", type=int, default=None, help="Token TTL (gün)")
     p_cnot.add_argument(
         "--list-push-devices",

@@ -535,7 +535,8 @@ with st.sidebar:
                     st.caption(
                         f"{_dv.get('device_name') or _dv.get('label') or '-'} · "
                         f"{_dv.get('platform')} · {_dv.get('token_preview')} · "
-                        f"{_os} · last={_dv.get('last_seen_at') or '-'} · {_status}"
+                        f"{_os} · qh={_dv.get('quiet_hours') or '-'} · "
+                        f"last={_dv.get('last_seen_at') or '-'} · {_status}"
                     )
                     if not _dv.get("revoked") and st.button(
                         t("collab_push_revoke"),
@@ -557,21 +558,49 @@ with st.sidebar:
             _new_os = st.text_input(t("collab_push_os_name"), key="push_os_input")
             _new_osv = st.text_input(t("collab_push_os_version"), key="push_osv_input")
             _new_appv = st.text_input(t("collab_push_app_version"), key="push_appv_input")
+            _new_qh = st.text_input(
+                t("collab_push_quiet_hours"),
+                key="push_qh_input",
+                placeholder="22:00-07:00 | off",
+                help=t("collab_push_quiet_hours_help"),
+            )
+            _geo_cols = st.columns(3)
+            with _geo_cols[0]:
+                _geo_lat = st.text_input(t("collab_push_geofence_lat"), key="push_geo_lat")
+            with _geo_cols[1]:
+                _geo_lon = st.text_input(t("collab_push_geofence_lon"), key="push_geo_lon")
+            with _geo_cols[2]:
+                _geo_r = st.text_input(
+                    t("collab_push_geofence_radius"),
+                    key="push_geo_r",
+                    placeholder="500",
+                )
             cpush1, cpush2 = st.columns(2)
             with cpush1:
                 if st.button(t("collab_push_register"), use_container_width=True, key="push_reg"):
                     if _new_tok.strip():
-                        register_device_token(
-                            _nc_user,
-                            _new_tok.strip(),
+                        _kw = dict(
                             platform=_new_plat,
                             label=_new_label or None,
                             device_name=_new_dname or None,
                             os_name=_new_os or None,
                             os_version=_new_osv or None,
                             app_version=_new_appv or None,
+                            quiet_hours=_new_qh.strip() if _new_qh.strip() else None,
                         )
-                        st.rerun()
+                        try:
+                            if _geo_lat.strip() and _geo_lon.strip():
+                                _kw["geofence_lat"] = float(_geo_lat)
+                                _kw["geofence_lon"] = float(_geo_lon)
+                                if _geo_r.strip():
+                                    _kw["geofence_radius_m"] = float(_geo_r)
+                                _kw["last_lat"] = float(_geo_lat)
+                                _kw["last_lon"] = float(_geo_lon)
+                        except ValueError:
+                            st.warning(t("collab_push_geofence_invalid"))
+                        else:
+                            register_device_token(_nc_user, _new_tok.strip(), **_kw)
+                            st.rerun()
                     else:
                         st.warning(t("collab_push_token_required"))
             with cpush2:
@@ -662,6 +691,7 @@ with st.sidebar:
         if ENABLE_TENANTS:
             st.caption(f"Tenant: `{current_user.tenant_id}`")
         from rag.auth import get_user_timezone, update_user_timezone
+        from rag.auth import get_user_quiet_hours, update_user_quiet_hours
 
         _cur_tz = get_user_timezone(current_user.username) or ""
         _tz_opts = [
@@ -685,6 +715,28 @@ with st.sidebar:
         if st.button(t("account_timezone_save"), use_container_width=True, key="save_tz"):
             update_user_timezone(current_user.username, _new_tz or None)
             st.success(t("account_timezone_saved", tz=_new_tz or "default"))
+        _cur_qh = get_user_quiet_hours(current_user.username) or ""
+        _new_qh = st.text_input(
+            t("account_quiet_hours"),
+            value=_cur_qh,
+            placeholder="22:00-07:00",
+            key="account_quiet_hours_input",
+            help=t("account_quiet_hours_help"),
+        )
+        if st.button(t("account_quiet_hours_save"), use_container_width=True, key="save_qh"):
+            try:
+                update_user_quiet_hours(
+                    current_user.username,
+                    _new_qh.strip() or None,
+                )
+                st.success(
+                    t(
+                        "account_quiet_hours_saved",
+                        qh=_new_qh.strip() or t("account_quiet_hours_default"),
+                    )
+                )
+            except ValueError as exc:
+                st.error(str(exc))
         if ws.shared:
             st.caption("İndeks paylaşımlı (aynı tenant içindeki kullanıcılar).")
         else:

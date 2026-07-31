@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from app.config import (
@@ -50,6 +51,125 @@ def device_tokens_path(base: Optional[str] = None) -> str:
     return os.path.join(root, "collab", "push_tokens.jsonl")
 
 
+def _normalize_quiet_hours_field(quiet_hours: Optional[str]) -> Optional[str]:
+    if quiet_hours is None:
+        return None
+    qh = str(quiet_hours).strip()
+    if not qh:
+        return "off"
+    return qh
+
+
+def _geofence_dict(
+    lat: Optional[float],
+    lon: Optional[float],
+    radius_m: Optional[float],
+) -> Optional[Dict[str, float]]:
+    if lat is None or lon is None:
+        return None
+    return {
+        "lat": float(lat),
+        "lon": float(lon),
+        "radius_m": float(radius_m if radius_m is not None else 500.0),
+    }
+
+
+def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """İki WGS84 nokta arası metre cinsinden mesafe."""
+    r = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlmb = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+
+
+def device_inside_geofence(row: Dict[str, Any]) -> Optional[bool]:
+    """Geofence + last_location varsa içeride mi; yapılandırma yoksa None."""
+    geo = row.get("geofence")
+    loc = row.get("last_location")
+    if not isinstance(geo, dict) or not isinstance(loc, dict):
+        return None
+    try:
+        glat = float(geo["lat"])
+        glon = float(geo["lon"])
+        radius = float(geo.get("radius_m") or 500.0)
+        llat = float(loc["lat"])
+        llon = float(loc["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return haversine_m(glat, glon, llat, llon) <= max(1.0, radius)
+
+
+def resolve_device_quiet_spec(
+    row: Dict[str, Any],
+    username: str,
+) -> Tuple[Optional[str], str]:
+    """(quiet_spec, source). source: device|device_off|user_global."""
+    if "quiet_hours" in row and row.get("quiet_hours") is not None:
+        qh = str(row.get("quiet_hours") or "").strip()
+        if not qh or qh.lower() in {"off", "none", "disabled"}:
+            return None, "device_off"
+        return qh, "device"
+    from rag.collab_notify_digest import resolve_quiet_hours_spec
+
+    return resolve_quiet_hours_spec(username=username), "user_global"
+
+
+def is_device_in_quiet_hours(
+    row: Dict[str, Any],
+    username: str,
+    *,
+    now: Optional[datetime] = None,
+    timezone_name: Optional[str] = None,
+) -> bool:
+    """Cihaz sessiz saatte mi?
+
+    Geofence dışı (seyahat): quiet hours uygulanmaz → False.
+    Cihaz quiet_hours=off: False.
+    Cihaz HH:MM-HH:MM: o aralık.
+    Aksi halde kullanıcı/global quiet hours.
+    """
+    inside = device_inside_geofence(row)
+    if inside is False:
+        return False
+    spec, _src = resolve_device_quiet_spec(row, username)
+    from rag.collab_notify_digest import is_quiet_hours
+
+    if spec is None:
+        # açık kapalı (device_off) veya profil/global yok
+        if "quiet_hours" in row and row.get("quiet_hours") is not None:
+            return False
+        return is_quiet_hours(
+            now=now,
+            quiet_spec=None,
+            timezone_name=timezone_name,
+            username=username,
+        )
+    return is_quiet_hours(
+        now=now,
+        quiet_spec=spec,
+        timezone_name=timezone_name,
+        username=username,
+    )
+
+
+def filter_deliverable_tokens(
+    username: str,
+    tokens: List[Dict[str, Any]],
+    *,
+    now: Optional[datetime] = None,
+    ignore_quiet_hours: bool = False,
+) -> List[Dict[str, Any]]:
+    if ignore_quiet_hours:
+        return list(tokens)
+    return [
+        row
+        for row in tokens
+        if not is_device_in_quiet_hours(row, username, now=now)
+    ]
+
+
 def register_device_token(
     username: str,
     token: str,
@@ -60,10 +180,16 @@ def register_device_token(
     os_name: Optional[str] = None,
     os_version: Optional[str] = None,
     app_version: Optional[str] = None,
+    quiet_hours: Optional[str] = None,
+    geofence_lat: Optional[float] = None,
+    geofence_lon: Optional[float] = None,
+    geofence_radius_m: Optional[float] = None,
+    last_lat: Optional[float] = None,
+    last_lon: Optional[float] = None,
     ttl_days: Optional[int] = None,
     base: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Kullanıcı cihaz token'ını kaydeder (TTL + cihaz meta)."""
+    """Kullanıcı cihaz token'ını kaydeder (TTL + cihaz meta + quiet/geofence)."""
     user = (username or "").strip()
     tok = (token or "").strip()
     if not user or not tok:
@@ -71,7 +197,7 @@ def register_device_token(
     days = int(ttl_days if ttl_days is not None else NOTIFY_PUSH_TOKEN_TTL_DAYS)
     now = _utcnow()
     expires = now + timedelta(days=max(1, days))
-    record = {
+    record: Dict[str, Any] = {
         "username": user,
         "token": tok,
         "platform": (platform or "fcm").strip().lower(),
@@ -85,6 +211,17 @@ def register_device_token(
         "last_seen_at": now.isoformat(),
         "revoked": False,
     }
+    if quiet_hours is not None:
+        record["quiet_hours"] = _normalize_quiet_hours_field(quiet_hours)
+    geo = _geofence_dict(geofence_lat, geofence_lon, geofence_radius_m)
+    if geo is not None:
+        record["geofence"] = geo
+    if last_lat is not None and last_lon is not None:
+        record["last_location"] = {
+            "lat": float(last_lat),
+            "lon": float(last_lon),
+            "updated_at": now.isoformat(),
+        }
     path = device_tokens_path(base=base)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     rows = _read_all_tokens(base=base)
@@ -95,16 +232,85 @@ def register_device_token(
             str(row.get("username") or "").strip().lower() == user.lower()
             and str(row.get("token") or "") == tok
         ):
-            # created_at koru
+            # created_at koru; quiet/geofence verilmezse eski değer kalsın
             created = row.get("created_at") or record["created_at"]
+            preserved_qh = row.get("quiet_hours") if "quiet_hours" not in record else None
+            preserved_geo = row.get("geofence") if "geofence" not in record else None
+            preserved_loc = row.get("last_location") if "last_location" not in record else None
             row.update(record)
             row["created_at"] = created
+            if preserved_qh is not None and "quiet_hours" not in record:
+                row["quiet_hours"] = preserved_qh
+            if preserved_geo is not None and "geofence" not in record:
+                row["geofence"] = preserved_geo
+            if preserved_loc is not None and "last_location" not in record:
+                row["last_location"] = preserved_loc
             updated = True
+            record = row
         new_rows.append(row)
     if not updated:
         new_rows.append(record)
     _write_all_tokens(new_rows, base=base)
     return record
+
+
+def update_device_location(
+    username: str,
+    token: str,
+    *,
+    lat: float,
+    lon: float,
+    base: Optional[str] = None,
+) -> bool:
+    """Cihaz son konumunu günceller (geofence değerlendirmesi için)."""
+    user_key = (username or "").strip().lower()
+    tok = (token or "").strip()
+    rows = _read_all_tokens(base=base)
+    changed = False
+    now = _utcnow_iso()
+    for row in rows:
+        if (
+            str(row.get("username") or "").strip().lower() == user_key
+            and str(row.get("token") or "") == tok
+            and not row.get("revoked")
+        ):
+            row["last_location"] = {
+                "lat": float(lat),
+                "lon": float(lon),
+                "updated_at": now,
+            }
+            row["last_seen_at"] = now
+            changed = True
+    if changed:
+        _write_all_tokens(rows, base=base)
+    return changed
+
+
+def update_device_quiet_hours(
+    username: str,
+    token: str,
+    quiet_hours: Optional[str],
+    *,
+    base: Optional[str] = None,
+) -> bool:
+    """Cihaz bazlı quiet hours override (off = kapat)."""
+    user_key = (username or "").strip().lower()
+    tok = (token or "").strip()
+    rows = _read_all_tokens(base=base)
+    changed = False
+    for row in rows:
+        if (
+            str(row.get("username") or "").strip().lower() == user_key
+            and str(row.get("token") or "") == tok
+        ):
+            if quiet_hours is None:
+                row.pop("quiet_hours", None)
+            else:
+                row["quiet_hours"] = _normalize_quiet_hours_field(quiet_hours)
+            changed = True
+    if changed:
+        _write_all_tokens(rows, base=base)
+    return changed
 
 
 def touch_device_last_seen(
@@ -250,6 +456,9 @@ def summarize_user_devices(
                 "os_name": row.get("os_name"),
                 "os_version": row.get("os_version"),
                 "app_version": row.get("app_version"),
+                "quiet_hours": row.get("quiet_hours"),
+                "geofence": row.get("geofence"),
+                "last_location": row.get("last_location"),
                 "created_at": row.get("created_at"),
                 "expires_at": row.get("expires_at"),
                 "last_seen_at": row.get("last_seen_at"),
@@ -321,6 +530,7 @@ def dispatch_push(
     body: str,
     data: Optional[Dict[str, Any]] = None,
     base: Optional[str] = None,
+    ignore_quiet_hours: bool = False,
 ) -> bool:
     """Kayıtlı (süresi dolmamış) cihaz token'larına push gönderir."""
     url = (NOTIFY_PUSH_URL or "").strip()
@@ -329,6 +539,14 @@ def dispatch_push(
     tokens = list_device_tokens(username, include_expired=False, base=base)
     if not tokens:
         tokens = [{"username": username, "token": "", "platform": "generic"}]
+    else:
+        tokens = filter_deliverable_tokens(
+            username,
+            tokens,
+            ignore_quiet_hours=ignore_quiet_hours,
+        )
+        if not tokens:
+            return False
     try:
         import requests
 

@@ -49,6 +49,11 @@ jobs:
           LORA_DIR: ${{ inputs.lora_dir || 'models/lora-dp-embed' }}
           EMBEDDING: ${{ inputs.embedding || 'mini-en' }}
         run: python scripts/ci_lora_rollback.py
+      - name: PR status / comment artifacts
+        env:
+          LORA_PR_STATUS_POST: "0"
+          LORA_PR_COMMENT_POST: "0"
+        run: python scripts/ci_lora_pr_status.py
       - name: Upload rollback artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -57,4 +62,6 @@ jobs:
           path: |
             metadata/lora_rollback.json
             metadata/lora_rollback.env
+            metadata/lora_pr_status.json
+            metadata/lora_pr_comment.md
           if-no-files-found: ignore

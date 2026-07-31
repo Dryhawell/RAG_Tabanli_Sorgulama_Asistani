@@ -468,3 +468,79 @@ def run_lora_dp_eval_report(
         )
         report["rollback_execution"] = exec_result
     return report
+
+
+def build_lora_pr_status(
+    suggestion: Optional[Dict[str, Any]] = None,
+    *,
+    report: Optional[Dict[str, Any]] = None,
+    context: str = "lora/rollback",
+) -> Dict[str, Any]:
+    """GitHub commit status / check özeti üretir."""
+    sug = suggestion or (report or {}).get("rollback_suggestion") or {}
+    if report and not sug:
+        sug = suggest_lora_rollback(report)
+    should = bool(sug.get("should_rollback"))
+    state = "failure" if should else "success"
+    reason = sug.get("reason") or ("gate_failed" if should else "ok")
+    desc = (
+        f"LoRA rollback önerilir ({reason}, regressions={sug.get('regression_count', 0)})"
+        if should
+        else "LoRA eval OK — rollback gerekmiyor"
+    )
+    comment_lines = [
+        "### LoRA rollback status",
+        "",
+        f"- **state**: `{state}`",
+        f"- **should_rollback**: `{should}`",
+        f"- **reason**: `{reason}`",
+        f"- **regression_count**: `{sug.get('regression_count', 0)}`",
+        f"- **delta_accuracy**: `{sug.get('delta_accuracy')}`",
+    ]
+    if sug.get("actions"):
+        comment_lines.append("- **actions**:")
+        for a in sug["actions"]:
+            comment_lines.append(f"  - {a}")
+    if sug.get("rebuild_command"):
+        comment_lines.append(f"- **rebuild**: `{sug['rebuild_command']}`")
+    comment_lines.extend(
+        [
+            "",
+            "_Artifact: `metadata/lora_pr_status.json` · workflow `LoRA Rollback Rebuild`_",
+        ]
+    )
+    return {
+        "context": context,
+        "state": state,
+        "description": desc[:140],
+        "should_rollback": should,
+        "reason": reason,
+        "suggestion": sug,
+        "comment_markdown": "\n".join(comment_lines) + "\n",
+    }
+
+
+def write_lora_pr_status(
+    status: Dict[str, Any],
+    *,
+    status_path: str = "metadata/lora_pr_status.json",
+    comment_path: str = "metadata/lora_pr_comment.md",
+    summary_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Status JSON + PR yorum markdown + isteğe bağlı GITHUB_STEP_SUMMARY yazar."""
+    os.makedirs(os.path.dirname(status_path) or ".", exist_ok=True)
+    with open(status_path, "w", encoding="utf-8") as f:
+        json.dump(status, f, ensure_ascii=False, indent=2)
+    os.makedirs(os.path.dirname(comment_path) or ".", exist_ok=True)
+    with open(comment_path, "w", encoding="utf-8") as f:
+        f.write(status.get("comment_markdown") or "")
+    summary = summary_path or os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as f:
+            f.write(status.get("comment_markdown") or "")
+    return {
+        "status_path": status_path,
+        "comment_path": comment_path,
+        "summary_path": summary,
+        "state": status.get("state"),
+    }
