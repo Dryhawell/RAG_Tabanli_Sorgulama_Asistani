@@ -13,6 +13,16 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 
+def _env_truthy(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+        "",
+    }
+
+
 def main() -> int:
     mode = os.environ.get("RAG_JUDGE_MODE", "heuristic").strip().lower() or "heuristic"
     cases = os.environ.get("RAG_JUDGE_CASES", "evals/judge_cases.json")
@@ -20,6 +30,8 @@ def main() -> int:
     output = os.environ.get("RAG_JUDGE_OUTPUT", "metadata/judge_report.json")
     provider = os.environ.get("RAG_JUDGE_PROVIDER", "ollama")
     model = os.environ.get("RAG_JUDGE_MODEL", "phi3:mini")
+    soft_fail = _env_truthy("RAG_JUDGE_SOFT_FAIL", "0")
+    metrics_path = os.environ.get("RAG_JUDGE_METRICS_PATH", "metadata/metrics.jsonl")
 
     from rag.judge import run_judge_file
 
@@ -39,9 +51,42 @@ def main() -> int:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
     summary = report.get("summary") or {}
+    ok = bool(summary.get("ok"))
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     print(f"Wrote {output}")
-    return 0 if summary.get("ok") else 1
+
+    try:
+        from rag.metrics import record_metric
+
+        record_metric(
+            "judge_run",
+            values={
+                "mode": mode,
+                "provider": provider if mode == "llm" else None,
+                "model": model if mode == "llm" else None,
+                "accuracy": summary.get("accuracy"),
+                "passed": summary.get("passed"),
+                "failed": summary.get("failed"),
+                "total": summary.get("total"),
+                "min_accuracy": min_acc,
+                "ok": ok,
+                "soft_fail": bool(soft_fail and not ok),
+            },
+            path=metrics_path,
+            enabled=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"judge metric skip: {exc}", file=sys.stderr)
+
+    if ok:
+        return 0
+    if soft_fail:
+        print(
+            "SOFT_FAIL: judge gate failed; continuing (RAG_JUDGE_SOFT_FAIL=1)",
+            file=sys.stderr,
+        )
+        return 0
+    return 1
 
 
 if __name__ == "__main__":

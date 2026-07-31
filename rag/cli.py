@@ -354,13 +354,53 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
         print(json.dumps({"sent": ok}, ensure_ascii=False))
         return 0 if ok else 1
     if args.digest_report:
-        from rag.collab_notify_digest import summarize_digest_report
+        from rag.collab_notify_digest import (
+            export_digest_report_csv,
+            summarize_digest_report,
+        )
 
+        if args.digest_report_csv:
+            csv_text = export_digest_report_csv(
+                tenant_id=args.digest_tenant,
+                limit=args.digest_report_limit,
+            )
+            out = args.digest_report_csv
+            if out in {"-", "/dev/stdout"}:
+                print(csv_text, end="")
+            else:
+                import os
+
+                os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+                with open(out, "w", encoding="utf-8") as f:
+                    f.write(csv_text)
+                print(json.dumps({"wrote": out, "bytes": len(csv_text)}, ensure_ascii=False))
+            return 0
         summary = summarize_digest_report(
             tenant_id=args.digest_tenant,
             limit=args.digest_report_limit,
         )
         print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
+    if args.webpush_sw:
+        from rag.collab_notify_push import (
+            load_service_worker_js,
+            service_worker_js_path,
+            vapid_application_server_key,
+            vapid_public_key,
+        )
+
+        print(
+            json.dumps(
+                {
+                    "sw_path": service_worker_js_path(),
+                    "vapid_public": vapid_public_key() or None,
+                    "application_server_key": vapid_application_server_key(),
+                    "sw_js": load_service_worker_js()[:200] + "…",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
     if args.digest:
         from rag.collab_notify_digest import send_digest_email
@@ -1081,6 +1121,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=200,
         help="Digest rapor satır limiti",
+    )
+    p_cnot.add_argument(
+        "--digest-report-csv",
+        default=None,
+        metavar="PATH",
+        help="Digest raporunu CSV yaz (PATH veya -)",
+    )
+    p_cnot.add_argument(
+        "--webpush-sw",
+        action="store_true",
+        help="Web Push SW yolu ve VAPID public özeti",
     )
     p_cnot.add_argument(
         "--register-push-token",

@@ -116,6 +116,10 @@ def summarize_metrics(
     delete_count = 0
     push_revoked_count = 0
     push_prune_removed = 0
+    judge_runs = 0
+    judge_ok = 0
+    judge_soft_fail = 0
+    judge_accuracies: List[float] = []
 
     for row in rows:
         kind = str(row.get("kind") or "unknown")
@@ -145,6 +149,17 @@ def summarize_metrics(
             push_revoked_count += 1
         elif kind == "push_token_prune":
             push_prune_removed += int(vals.get("removed") or 0)
+        elif kind == "judge_run":
+            judge_runs += 1
+            if vals.get("ok"):
+                judge_ok += 1
+            if vals.get("soft_fail"):
+                judge_soft_fail += 1
+            if vals.get("accuracy") is not None:
+                try:
+                    judge_accuracies.append(float(vals["accuracy"]))
+                except (TypeError, ValueError):
+                    pass
 
     recent = list(reversed(rows[-10:]))
 
@@ -165,6 +180,13 @@ def summarize_metrics(
         "push": {
             "token_revoked": push_revoked_count,
             "token_pruned": push_prune_removed,
+        },
+        "judge": {
+            "runs": judge_runs,
+            "ok": judge_ok,
+            "failed": max(0, judge_runs - judge_ok),
+            "soft_fail": judge_soft_fail,
+            "avg_accuracy": round(_avg(judge_accuracies), 4),
         },
         "recent": recent,
     }

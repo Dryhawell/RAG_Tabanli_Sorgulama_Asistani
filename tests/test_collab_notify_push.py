@@ -497,3 +497,27 @@ def test_webpush_gone_revokes_token(tmp_path, monkeypatch):
     devices = summarize_user_devices("bob")
     assert devices and devices[0].get("revoked") is True
 
+
+def test_vapid_application_server_key_and_sw(tmp_path, monkeypatch):
+    import os
+
+    from rag.collab_notify_push import (
+        load_service_worker_js,
+        service_worker_js_path,
+        vapid_application_server_key,
+        vapid_public_key,
+    )
+
+    monkeypatch.setattr(
+        "rag.collab_notify_push.NOTIFY_PUSH_VAPID_PUBLIC",
+        "BNcRdQ+/abc+def/ghi=",
+    )
+    assert vapid_public_key().startswith("BNc")
+    key = vapid_application_server_key()
+    assert key is not None
+    assert "+" not in key and "/" not in key
+    assert os.path.isfile(service_worker_js_path()) or load_service_worker_js() == ""
+    sw = load_service_worker_js()
+    if sw:
+        assert "addEventListener" in sw and "push" in sw
+

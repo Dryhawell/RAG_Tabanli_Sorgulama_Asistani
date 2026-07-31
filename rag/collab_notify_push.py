@@ -759,6 +759,38 @@ def vapid_configured() -> bool:
     )
 
 
+def vapid_public_key() -> str:
+    return (NOTIFY_PUSH_VAPID_PUBLIC or "").strip()
+
+
+def vapid_application_server_key(raw: Optional[str] = None) -> Optional[str]:
+    """
+    PushManager.subscribe applicationServerKey (URL-safe base64).
+    PEM değil, tarayıcıya uygun public key beklenir.
+    """
+    key = (raw if raw is not None else vapid_public_key()).strip()
+    if not key or "BEGIN" in key:
+        return None
+    key = key.replace("\n", "").replace(" ", "")
+    # standart base64 → urlsafe
+    if "+" in key or "/" in key:
+        key = key.replace("+", "-").replace("/", "_")
+    return key.rstrip("=") or None
+
+
+def service_worker_js_path() -> str:
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    return os.path.join(root, "static", "sw.js")
+
+
+def load_service_worker_js() -> str:
+    path = service_worker_js_path()
+    if not os.path.isfile(path):
+        return ""
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
 def parse_webpush_subscription(raw: str) -> Optional[Dict[str, Any]]:
     """Tarayıcı PushSubscription JSON (endpoint + keys.p256dh/auth)."""
     text = (raw or "").strip()

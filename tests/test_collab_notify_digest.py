@@ -538,3 +538,32 @@ def test_digest_report_jsonl(tmp_path, monkeypatch):
     assert len(rows2) == 1
     assert rows2[0]["reason"] == "empty"
 
+
+def test_digest_report_csv_and_tenant_filter(tmp_path, monkeypatch):
+    from rag.collab_notify_digest import (
+        append_digest_report,
+        export_digest_report_csv,
+        list_digest_report_tenants,
+        summarize_digest_report,
+    )
+
+    monkeypatch.setattr("rag.collab_notify_digest.METADATA_DIR", str(tmp_path))
+    append_digest_report(
+        "alice",
+        {"sent": True, "count": 1, "tenant_id": "acme", "email": True},
+        base=str(tmp_path),
+    )
+    append_digest_report(
+        "bob",
+        {"sent": False, "count": 0, "reason": "empty", "tenant_id": "other"},
+        base=str(tmp_path),
+    )
+    assert list_digest_report_tenants(base=str(tmp_path)) == ["acme", "other"]
+    csv_text = export_digest_report_csv(base=str(tmp_path), tenant_id="acme")
+    assert "username" in csv_text.splitlines()[0]
+    assert "alice" in csv_text
+    assert "bob" not in csv_text
+    summary = summarize_digest_report(base=str(tmp_path), tenant_id="acme")
+    assert summary["total"] == 1
+    assert summary["sent"] == 1
+

@@ -49,3 +49,34 @@ def test_summarize_empty_file(tmp_path):
     summary = summarize_metrics(path=str(path))
     assert summary["total_events"] == 0
     assert summary["query"]["count"] == 0
+
+
+def test_summarize_judge_run_metrics(tmp_path, monkeypatch):
+    path = tmp_path / "metrics.jsonl"
+    monkeypatch.setattr("rag.metrics.ENABLE_METRICS", True)
+    record_metric(
+        "judge_run",
+        values={
+            "mode": "heuristic",
+            "accuracy": 1.0,
+            "ok": True,
+            "soft_fail": False,
+        },
+        path=str(path),
+    )
+    record_metric(
+        "judge_run",
+        values={
+            "mode": "llm",
+            "accuracy": 0.5,
+            "ok": False,
+            "soft_fail": True,
+        },
+        path=str(path),
+    )
+    summary = summarize_metrics(path=str(path))
+    assert summary["judge"]["runs"] == 2
+    assert summary["judge"]["ok"] == 1
+    assert summary["judge"]["failed"] == 1
+    assert summary["judge"]["soft_fail"] == 1
+    assert summary["judge"]["avg_accuracy"] == 0.75

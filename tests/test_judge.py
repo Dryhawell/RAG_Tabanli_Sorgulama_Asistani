@@ -77,6 +77,44 @@ def test_ci_judge_script(tmp_path, monkeypatch):
     out = tmp_path / "judge_report.json"
     monkeypatch.setenv("RAG_JUDGE_OUTPUT", str(out))
     monkeypatch.setenv("RAG_JUDGE_CASES", "evals/judge_cases.json")
+    metrics = tmp_path / "metrics.jsonl"
+    monkeypatch.setenv("RAG_JUDGE_METRICS_PATH", str(metrics))
+    monkeypatch.delenv("RAG_JUDGE_SOFT_FAIL", raising=False)
     code = ci_judge.main()
     assert code == 0
     assert out.exists()
+    assert metrics.exists()
+    rows = metrics.read_text(encoding="utf-8").strip().splitlines()
+    assert rows and '"judge_run"' in rows[0]
+
+
+def test_ci_judge_soft_fail(tmp_path, monkeypatch):
+    import json
+
+    import scripts.ci_judge as ci_judge
+
+    cases = tmp_path / "bad_cases.json"
+    cases.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "expect-fail",
+                    "question": "İzin?",
+                    "answer": "Pizza partisi var.",
+                    "contexts": ["Yıllık izin 14 gündür."],
+                    "expect_grounded": True,
+                    "expect_no_answer": False,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RAG_JUDGE_MODE", "heuristic")
+    monkeypatch.setenv("RAG_JUDGE_MIN_ACCURACY", "1.0")
+    monkeypatch.setenv("RAG_JUDGE_CASES", str(cases))
+    monkeypatch.setenv("RAG_JUDGE_OUTPUT", str(tmp_path / "fail.json"))
+    monkeypatch.setenv("RAG_JUDGE_METRICS_PATH", str(tmp_path / "m.jsonl"))
+    monkeypatch.setenv("RAG_JUDGE_SOFT_FAIL", "0")
+    assert ci_judge.main() == 1
+    monkeypatch.setenv("RAG_JUDGE_SOFT_FAIL", "1")
+    assert ci_judge.main() == 0

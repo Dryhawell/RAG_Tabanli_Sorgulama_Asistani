@@ -1091,6 +1091,64 @@ def summarize_digest_report(
     }
 
 
+def list_digest_report_tenants(*, base: Optional[str] = None) -> List[str]:
+    """Raporda görünen tenant_id listesi (boşlar hariç)."""
+    rows = read_digest_report(base=base)
+    tids = {
+        str(r.get("tenant_id")).strip()
+        for r in rows
+        if r.get("tenant_id") not in (None, "")
+    }
+    return sorted(tids)
+
+
+def export_digest_report_csv(
+    *,
+    base: Optional[str] = None,
+    limit: Optional[int] = None,
+    username: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> str:
+    """Digest rapor satırlarını CSV metnine çevirir."""
+    import csv
+    import io
+
+    rows = read_digest_report(
+        base=base,
+        limit=limit,
+        username=username,
+        tenant_id=tenant_id,
+    )
+    fields = [
+        "ts",
+        "username",
+        "tenant_id",
+        "sent",
+        "count",
+        "reason",
+        "email",
+        "webhook",
+        "push",
+        "thread_reply",
+        "timezone",
+        "quiet_hours",
+        "flushed_after_quiet",
+    ]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        out = {k: row.get(k) for k in fields}
+        out["sent"] = bool(out.get("sent"))
+        out["email"] = bool(out.get("email"))
+        out["webhook"] = bool(out.get("webhook"))
+        out["push"] = bool(out.get("push"))
+        out["thread_reply"] = bool(out.get("thread_reply"))
+        out["flushed_after_quiet"] = bool(out.get("flushed_after_quiet"))
+        writer.writerow(out)
+    return buf.getvalue()
+
+
 def _finish_digest_result(
     username: str,
     result: Dict[str, Any],

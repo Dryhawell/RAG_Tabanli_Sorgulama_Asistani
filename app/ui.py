@@ -513,10 +513,30 @@ with st.sidebar:
                         st.info(t("collab_digest_skip", reason=_dig.get("reason") or "?"))
             else:
                 st.caption(t("collab_no_notifications"))
-            from rag.collab_notify_digest import summarize_digest_report
+            from rag.collab_notify_digest import (
+                export_digest_report_csv,
+                list_digest_report_tenants,
+                summarize_digest_report,
+            )
 
             with st.expander(t("collab_digest_report"), expanded=False):
-                _rep = summarize_digest_report(limit=100)
+                _tenant_opts = ["(all)"] + list_digest_report_tenants()
+                try:
+                    from rag.auth import list_users_detail
+
+                    for _u in list_users_detail():
+                        _tid = str((_u or {}).get("tenant_id") or "").strip()
+                        if _tid and _tid not in _tenant_opts:
+                            _tenant_opts.append(_tid)
+                except Exception:
+                    pass
+                _sel_tenant = st.selectbox(
+                    t("collab_digest_report_tenant"),
+                    _tenant_opts,
+                    key="digest_report_tenant",
+                )
+                _filter_tid = None if _sel_tenant == "(all)" else _sel_tenant
+                _rep = summarize_digest_report(limit=100, tenant_id=_filter_tid)
                 st.caption(
                     t(
                         "collab_digest_report_summary",
@@ -540,17 +560,52 @@ with st.sidebar:
                 for _row in (_rep.get("recent") or [])[-5:]:
                     st.caption(
                         f"{_row.get('ts') or '-'} · {_row.get('username') or '-'} · "
+                        f"tenant={_row.get('tenant_id') or '-'} · "
                         f"sent={_row.get('sent')} · count={_row.get('count')} · "
                         f"reason={_row.get('reason') or '-'}"
                     )
+                _csv = export_digest_report_csv(limit=500, tenant_id=_filter_tid)
+                st.download_button(
+                    t("collab_digest_export_csv"),
+                    data=_csv,
+                    file_name="digest_report.csv",
+                    mime="text/csv",
+                    key="digest_report_csv_dl",
+                    use_container_width=True,
+                )
             from rag.collab_notify_push import (
+                load_service_worker_js,
                 prune_expired_tokens,
                 register_device_token,
                 revoke_device_token,
                 summarize_user_devices,
+                vapid_configured,
+                vapid_public_key,
             )
 
             st.markdown(t("collab_push_devices"))
+            if vapid_configured():
+                with st.expander(t("collab_push_browser"), expanded=False):
+                    st.caption(t("collab_push_browser_help"))
+                    st.code(vapid_public_key()[:64] + ("…" if len(vapid_public_key()) > 64 else ""))
+                    _sw = load_service_worker_js()
+                    if _sw:
+                        st.download_button(
+                            t("collab_push_sw_download"),
+                            data=_sw,
+                            file_name="sw.js",
+                            mime="application/javascript",
+                            key="webpush_sw_dl",
+                            use_container_width=True,
+                        )
+                    try:
+                        from rag.webpush_browser import render_webpush_subscribe_widget
+
+                        render_webpush_subscribe_widget()
+                    except Exception as _wp_exc:
+                        st.caption(f"{t('collab_push_browser_error')}: {_wp_exc}")
+            else:
+                st.caption(t("collab_push_vapid_missing"))
             _devices = summarize_user_devices(_nc_user)
             if _devices:
                 for _dv in _devices:
@@ -993,6 +1048,18 @@ with st.sidebar:
                         f"Rebuild: {summary['rebuild']['count']} · "
                         f"Silme: {summary['delete']['count']}"
                     )
+                    jg = summary.get("judge") or {}
+                    if jg.get("runs"):
+                        st.caption(
+                            t(
+                                "metrics_judge_summary",
+                                runs=jg.get("runs") or 0,
+                                ok=jg.get("ok") or 0,
+                                failed=jg.get("failed") or 0,
+                                soft_fail=jg.get("soft_fail") or 0,
+                                avg=f"{float(jg.get('avg_accuracy') or 0):.2%}",
+                            )
+                        )
                     if summary["recent"]:
                         st.markdown("**Son kayıtlar**")
                         for row in reversed(summary["recent"]):
