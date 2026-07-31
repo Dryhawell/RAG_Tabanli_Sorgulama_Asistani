@@ -23,6 +23,9 @@ try:
         NOTIFY_PUSH_PROVIDER,
         NOTIFY_PUSH_TOKEN_TTL_DAYS,
         NOTIFY_PUSH_URL,
+        NOTIFY_PUSH_VAPID_PRIVATE,
+        NOTIFY_PUSH_VAPID_PUBLIC,
+        NOTIFY_PUSH_VAPID_SUBJECT,
     )
 except ImportError:
     METADATA_DIR = "metadata"
@@ -38,6 +41,9 @@ except ImportError:
     NOTIFY_PUSH_APNS_P8_PATH = ""
     NOTIFY_PUSH_APNS_P8_CONTENT = ""
     NOTIFY_PUSH_APNS_USE_SANDBOX = False
+    NOTIFY_PUSH_VAPID_PUBLIC = ""
+    NOTIFY_PUSH_VAPID_PRIVATE = ""
+    NOTIFY_PUSH_VAPID_SUBJECT = "mailto:admin@localhost"
 
 _FCM_TOKEN_CACHE: Dict[str, Any] = {"token": None, "expires_at": 0.0}
 _APNS_TOKEN_CACHE: Dict[str, Any] = {"token": None, "expires_at": 0.0}
@@ -746,13 +752,42 @@ def resolve_fcm_auth_header(
     return None
 
 
+def vapid_configured() -> bool:
+    return bool(
+        (NOTIFY_PUSH_VAPID_PUBLIC or "").strip()
+        and (NOTIFY_PUSH_VAPID_PRIVATE or "").strip()
+    )
+
+
+def parse_webpush_subscription(raw: str) -> Optional[Dict[str, Any]]:
+    """Tarayıcı PushSubscription JSON (endpoint + keys.p256dh/auth)."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    endpoint = str(data.get("endpoint") or "").strip()
+    keys = data.get("keys") if isinstance(data.get("keys"), dict) else {}
+    p256dh = str(keys.get("p256dh") or "").strip()
+    auth = str(keys.get("auth") or "").strip()
+    if not (endpoint.startswith("https://") and p256dh and auth):
+        return None
+    return {"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}}
+
+
 def is_push_configured() -> bool:
-    """Push kanalı yapılandırılmış mı (URL veya FCM/APNs native)."""
+    """Push kanalı yapılandırılmış mı (URL, FCM/APNs native veya Web Push VAPID)."""
     provider = (NOTIFY_PUSH_PROVIDER or "generic").lower()
     if provider == "fcm":
         return bool(resolve_fcm_endpoint())
     if provider == "apns":
         return apns_native_configured() or bool((NOTIFY_PUSH_URL or "").strip())
+    if provider in {"webpush", "web", "browser"}:
+        return vapid_configured()
     return bool((NOTIFY_PUSH_URL or "").strip())
 
 
@@ -954,6 +989,127 @@ def build_generic_push_payload(
     }
 
 
+def send_webpush(
+    subscription: Dict[str, Any],
+    *,
+    title: str,
+    body: str,
+    data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Tek Web Push aboneliğine VAPID ile bildirim gönderir."""
+    if not vapid_configured():
+        return {
+            "ok": False,
+            "provider": "webpush",
+            "status_code": None,
+            "error": "vapid_not_configured",
+            "revoked": False,
+        }
+    payload = json.dumps(
+        {"title": title, "body": body, "data": data or {}},
+        ensure_ascii=False,
+    )
+    claims = {"sub": (NOTIFY_PUSH_VAPID_SUBJECT or "mailto:admin@localhost").strip()}
+    try:
+        from pywebpush import webpush  # type: ignore
+
+        resp = webpush(
+            subscription_info=subscription,
+            data=payload,
+            vapid_private_key=NOTIFY_PUSH_VAPID_PRIVATE,
+            vapid_claims=claims,
+            ttl=86400,
+        )
+        code = int(getattr(resp, "status_code", 201) or 201)
+        ok = 200 <= code < 300
+        return {
+            "ok": ok,
+            "provider": "webpush",
+            "status_code": code,
+            "error": None if ok else f"HTTP {code}",
+            "revoked": code in {404, 410},
+        }
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc)
+        low = msg.lower()
+        revoked = "410" in msg or "404" in msg or "gone" in low
+        return {
+            "ok": False,
+            "provider": "webpush",
+            "status_code": 410 if revoked else None,
+            "error": msg,
+            "revoked": revoked,
+        }
+
+    # Fallback: düz POST (şifrelemesiz PoC — gerçek tarayıcı için pywebpush gerekir)
+    try:
+        import httpx
+
+        headers = {
+            "Content-Type": "application/json",
+            "TTL": "86400",
+            "Urgency": "normal",
+        }
+        if NOTIFY_PUSH_VAPID_PUBLIC:
+            headers["Authorization"] = f"vapid t=poc,k={NOTIFY_PUSH_VAPID_PUBLIC}"
+        with httpx.Client(timeout=12.0) as client:
+            r = client.post(
+                subscription["endpoint"],
+                content=payload.encode("utf-8"),
+                headers=headers,
+            )
+        ok = 200 <= r.status_code < 300
+        return {
+            "ok": ok,
+            "provider": "webpush_http",
+            "status_code": r.status_code,
+            "error": None if ok else (r.text or "")[:400],
+            "revoked": r.status_code in {404, 410},
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "provider": "webpush_http",
+            "status_code": None,
+            "error": str(exc),
+            "revoked": False,
+        }
+
+
+def _dispatch_webpush(
+    tokens: List[Dict[str, Any]],
+    *,
+    username: str,
+    title: str,
+    body: str,
+    data: Optional[Dict[str, Any]],
+    base: Optional[str],
+) -> bool:
+    ok_any = False
+    for tok in tokens:
+        raw = str(tok.get("token") or "").strip()
+        if not raw:
+            continue
+        sub = parse_webpush_subscription(raw)
+        if sub is None:
+            continue
+        result = send_webpush(sub, title=title, body=body, data=data)
+        if result.get("ok"):
+            ok_any = True
+            touch_device_last_seen(username, raw, base=base)
+        elif result.get("revoked"):
+            revoke_device_token(
+                username,
+                raw,
+                base=base,
+                reason=str(result.get("error") or "Gone"),
+                provider="webpush",
+            )
+    return ok_any
+
+
 def dispatch_push(
     username: str,
     *,
@@ -969,6 +1125,8 @@ def dispatch_push(
         url = resolve_fcm_endpoint()
     elif provider == "apns" and apns_native_configured():
         url = "__apns_native__"
+    elif provider in {"webpush", "web", "browser"} and vapid_configured():
+        url = "__webpush__"
     else:
         url = (NOTIFY_PUSH_URL or "").strip()
     if not url:
@@ -987,6 +1145,15 @@ def dispatch_push(
     try:
         if provider == "apns" and url == "__apns_native__":
             return _dispatch_apns_native(
+                tokens,
+                username=username,
+                title=title,
+                body=body,
+                data=data,
+                base=base,
+            )
+        if provider in {"webpush", "web", "browser"} and url == "__webpush__":
+            return _dispatch_webpush(
                 tokens,
                 username=username,
                 title=title,

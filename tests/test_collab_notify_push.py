@@ -403,3 +403,97 @@ def test_revoke_records_metric_and_prune_breakdown(tmp_path, monkeypatch):
     assert result["removed"] == 1
     assert result["revoked_pruned"] == 1
     assert any(m["kind"] == "push_token_prune" for m in metrics)
+
+
+def test_webpush_parse_and_dispatch(tmp_path, monkeypatch):
+    import json
+    import sys
+    import types
+
+    from rag.collab_notify_push import (
+        dispatch_push,
+        is_push_configured,
+        parse_webpush_subscription,
+        register_device_token,
+        send_webpush,
+        vapid_configured,
+    )
+
+    assert parse_webpush_subscription("not-json") is None
+    sub = {
+        "endpoint": "https://push.example.com/sub/abc",
+        "keys": {"p256dh": "p256dh-key", "auth": "auth-key"},
+    }
+    parsed = parse_webpush_subscription(json.dumps(sub))
+    assert parsed is not None
+    assert parsed["endpoint"].startswith("https://")
+
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_VAPID_PUBLIC", "")
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_VAPID_PRIVATE", "")
+    assert vapid_configured() is False
+
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_VAPID_PUBLIC", "pub")
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_VAPID_PRIVATE", "priv")
+    monkeypatch.setattr(
+        "rag.collab_notify_push.NOTIFY_PUSH_VAPID_SUBJECT",
+        "mailto:test@example.com",
+    )
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_PROVIDER", "webpush")
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_URL", "")
+    assert is_push_configured() is True
+
+    calls = []
+
+    class FakeResp:
+        status_code = 201
+
+    def fake_webpush(**kwargs):
+        calls.append(kwargs)
+        return FakeResp()
+
+    fake_mod = types.ModuleType("pywebpush")
+    fake_mod.webpush = fake_webpush
+    monkeypatch.setitem(sys.modules, "pywebpush", fake_mod)
+
+    result = send_webpush(parsed, title="T", body="B", data={"k": 1})
+    assert result["ok"] is True
+    assert result["provider"] == "webpush"
+    assert calls and "subscription_info" in calls[0]
+
+    monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
+    register_device_token("alice", json.dumps(sub), platform="webpush")
+    assert dispatch_push("alice", title="Hi", body="There") is True
+
+
+def test_webpush_gone_revokes_token(tmp_path, monkeypatch):
+    import json
+    import sys
+    import types
+
+    from rag.collab_notify_push import (
+        dispatch_push,
+        register_device_token,
+        summarize_user_devices,
+    )
+
+    monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_PROVIDER", "webpush")
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_VAPID_PUBLIC", "pub")
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_VAPID_PRIVATE", "priv")
+    sub = {
+        "endpoint": "https://push.example.com/sub/gone",
+        "keys": {"p256dh": "p", "auth": "a"},
+    }
+    register_device_token("bob", json.dumps(sub), platform="webpush")
+
+    def boom(**kwargs):
+        raise RuntimeError("410 Gone")
+
+    fake_mod = types.ModuleType("pywebpush")
+    fake_mod.webpush = boom
+    monkeypatch.setitem(sys.modules, "pywebpush", fake_mod)
+
+    assert dispatch_push("bob", title="t", body="b") is False
+    devices = summarize_user_devices("bob")
+    assert devices and devices[0].get("revoked") is True
+

@@ -365,6 +365,13 @@ NOTIFY_PUSH_APNS_USE_SANDBOX = os.getenv("RAG_NOTIFY_PUSH_APNS_USE_SANDBOX", "0"
     "false",
     "False",
 }
+# Web Push (VAPID)
+NOTIFY_PUSH_VAPID_PUBLIC = os.getenv("RAG_NOTIFY_PUSH_VAPID_PUBLIC", "").strip()
+NOTIFY_PUSH_VAPID_PRIVATE = os.getenv("RAG_NOTIFY_PUSH_VAPID_PRIVATE", "").strip()
+NOTIFY_PUSH_VAPID_SUBJECT = os.getenv(
+    "RAG_NOTIFY_PUSH_VAPID_SUBJECT",
+    "mailto:admin@localhost",
+).strip()
 # Presence snapshot TTL (saniye)
 COLLAB_PRESENCE_TTL_SEC = int(os.getenv("RAG_COLLAB_PRESENCE_TTL_SEC", "90"))
 LORA_DP_EVAL_AUTO_ROLLBACK = os.getenv("RAG_LORA_DP_EVAL_AUTO_ROLLBACK", "0") not in {

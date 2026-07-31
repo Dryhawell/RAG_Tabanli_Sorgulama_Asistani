@@ -28,5 +28,54 @@
     ],
     "expect_grounded": true,
     "expect_no_answer": true
+  },
+  {
+    "id": "grounded-multi-context",
+    "question": "Uzaktan çalışma kaç gündür?",
+    "answer": "Haftada 2 gün uzaktan çalışma yapılabilir.",
+    "contexts": [
+      "Yıllık izin 14 gündür.",
+      "Uzaktan çalışma politikası: haftada 2 gün home-office yapılabilir."
+    ],
+    "expect_grounded": true,
+    "expect_no_answer": false
+  },
+  {
+    "id": "grounded-numeric-overlap",
+    "question": "Bildirim saklama süresi nedir?",
+    "answer": "Bildirimler 90 gün saklanır.",
+    "contexts": [
+      "Sistem bildirim kayıtlarını 90 gün boyunca saklar."
+    ],
+    "expect_grounded": true,
+    "expect_no_answer": false
+  },
+  {
+    "id": "hallucination-no-overlap",
+    "question": "Saklama süresi nedir?",
+    "answer": "Kuantum sunucular Antarktika'da barındırılır.",
+    "contexts": [
+      "Sistem bildirim kayıtlarını 90 gün boyunca saklar."
+    ],
+    "expect_grounded": false,
+    "expect_no_answer": false
+  },
+  {
+    "id": "no-answer-empty-context",
+    "question": "VPN şifresi nedir?",
+    "answer": "Bu bilgi dokümanda bulunmamaktadır",
+    "contexts": [],
+    "expect_grounded": true,
+    "expect_no_answer": true
+  },
+  {
+    "id": "false-no-answer-on-answerable",
+    "question": "İzin günleri kaçtır?",
+    "answer": "Bu bilgi dokümanda bulunmamaktadır",
+    "contexts": [
+      "Çalışanlar yılda 14 gün yıllık izin hakkına sahiptir."
+    ],
+    "expect_grounded": false,
+    "expect_no_answer": false
   }
 ]

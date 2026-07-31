@@ -513,6 +513,36 @@ with st.sidebar:
                         st.info(t("collab_digest_skip", reason=_dig.get("reason") or "?"))
             else:
                 st.caption(t("collab_no_notifications"))
+            from rag.collab_notify_digest import summarize_digest_report
+
+            with st.expander(t("collab_digest_report"), expanded=False):
+                _rep = summarize_digest_report(limit=100)
+                st.caption(
+                    t(
+                        "collab_digest_report_summary",
+                        total=_rep.get("total") or 0,
+                        sent=_rep.get("sent") or 0,
+                        skipped=_rep.get("skipped") or 0,
+                    )
+                )
+                _ch = _rep.get("channels") or {}
+                st.caption(
+                    t(
+                        "collab_digest_report_channels",
+                        email=_ch.get("email") or 0,
+                        webhook=_ch.get("webhook") or 0,
+                        push=_ch.get("push") or 0,
+                    )
+                )
+                _reasons = _rep.get("by_reason") or {}
+                if _reasons:
+                    st.json(_reasons)
+                for _row in (_rep.get("recent") or [])[-5:]:
+                    st.caption(
+                        f"{_row.get('ts') or '-'} · {_row.get('username') or '-'} · "
+                        f"sent={_row.get('sent')} · count={_row.get('count')} · "
+                        f"reason={_row.get('reason') or '-'}"
+                    )
             from rag.collab_notify_push import (
                 prune_expired_tokens,
                 register_device_token,
@@ -550,7 +580,7 @@ with st.sidebar:
             _new_tok = st.text_input(t("collab_push_token"), key="push_token_input")
             _new_plat = st.selectbox(
                 t("collab_push_platform"),
-                ["fcm", "apns", "generic"],
+                ["fcm", "apns", "generic", "webpush"],
                 key="push_platform_input",
             )
             _new_label = st.text_input(t("collab_push_label"), key="push_label_input")

@@ -496,6 +496,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
-- Judge: groundedness regression set genişletme
-- Push: Web Push (VAPID) PoC
-- Tenant: digest rapor dashboard'u
+- Push: Web Push service worker / tarayıcı entegrasyonu
+- Judge: LLM judge CI secrets + soft-fail metrik paneli
+- Tenant: digest rapor export (CSV) ve tenant filtre UI

@@ -484,3 +484,57 @@ def test_quiet_channels_policy_skips_push(tmp_path, monkeypatch):
     assert result["reason"] == "quiet_hours"
     assert result["quiet_channels"]["push"] is True
     assert not push_calls and not email_calls
+
+
+def test_digest_report_jsonl(tmp_path, monkeypatch):
+    from rag.collab_notify_digest import (
+        append_digest_report,
+        read_digest_report,
+        send_digest_email,
+        summarize_digest_report,
+    )
+
+    monkeypatch.setattr("rag.collab_notify_digest.METADATA_DIR", str(tmp_path))
+    row = append_digest_report(
+        "alice",
+        {
+            "sent": True,
+            "count": 3,
+            "reason": None,
+            "email": True,
+            "webhook": False,
+            "push": True,
+            "tenant_id": "t1",
+            "timezone": "UTC",
+        },
+        base=str(tmp_path),
+    )
+    assert row["username"] == "alice"
+    rows = read_digest_report(base=str(tmp_path), tenant_id="t1")
+    assert len(rows) == 1
+    summary = summarize_digest_report(base=str(tmp_path))
+    assert summary["total"] == 1
+    assert summary["sent"] == 1
+    assert summary["channels"]["email"] == 1
+    assert summary["channels"]["push"] == 1
+
+    monkeypatch.setattr("rag.collab_notify_digest.NOTIFY_SMTP_HOST", "")
+    monkeypatch.setattr("rag.collab_notify_digest.NOTIFY_WEBHOOK_URL", "")
+    monkeypatch.setattr(
+        "rag.collab_notify_push.is_push_configured",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "rag.collab_notify_digest.collect_digest_events",
+        lambda *a, **k: [],
+    )
+    monkeypatch.setattr(
+        "rag.collab_notify_digest.is_quiet_hours",
+        lambda **k: False,
+    )
+    result = send_digest_email("bob", skip_quiet_tracking=True, base=str(tmp_path))
+    assert result.get("reason") == "empty"
+    rows2 = read_digest_report(base=str(tmp_path), username="bob")
+    assert len(rows2) == 1
+    assert rows2[0]["reason"] == "empty"
+

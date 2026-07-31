@@ -353,6 +353,15 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
         )
         print(json.dumps({"sent": ok}, ensure_ascii=False))
         return 0 if ok else 1
+    if args.digest_report:
+        from rag.collab_notify_digest import summarize_digest_report
+
+        summary = summarize_digest_report(
+            tenant_id=args.digest_tenant,
+            limit=args.digest_report_limit,
+        )
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
     if args.digest:
         from rag.collab_notify_digest import send_digest_email
 
@@ -1063,6 +1072,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Quiet hours bitince bekleyen tam digest flush",
     )
     p_cnot.add_argument(
+        "--digest-report",
+        action="store_true",
+        help="Tenant digest rapor özetini göster (JSONL dashboard)",
+    )
+    p_cnot.add_argument(
+        "--digest-report-limit",
+        type=int,
+        default=200,
+        help="Digest rapor satır limiti",
+    )
+    p_cnot.add_argument(
         "--register-push-token",
         default=None,
         help="Mobil cihaz token kaydet (FCM/APNs PoC)",
@@ -1070,7 +1090,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cnot.add_argument(
         "--push-platform",
         default="fcm",
-        choices=["fcm", "apns", "generic"],
+        choices=["fcm", "apns", "generic", "webpush"],
         help="Push platform",
     )
     p_cnot.add_argument("--push-label", default=None, help="Cihaz etiketi")

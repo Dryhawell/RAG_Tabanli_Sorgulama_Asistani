@@ -59,7 +59,7 @@ def test_llm_judge_with_stub():
 def test_judge_cases_file_and_cli_helper():
     path = "evals/judge_cases.json"
     cases = load_judge_cases(path)
-    assert len(cases) >= 3
+    assert len(cases) >= 8
     results = evaluate_judge_cases(cases, mode="heuristic")
     summary = summarize_judge(results)
     assert summary["total"] == len(cases)

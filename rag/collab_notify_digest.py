@@ -978,6 +978,149 @@ def build_quiet_hours_teams_card(
     }
 
 
+def digest_report_path(base: Optional[str] = None) -> str:
+    root = base or METADATA_DIR
+    return os.path.join(root, "collab", "digest_report.jsonl")
+
+
+def append_digest_report(
+    username: str,
+    result: Dict[str, Any],
+    *,
+    base: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Digest sonucunu tenant/kullanıcı JSONL raporuna yazar."""
+    path = digest_report_path(base=base)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    row: Dict[str, Any] = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "username": (username or "").strip().lower(),
+        "tenant_id": result.get("tenant_id"),
+        "sent": bool(result.get("sent")),
+        "count": int(result.get("count") or 0),
+        "reason": result.get("reason"),
+        "email": bool(result.get("email")),
+        "webhook": bool(result.get("webhook")),
+        "push": bool(result.get("push")),
+        "thread_reply": bool(result.get("thread_reply")),
+        "timezone": result.get("timezone"),
+        "quiet_hours": result.get("quiet_hours"),
+        "flushed_after_quiet": bool(result.get("flushed_after_quiet")),
+    }
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return row
+
+
+def read_digest_report(
+    *,
+    base: Optional[str] = None,
+    limit: Optional[int] = None,
+    username: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    path = digest_report_path(base=base)
+    if not os.path.isfile(path):
+        return []
+    rows: List[Dict[str, Any]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            if username and str(data.get("username") or "") != username.strip().lower():
+                continue
+            if tenant_id is not None and str(data.get("tenant_id") or "") != str(
+                tenant_id
+            ):
+                continue
+            rows.append(data)
+    if limit is not None and limit >= 0:
+        rows = rows[-limit:]
+    return rows
+
+
+def summarize_digest_report(
+    rows: Optional[List[Dict[str, Any]]] = None,
+    *,
+    base: Optional[str] = None,
+    username: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    data = rows if rows is not None else read_digest_report(
+        base=base,
+        limit=limit,
+        username=username,
+        tenant_id=tenant_id,
+    )
+    by_reason: Dict[str, int] = {}
+    by_user: Dict[str, int] = {}
+    sent = 0
+    skipped = 0
+    email_n = webhook_n = push_n = 0
+    for row in data:
+        if row.get("sent"):
+            sent += 1
+        else:
+            skipped += 1
+        reason = str(row.get("reason") or ("sent" if row.get("sent") else "unknown"))
+        by_reason[reason] = by_reason.get(reason, 0) + 1
+        u = str(row.get("username") or "-")
+        by_user[u] = by_user.get(u, 0) + 1
+        if row.get("email"):
+            email_n += 1
+        if row.get("webhook"):
+            webhook_n += 1
+        if row.get("push"):
+            push_n += 1
+    return {
+        "total": len(data),
+        "sent": sent,
+        "skipped": skipped,
+        "by_reason": by_reason,
+        "by_user": by_user,
+        "channels": {"email": email_n, "webhook": webhook_n, "push": push_n},
+        "recent": data[-10:],
+    }
+
+
+def _finish_digest_result(
+    username: str,
+    result: Dict[str, Any],
+    *,
+    base: Optional[str] = None,
+) -> Dict[str, Any]:
+    try:
+        append_digest_report(username, result, base=base)
+    except Exception:
+        pass
+    try:
+        from rag.metrics import record_metric
+
+        if result.get("sent"):
+            record_metric(
+                "digest_sent",
+                username=(username or "").strip().lower(),
+                count=int(result.get("count") or 0),
+            )
+        else:
+            record_metric(
+                "digest_skip",
+                username=(username or "").strip().lower(),
+                reason=str(result.get("reason") or ""),
+            )
+    except Exception:
+        pass
+    return result
+
+
 def send_digest_email(
     username: str,
     *,
@@ -1053,25 +1196,36 @@ def send_digest_email(
             want_webhook and webhook_configured and not honor_webhook_quiet
         )
         if not bypass_email and not bypass_webhook:
-            return {
-                "sent": False,
-                "count": 0,
-                "reason": "quiet_hours",
-                "quiet_hours": resolved_qh,
-                "timezone": tz_resolved,
-                "tenant_id": tenant_id,
-                "channels": channels,
-                "quiet_channels": quiet_ch,
-            }
+            return _finish_digest_result(
+                username,
+                {
+                    "sent": False,
+                    "count": 0,
+                    "reason": "quiet_hours",
+                    "quiet_hours": resolved_qh,
+                    "timezone": tz_resolved,
+                    "tenant_id": tenant_id,
+                    "channels": channels,
+                    "quiet_channels": quiet_ch,
+                },
+                base=base,
+            )
     events = collect_digest_events(username, hours=hours, base=base)
     if not events:
-        return {
-            "sent": False,
-            "count": 0,
-            "reason": "empty",
-            "channels": channels,
-            "quiet_channels": quiet_ch,
-        }
+        return _finish_digest_result(
+            username,
+            {
+                "sent": False,
+                "count": 0,
+                "reason": "empty",
+                "channels": channels,
+                "quiet_channels": quiet_ch,
+                "tenant_id": tenant_id,
+                "timezone": tz_resolved,
+                "quiet_hours": resolved_qh,
+            },
+            base=base,
+        )
     prep = prepare_digest_events(
         events,
         mentions_only=mentions_only,
@@ -1085,13 +1239,20 @@ def send_digest_email(
             if prep.get("workspace_filtered", 0) > 0
             else "empty_after_filter"
         )
-        return {
-            "sent": False,
-            "count": 0,
-            "reason": reason,
-            "channels": channels,
-            "quiet_channels": quiet_ch,
-        }
+        return _finish_digest_result(
+            username,
+            {
+                "sent": False,
+                "count": 0,
+                "reason": reason,
+                "channels": channels,
+                "quiet_channels": quiet_ch,
+                "tenant_id": tenant_id,
+                "timezone": tz_resolved,
+                "quiet_hours": resolved_qh,
+            },
+            base=base,
+        )
     email_ok = False
     webhook_ok = False
     push_ok = False
@@ -1156,13 +1317,20 @@ def send_digest_email(
     webhook_avail = webhook_configured and want_webhook
     push_avail = push_configured and want_push
     if not email_avail and not webhook_avail and not push_avail:
-        return {
-            "sent": False,
-            "count": len(filtered),
-            "reason": "no_channel",
-            "channels": channels,
-            "quiet_channels": quiet_ch,
-        }
+        return _finish_digest_result(
+            username,
+            {
+                "sent": False,
+                "count": len(filtered),
+                "reason": "no_channel",
+                "channels": channels,
+                "quiet_channels": quiet_ch,
+                "tenant_id": tenant_id,
+                "timezone": tz_resolved,
+                "quiet_hours": resolved_qh,
+            },
+            base=base,
+        )
     sent = email_ok or webhook_ok or push_ok
     if not sent and in_quiet:
         reason = "quiet_hours"
@@ -1178,25 +1346,29 @@ def send_digest_email(
                 "count": len(filtered),
             },
         )
-    return {
-        "sent": sent,
-        "count": len(filtered),
-        "email": email_ok,
-        "webhook": webhook_ok,
-        "push": push_ok,
-        "thread_reply": thread_reply,
-        "flushed_after_quiet": flushed_after_quiet,
-        "reason": reason,
-        "quiet_hours": resolved_qh,
-        "channels": channels,
-        "quiet_channels": quiet_ch,
-        "mentions_only": prep["mentions_only"],
-        "group_by": prep["group_by"],
-        "min_per_workspace": prep.get("min_per_workspace"),
-        "workspace_filtered": prep.get("workspace_filtered", 0),
-        "timezone": tz_resolved,
-        "tenant_id": tenant_id,
-    }
+    return _finish_digest_result(
+        username,
+        {
+            "sent": sent,
+            "count": len(filtered),
+            "email": email_ok,
+            "webhook": webhook_ok,
+            "push": push_ok,
+            "thread_reply": thread_reply,
+            "flushed_after_quiet": flushed_after_quiet,
+            "reason": reason,
+            "quiet_hours": resolved_qh,
+            "channels": channels,
+            "quiet_channels": quiet_ch,
+            "mentions_only": prep["mentions_only"],
+            "group_by": prep["group_by"],
+            "min_per_workspace": prep.get("min_per_workspace"),
+            "workspace_filtered": prep.get("workspace_filtered", 0),
+            "timezone": tz_resolved,
+            "tenant_id": tenant_id,
+        },
+        base=base,
+    )
 
 
 def digest_quiet_flush_path(base: Optional[str] = None) -> str:
