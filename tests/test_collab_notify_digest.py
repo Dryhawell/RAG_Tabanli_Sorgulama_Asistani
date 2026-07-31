@@ -431,3 +431,56 @@ def test_digest_channel_preferences(tmp_path, monkeypatch):
     assert result["sent"] is True
     assert result["channels"]["webhook"] is False
     assert email_calls and not webhook_calls and not push_calls
+
+
+def test_quiet_channels_policy_skips_push(tmp_path, monkeypatch):
+    from rag.auth import update_user_quiet_channels
+    from rag.collab_notify_digest import send_digest_email
+
+    users_path = str(tmp_path / "users.json")
+    with open(users_path, "w", encoding="utf-8") as f:
+        f.write('{"alice": {"password_hash": "x$y", "role": "user", "tenant_id": "default"}}')
+    monkeypatch.setattr("rag.auth.USERS_PATH", users_path)
+    monkeypatch.setattr("rag.collab_notify_digest.METADATA_DIR", str(tmp_path))
+    monkeypatch.setattr("rag.collab_notify_digest.NOTIFY_SMTP_HOST", "smtp.test")
+    monkeypatch.setattr("rag.collab_notify_digest.NOTIFY_WEBHOOK_URL", "")
+    monkeypatch.setattr("rag.collab_notify_digest.NOTIFY_DIGEST_THREAD_REPLY", False)
+    update_user_quiet_channels(
+        "alice",
+        {"email": True, "webhook": True, "push": True},
+        path=users_path,
+    )
+    monkeypatch.setattr(
+        "rag.collab_notify_digest.collect_digest_events",
+        lambda *a, **k: [
+            {
+                "workspace_key": "ws",
+                "from_user": "bob",
+                "body_preview": "hi",
+                "kind": "mention",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "rag.collab_notify_digest.is_quiet_hours",
+        lambda **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "rag.collab_notify_push.is_push_configured",
+        lambda: True,
+    )
+    push_calls = []
+    email_calls = []
+    monkeypatch.setattr(
+        "rag.collab_notify_push.dispatch_digest_push",
+        lambda *a, **k: push_calls.append(1) or True,
+    )
+    monkeypatch.setattr(
+        "rag.collab_notify_dispatch.dispatch_digest_email",
+        lambda *a, **k: email_calls.append(1) or True,
+    )
+    result = send_digest_email("alice", skip_quiet_tracking=True)
+    assert result["sent"] is False
+    assert result["reason"] == "quiet_hours"
+    assert result["quiet_channels"]["push"] is True
+    assert not push_calls and not email_calls

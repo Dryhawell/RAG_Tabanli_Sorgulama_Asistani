@@ -198,6 +198,19 @@ def resolve_digest_channels(username: Optional[str] = None) -> Dict[str, bool]:
         return dict(defaults)
 
 
+def resolve_quiet_channels(username: Optional[str] = None) -> Dict[str, bool]:
+    """Hangi kanallar quiet hours'a uyar; push varsayılan False."""
+    defaults = {"email": True, "webhook": True, "push": False}
+    if not username:
+        return dict(defaults)
+    try:
+        from rag.auth import get_user_quiet_channels
+
+        return get_user_quiet_channels(username)
+    except Exception:
+        return dict(defaults)
+
+
 def is_quiet_hours(
     *,
     now: Optional[datetime] = None,
@@ -1017,26 +1030,48 @@ def send_digest_email(
     push_configured = is_push_configured()
     webhook_configured = bool((NOTIFY_WEBHOOK_URL or "").strip())
     channels = resolve_digest_channels(username)
+    quiet_ch = resolve_quiet_channels(username)
     want_email = bool(channels.get("email", True))
     want_webhook = bool(channels.get("webhook", True))
     want_push = bool(channels.get("push", True))
+    # Quiet hours'ta kanal politikası: True = sessiz (email skip / webhook thread / push skip)
+    honor_email_quiet = bool(quiet_ch.get("email", True))
+    honor_webhook_quiet = bool(quiet_ch.get("webhook", True))
+    honor_push_quiet = bool(quiet_ch.get("push", False))
     thread_reply_ok = (
-        bool(NOTIFY_DIGEST_THREAD_REPLY) and webhook_configured and want_webhook
+        bool(NOTIFY_DIGEST_THREAD_REPLY)
+        and webhook_configured
+        and want_webhook
+        and honor_webhook_quiet
     )
-    # Quiet hours: push veya thread-reply kanalı yoksa erken çık.
-    if in_quiet and not (push_configured and want_push) and not thread_reply_ok:
+    push_during_quiet = want_push and push_configured and not honor_push_quiet
+    # Quiet hours: hiç kanal yoksa erken çık.
+    if in_quiet and not push_during_quiet and not thread_reply_ok:
+        # quiet'i yok sayan webhook/email de yok mu?
+        bypass_email = want_email and bool(NOTIFY_SMTP_HOST) and not honor_email_quiet
+        bypass_webhook = (
+            want_webhook and webhook_configured and not honor_webhook_quiet
+        )
+        if not bypass_email and not bypass_webhook:
+            return {
+                "sent": False,
+                "count": 0,
+                "reason": "quiet_hours",
+                "quiet_hours": resolved_qh,
+                "timezone": tz_resolved,
+                "tenant_id": tenant_id,
+                "channels": channels,
+                "quiet_channels": quiet_ch,
+            }
+    events = collect_digest_events(username, hours=hours, base=base)
+    if not events:
         return {
             "sent": False,
             "count": 0,
-            "reason": "quiet_hours",
-            "quiet_hours": resolved_qh,
-            "timezone": tz_resolved,
-            "tenant_id": tenant_id,
+            "reason": "empty",
             "channels": channels,
+            "quiet_channels": quiet_ch,
         }
-    events = collect_digest_events(username, hours=hours, base=base)
-    if not events:
-        return {"sent": False, "count": 0, "reason": "empty", "channels": channels}
     prep = prepare_digest_events(
         events,
         mentions_only=mentions_only,
@@ -1055,38 +1090,42 @@ def send_digest_email(
             "count": 0,
             "reason": reason,
             "channels": channels,
+            "quiet_channels": quiet_ch,
         }
     email_ok = False
     webhook_ok = False
     push_ok = False
     thread_reply = False
-    # E-posta: quiet hours'ta atlanır.
-    # Webhook: normal digest veya quiet-hours thread reply.
-    # Push: cihaz bazlı sessiz saat / geofence override ile filtrelenir.
-    if not in_quiet:
-        if want_email and NOTIFY_SMTP_HOST:
-            from rag.collab_notify_dispatch import dispatch_digest_email
+    # E-posta / webhook: quiet + honor → skip; honor=False → gönder
+    send_email_now = want_email and bool(NOTIFY_SMTP_HOST) and (
+        not in_quiet or not honor_email_quiet
+    )
+    send_webhook_full = want_webhook and webhook_configured and (
+        not in_quiet or not honor_webhook_quiet
+    )
+    if send_email_now:
+        from rag.collab_notify_dispatch import dispatch_digest_email
 
-            email_ok = dispatch_digest_email(
-                username,
-                events,
-                mentions_only=mentions_only,
-                group_by=group_by,
-                min_per_workspace=min_per_workspace,
-            )
-        if want_webhook and webhook_configured:
-            from rag.collab_notify_dispatch import dispatch_digest_webhook
+        email_ok = dispatch_digest_email(
+            username,
+            events,
+            mentions_only=mentions_only,
+            group_by=group_by,
+            min_per_workspace=min_per_workspace,
+        )
+    if send_webhook_full:
+        from rag.collab_notify_dispatch import dispatch_digest_webhook
 
-            webhook_ok = dispatch_digest_webhook(
-                username,
-                events,
-                mentions_only=mentions_only,
-                group_by=group_by,
-                min_per_workspace=min_per_workspace,
-                base=base,
-                persist_thread=True,
-            )
-    elif thread_reply_ok:
+        webhook_ok = dispatch_digest_webhook(
+            username,
+            events,
+            mentions_only=mentions_only,
+            group_by=group_by,
+            min_per_workspace=min_per_workspace,
+            base=base,
+            persist_thread=True,
+        )
+    elif in_quiet and thread_reply_ok:
         from rag.collab_notify_dispatch import dispatch_quiet_hours_thread_reply
 
         webhook_ok = dispatch_quiet_hours_thread_reply(
@@ -1098,7 +1137,11 @@ def send_digest_email(
             base=base,
         )
         thread_reply = bool(webhook_ok)
-    if want_push and push_configured:
+    # Push: quiet + honor → skip; aksi halde cihaz filtresi ile gönder
+    send_push_now = want_push and push_configured and (
+        not in_quiet or not honor_push_quiet
+    )
+    if send_push_now:
         from rag.collab_notify_push import dispatch_digest_push
 
         push_ok = dispatch_digest_push(
@@ -1118,6 +1161,7 @@ def send_digest_email(
             "count": len(filtered),
             "reason": "no_channel",
             "channels": channels,
+            "quiet_channels": quiet_ch,
         }
     sent = email_ok or webhook_ok or push_ok
     if not sent and in_quiet:
@@ -1145,6 +1189,7 @@ def send_digest_email(
         "reason": reason,
         "quiet_hours": resolved_qh,
         "channels": channels,
+        "quiet_channels": quiet_ch,
         "mentions_only": prep["mentions_only"],
         "group_by": prep["group_by"],
         "min_per_workspace": prep.get("min_per_workspace"),

@@ -12,6 +12,11 @@ on:
         required: false
         default: "false"
         type: boolean
+      run_judge_llm:
+        description: "LLM-as-judge gate (OpenAI/Ollama secrets gerekir)"
+        required: false
+        default: "false"
+        type: boolean
 
 jobs:
   test:
@@ -91,3 +96,39 @@ jobs:
         run: |
           pytest -q -m slow
           python -m rag.cli eval --embedding mini-en --min-accuracy 0.8
+
+  judge-llm:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_judge_llm }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Judge gate (llm)
+        env:
+          RAG_JUDGE_MODE: llm
+          RAG_JUDGE_PROVIDER: ${{ vars.RAG_JUDGE_PROVIDER || 'openai' }}
+          RAG_JUDGE_MODEL: ${{ vars.RAG_JUDGE_MODEL || 'gpt-4o-mini' }}
+          RAG_JUDGE_MIN_ACCURACY: ${{ vars.RAG_JUDGE_MIN_ACCURACY || '1.0' }}
+          RAG_JUDGE_OUTPUT: metadata/judge_report_llm.json
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OLLAMA_HOST: ${{ secrets.OLLAMA_HOST }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ] && [ -z "$OLLAMA_HOST" ]; then
+            echo "OPENAI_API_KEY veya OLLAMA_HOST secret gerekli — atlanıyor"
+            exit 0
+          fi
+          python scripts/ci_judge.py
+      - name: Upload LLM judge report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-report-llm-${{ github.run_id }}
+          path: metadata/judge_report_llm.json
+          if-no-files-found: ignore

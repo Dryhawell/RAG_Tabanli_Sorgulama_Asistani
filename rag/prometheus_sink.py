@@ -24,6 +24,8 @@ _ingest_chunks = None
 _rebuild_total = None
 _delete_total = None
 _events_total = None
+_push_revoked_total = None
+_push_prune_total = None
 
 
 def prometheus_available() -> bool:
@@ -41,6 +43,7 @@ def prometheus_available() -> bool:
 def _ensure_metrics():
     global _query_total, _query_latency, _query_gate
     global _ingest_total, _ingest_chunks, _rebuild_total, _delete_total, _events_total
+    global _push_revoked_total, _push_prune_total
     if _events_total is not None:
         return
     if not prometheus_available():
@@ -72,6 +75,16 @@ def _ensure_metrics():
     _ingest_chunks = Counter("rag_ingest_chunks_total", "Ingest edilen chunk sayısı")
     _rebuild_total = Counter("rag_rebuild_total", "Rebuild işlem sayısı")
     _delete_total = Counter("rag_delete_total", "Silme işlem sayısı")
+    _push_revoked_total = Counter(
+        "rag_push_token_revoked_total",
+        "Geçersiz push token revoke sayısı",
+        ["provider", "reason"],
+    )
+    _push_prune_total = Counter(
+        "rag_push_token_prune_total",
+        "Push token prune ile silinen kayıt sayısı",
+        ["kind"],
+    )
 
 
 def observe_metric(
@@ -112,6 +125,20 @@ def observe_metric(
             _rebuild_total.inc()
         elif kind == "delete":
             _delete_total.inc()
+        elif kind == "push_token_revoked":
+            assert _push_revoked_total is not None
+            _push_revoked_total.labels(
+                provider=str(vals.get("provider") or "unknown"),
+                reason=str(vals.get("reason") or "revoked"),
+            ).inc()
+        elif kind == "push_token_prune":
+            assert _push_prune_total is not None
+            revoked_n = int(vals.get("revoked_pruned") or 0)
+            expired_n = int(vals.get("expired_pruned") or 0)
+            if revoked_n:
+                _push_prune_total.labels(kind="revoked").inc(revoked_n)
+            if expired_n:
+                _push_prune_total.labels(kind="expired").inc(expired_n)
 
 
 def render_prometheus() -> bytes:

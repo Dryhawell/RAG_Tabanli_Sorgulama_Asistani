@@ -114,6 +114,8 @@ def summarize_metrics(
     ingest_count = 0
     rebuild_count = 0
     delete_count = 0
+    push_revoked_count = 0
+    push_prune_removed = 0
 
     for row in rows:
         kind = str(row.get("kind") or "unknown")
@@ -139,6 +141,10 @@ def summarize_metrics(
             rebuild_count += 1
         elif kind == "delete":
             delete_count += 1
+        elif kind == "push_token_revoked":
+            push_revoked_count += 1
+        elif kind == "push_token_prune":
+            push_prune_removed += int(vals.get("removed") or 0)
 
     recent = list(reversed(rows[-10:]))
 
@@ -156,5 +162,9 @@ def summarize_metrics(
         "ingest": {"count": ingest_count, "chunks_added": ingest_chunks},
         "rebuild": {"count": rebuild_count},
         "delete": {"count": delete_count},
+        "push": {
+            "token_revoked": push_revoked_count,
+            "token_pruned": push_prune_removed,
+        },
         "recent": recent,
     }

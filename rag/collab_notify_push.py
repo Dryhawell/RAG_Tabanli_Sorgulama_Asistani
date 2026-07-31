@@ -414,11 +414,15 @@ def revoke_device_token(
     token: str,
     *,
     base: Optional[str] = None,
+    reason: Optional[str] = None,
+    provider: Optional[str] = None,
+    record: bool = True,
 ) -> bool:
     user_key = (username or "").strip().lower()
     tok = (token or "").strip()
     rows = _read_all_tokens(base=base)
     changed = False
+    platform = provider
     for row in rows:
         if (
             str(row.get("username") or "").strip().lower() == user_key
@@ -426,9 +430,28 @@ def revoke_device_token(
         ):
             row["revoked"] = True
             row["revoked_at"] = _utcnow_iso()
+            if reason:
+                row["revoked_reason"] = str(reason)
+            if provider:
+                row["revoked_provider"] = str(provider)
+            platform = provider or row.get("platform") or "unknown"
             changed = True
     if changed:
         _write_all_tokens(rows, base=base)
+        if record:
+            try:
+                from rag.metrics import record_metric
+
+                record_metric(
+                    "push_token_revoked",
+                    username=username,
+                    values={
+                        "provider": platform or "unknown",
+                        "reason": reason or "revoked",
+                    },
+                )
+            except Exception:
+                pass
     return changed
 
 
@@ -436,23 +459,51 @@ def prune_expired_tokens(
     *,
     username: Optional[str] = None,
     base: Optional[str] = None,
+    record: bool = True,
 ) -> Dict[str, Any]:
     """Süresi dolmuş / revoked token'ları dosyadan temizler."""
     user_key = (username or "").strip().lower() if username else None
     rows = _read_all_tokens(base=base)
     kept: List[Dict[str, Any]] = []
     removed = 0
+    revoked_pruned = 0
+    expired_pruned = 0
+    by_reason: Dict[str, int] = {}
     for row in rows:
         if user_key and str(row.get("username") or "").strip().lower() != user_key:
             kept.append(row)
             continue
         if is_token_expired(row):
             removed += 1
+            if row.get("revoked"):
+                revoked_pruned += 1
+                reason = str(row.get("revoked_reason") or "revoked")
+                by_reason[reason] = by_reason.get(reason, 0) + 1
+            else:
+                expired_pruned += 1
             continue
         kept.append(row)
     if removed:
         _write_all_tokens(kept, base=base)
-    return {"removed": removed, "remaining": len(kept)}
+    result = {
+        "removed": removed,
+        "remaining": len(kept),
+        "revoked_pruned": revoked_pruned,
+        "expired_pruned": expired_pruned,
+        "by_reason": by_reason,
+    }
+    if record and removed:
+        try:
+            from rag.metrics import record_metric
+
+            record_metric(
+                "push_token_prune",
+                username=username,
+                values=result,
+            )
+        except Exception:
+            pass
+    return result
 
 
 def summarize_user_devices(
@@ -872,7 +923,13 @@ def _dispatch_apns_native(
                     ok_any = True
                     touch_device_last_seen(username, t, base=base)
                 elif is_apns_invalid_token_response(r):
-                    revoke_device_token(username, t, base=base)
+                    revoke_device_token(
+                        username,
+                        t,
+                        base=base,
+                        reason=parse_apns_error_reason(r) or "BadDeviceToken",
+                        provider="apns",
+                    )
     except Exception:
         return False
     return ok_any
@@ -960,7 +1017,13 @@ def dispatch_push(
                     ok_any = True
                     touch_device_last_seen(username, t, base=base)
                 elif is_fcm_invalid_token_response(r):
-                    revoke_device_token(username, t, base=base)
+                    revoke_device_token(
+                        username,
+                        t,
+                        base=base,
+                        reason=parse_fcm_error_code(r) or "UNREGISTERED",
+                        provider="fcm",
+                    )
         elif provider == "apns":
             for tok in tokens:
                 t = str(tok.get("token") or "").strip()
@@ -972,7 +1035,13 @@ def dispatch_push(
                     ok_any = True
                     touch_device_last_seen(username, t, base=base)
                 elif is_apns_invalid_token_response(r):
-                    revoke_device_token(username, t, base=base)
+                    revoke_device_token(
+                        username,
+                        t,
+                        base=base,
+                        reason=parse_apns_error_reason(r) or "BadDeviceToken",
+                        provider="apns",
+                    )
         else:
             payload = build_generic_push_payload(
                 username,

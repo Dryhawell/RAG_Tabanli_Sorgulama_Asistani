@@ -419,6 +419,83 @@ def update_user_digest_channels(
     return user_from_meta(uname, meta)
 
 
+# Quiet hours'a uyan kanallar (push varsayılan False = cihaz filtresi ile devam)
+_DEFAULT_QUIET_CHANNELS = {"email": True, "webhook": True, "push": False}
+
+
+def normalize_quiet_channels(raw: Any) -> Dict[str, bool]:
+    """quiet_channels dict → hangi kanallar quiet hours'a uyar."""
+    out = dict(_DEFAULT_QUIET_CHANNELS)
+    if raw is None:
+        return out
+    data = raw
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return out
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            parts = [p.strip().lower() for p in text.replace(";", ",").split(",") if p.strip()]
+            if parts:
+                out = {"email": False, "webhook": False, "push": False}
+                for p in parts:
+                    if p in out:
+                        out[p] = True
+            return out
+    if not isinstance(data, dict):
+        return out
+    for key in ("email", "webhook", "push"):
+        if key in data:
+            val = data[key]
+            if isinstance(val, str):
+                out[key] = val.strip().lower() not in {"0", "false", "no", "off", ""}
+            else:
+                out[key] = bool(val)
+    return out
+
+
+def get_user_quiet_channels(
+    username: str,
+    path: Optional[str] = None,
+) -> Dict[str, bool]:
+    """Quiet hours politikası: True = kanal sessiz saatte atlanır/thread."""
+    users = ensure_users_file(path or USERS_PATH)
+    uname = _safe_username(username)
+    meta = users.get(uname)
+    if not isinstance(meta, dict):
+        return dict(_DEFAULT_QUIET_CHANNELS)
+    return normalize_quiet_channels(meta.get("quiet_channels"))
+
+
+def update_user_quiet_channels(
+    username: str,
+    channels: Optional[Dict[str, Any]],
+    *,
+    path: Optional[str] = None,
+) -> User:
+    """Kanal başına quiet hours politikasını kaydeder."""
+    users_path = path or USERS_PATH
+    users = ensure_users_file(users_path)
+    uname = _safe_username(username)
+    if uname not in users:
+        raise ValueError("Kullanıcı bulunamadı")
+    meta = users[uname]
+    if not isinstance(meta, dict):
+        raise ValueError("Geçersiz kullanıcı kaydı")
+    if channels is None:
+        meta.pop("quiet_channels", None)
+    else:
+        normalized = normalize_quiet_channels(channels)
+        if normalized == _DEFAULT_QUIET_CHANNELS:
+            meta.pop("quiet_channels", None)
+        else:
+            meta["quiet_channels"] = normalized
+    users[uname] = meta
+    save_users(users, users_path)
+    return user_from_meta(uname, meta)
+
+
 def delete_user(
     username: str,
     *,

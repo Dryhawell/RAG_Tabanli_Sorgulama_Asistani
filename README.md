@@ -293,13 +293,13 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - **Bildirim merkezi**: `python -m rag.cli collab-notifications --user alice`
 - **E-posta/webhook**: `RAG_NOTIFY_SMTP_HOST`, `RAG_NOTIFY_WEBHOOK_URL` (Slack/Discord/generic)
 - **Digest**: `python -m rag.cli collab-notifications --digest --user alice --digest-mentions-only --digest-group-by thread` (e-posta + Slack/Discord/Teams + mobil push)
-- **Quiet hours**: profil `quiet_hours` + timezone; thread reply; bitince otomatik flush (`--digest-flush-quiet`)
-- **Digest kanalları**: kullanıcı `digest_channels` matrisi (email/webhook/push)
-- **Mobil push PoC**: FCM v1 OAuth + invalid-token revoke; APNs HTTP/2 (.p8)
+- **Quiet hours**: profil + thread reply + flush; **kanal politikası** `quiet_channels`
+- **Digest kanalları**: `digest_channels` matrisi (email/webhook/push)
+- **Mobil push PoC**: FCM/APNs invalid-token revoke + metrik; günlük prune workflow
 - **LoRA rollback**: CI status + PR comment bot
 - **Collab presence**: disk snapshot + typing
-- **Judge CI gate**: heuristic `scripts/ci_judge.py` (`RAG_JUDGE_MIN_ACCURACY`)
-- GitHub Actions: `collab-notify-digest.yml` (flush + digest)
+- **Judge CI**: heuristic gate; Actions → `run_judge_llm` (OpenAI/Ollama secrets)
+- GitHub Actions: digest flush + push prune
 - **Mark katmanları**: çoklu stil birleşimi (bold+italic) canlı editör + katman haritası + audit diff görselleştirme
 
 ### CRDT işbirlikçi not
@@ -496,6 +496,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
-- Judge: LLM mode CI job (Ollama/OpenAI secrets)
-- Push: APNs BadDeviceToken metrikleri / prune job
-- Digest: kanal başına quiet-hours politikası
+- Judge: groundedness regression set genişletme
+- Push: Web Push (VAPID) PoC
+- Tenant: digest rapor dashboard'u

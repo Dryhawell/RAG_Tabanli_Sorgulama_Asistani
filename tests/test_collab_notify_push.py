@@ -370,3 +370,36 @@ def test_fcm_invalid_token_auto_revoke(tmp_path, monkeypatch):
     devices = summarize_user_devices("alice")
     assert devices and devices[0]["revoked"] is True
     assert list_device_tokens("alice") == []
+
+
+def test_revoke_records_metric_and_prune_breakdown(tmp_path, monkeypatch):
+    from rag.collab_notify_push import (
+        prune_expired_tokens,
+        register_device_token,
+        revoke_device_token,
+        summarize_user_devices,
+    )
+
+    monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
+    metrics = []
+
+    def fake_record(kind, **kwargs):
+        metrics.append({"kind": kind, **kwargs})
+        return {}
+
+    monkeypatch.setattr("rag.metrics.record_metric", fake_record)
+    register_device_token("alice", "tok-bad", platform="apns")
+    assert revoke_device_token(
+        "alice",
+        "tok-bad",
+        reason="BadDeviceToken",
+        provider="apns",
+    )
+    assert any(m["kind"] == "push_token_revoked" for m in metrics)
+    devices = summarize_user_devices("alice")
+    assert devices[0].get("revoked") is True
+
+    result = prune_expired_tokens(username="alice")
+    assert result["removed"] == 1
+    assert result["revoked_pruned"] == 1
+    assert any(m["kind"] == "push_token_prune" for m in metrics)

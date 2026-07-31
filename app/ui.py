@@ -766,6 +766,36 @@ with st.sidebar:
                 },
             )
             st.success(t("account_digest_channels_saved"))
+        from rag.auth import get_user_quiet_channels, update_user_quiet_channels
+
+        _qc = get_user_quiet_channels(current_user.username)
+        st.caption(t("account_quiet_channels"))
+        st.caption(t("account_quiet_channels_help"))
+        _qc_email = st.checkbox(
+            t("account_quiet_ch_email"),
+            value=bool(_qc.get("email", True)),
+            key="account_quiet_ch_email",
+        )
+        _qc_webhook = st.checkbox(
+            t("account_quiet_ch_webhook"),
+            value=bool(_qc.get("webhook", True)),
+            key="account_quiet_ch_webhook",
+        )
+        _qc_push = st.checkbox(
+            t("account_quiet_ch_push"),
+            value=bool(_qc.get("push", False)),
+            key="account_quiet_ch_push",
+        )
+        if st.button(t("account_quiet_channels_save"), use_container_width=True, key="save_qc"):
+            update_user_quiet_channels(
+                current_user.username,
+                {
+                    "email": _qc_email,
+                    "webhook": _qc_webhook,
+                    "push": _qc_push,
+                },
+            )
+            st.success(t("account_quiet_channels_saved"))
         if ws.shared:
             st.caption("İndeks paylaşımlı (aynı tenant içindeki kullanıcılar).")
         else:
