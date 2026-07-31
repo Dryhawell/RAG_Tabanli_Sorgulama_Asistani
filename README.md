@@ -293,9 +293,9 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - **Bildirim merkezi**: `python -m rag.cli collab-notifications --user alice`
 - **E-posta/webhook**: `RAG_NOTIFY_SMTP_HOST`, `RAG_NOTIFY_WEBHOOK_URL` (Slack/Discord/generic)
 - **Digest**: `python -m rag.cli collab-notifications --digest --user alice --digest-mentions-only --digest-group-by thread` (e-posta + Slack/Discord/Teams + mobil push)
-- **Quiet hours**: profil `quiet_hours` + timezone (hesap ayarı) > tenant eşlemesi > `RAG_NOTIFY_DIGEST_*`
-- **Mobil push PoC**: cihaz adı/OS/app meta + `last_seen_at`; cihaz `quiet_hours` / geofence override; CLI `--push-quiet-hours` / `--push-geofence-*`
-- **LoRA rollback**: Actions → `LoRA Rollback Rebuild` (`confirm_rebuild=true` ile gerçek rebuild); CI `lora/rollback` status artifact + PR yorum markdown
+- **Quiet hours**: profil `quiet_hours` + timezone; sessiz saatte Slack/Teams **thread reply özeti** (`RAG_NOTIFY_DIGEST_THREAD_REPLY`)
+- **Mobil push PoC**: cihaz meta + quiet/geofence; **FCM v1** OAuth service account (`RAG_NOTIFY_PUSH_FCM_*`) veya Bearer API key
+- **LoRA rollback**: CI status artifact + PR comment bot (marker upsert, `pull_request`'ta canlı `gh api`)
 - GitHub Actions: `collab-notify-digest.yml` (günlük schedule)
 - **Mark katmanları**: çoklu stil birleşimi (bold+italic) canlı editör + katman haritası + audit diff görselleştirme
 
@@ -427,10 +427,17 @@ export RAG_ENABLE_COLLAB_RICHTEXT=1
 | `RAG_NOTIFY_DIGEST_QUIET_HOURS` | Quiet hours yerel `HH:MM-HH:MM` (örn. `22:00-07:00`, boş=kapalı) |
 | `RAG_NOTIFY_DIGEST_TIMEZONE` | Quiet hours IANA timezone (varsayılan `UTC`) |
 | `RAG_NOTIFY_TENANT_TIMEZONES` | Tenant→timezone (`default:Europe/Istanbul,acme:America/New_York`) |
+| `RAG_NOTIFY_DIGEST_THREAD_REPLY` | Quiet hours'ta Slack/Teams thread özeti (1/0, varsayılan açık) |
+| `RAG_NOTIFY_DIGEST_SLACK_THREAD_TS` | Slack parent `thread_ts` (yoksa state dosyası) |
+| `RAG_NOTIFY_DIGEST_TEAMS_REPLY_ID` | Teams `replyToId` |
+| `RAG_NOTIFY_SLACK_BOT_TOKEN` | Slack `chat.postMessage` bot token (opsiyonel) |
+| `RAG_NOTIFY_SLACK_CHANNEL` | Slack kanal id (bot path) |
 | `RAG_NOTIFY_PUSH_URL` | Mobil push endpoint (FCM/APNs gateway / generic) |
 | `RAG_NOTIFY_PUSH_API_KEY` | Push API anahtarı / Bearer token |
 | `RAG_NOTIFY_PUSH_PROVIDER` | `generic` / `fcm` / `apns` |
 | `RAG_NOTIFY_PUSH_TOKEN_TTL_DAYS` | Push token TTL (gün, varsayılan 90) |
+| `RAG_NOTIFY_PUSH_FCM_PROJECT_ID` | FCM v1 project id (URL boşsa endpoint üretir) |
+| `RAG_NOTIFY_PUSH_FCM_SERVICE_ACCOUNT_JSON` | Service account JSON yolu veya inline JSON |
 | `RAG_LORA_DP_EVAL_AUTO_ROLLBACK` | Gate başarısızsa rollback_suggestion.json yaz (1/0) |
 | `RAG_EMBED_PIPELINE_REPORT_PATH` | Pipeline JSON rapor yolu |
 | `RAG_DOMAIN_EMBEDDING_MODEL` | Domain/fine-tuned embedding model yolu veya Hub adı |
@@ -476,7 +483,7 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Digest: Slack/Teams thread reply quiet-hours özeti
-- LoRA: otomatik PR comment bot (secrets ile canlı `gh api` post)
-- Push: APNs native HTTP/2 + FCM v1 OAuth service account
+- Push: APNs native HTTP/2 (.p8 JWT)
 - Collab: presence + typing indicator kalıcılığı
+- Digest: quiet-hours sonrası otomatik tam digest flush
+- Eval: LLM-as-judge CI gate

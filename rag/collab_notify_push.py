@@ -12,6 +12,8 @@ try:
     from app.config import (
         METADATA_DIR,
         NOTIFY_PUSH_API_KEY,
+        NOTIFY_PUSH_FCM_PROJECT_ID,
+        NOTIFY_PUSH_FCM_SERVICE_ACCOUNT_JSON,
         NOTIFY_PUSH_PROVIDER,
         NOTIFY_PUSH_TOKEN_TTL_DAYS,
         NOTIFY_PUSH_URL,
@@ -22,6 +24,10 @@ except ImportError:
     NOTIFY_PUSH_API_KEY = ""
     NOTIFY_PUSH_PROVIDER = "generic"
     NOTIFY_PUSH_TOKEN_TTL_DAYS = 90
+    NOTIFY_PUSH_FCM_PROJECT_ID = ""
+    NOTIFY_PUSH_FCM_SERVICE_ACCOUNT_JSON = ""
+
+_FCM_TOKEN_CACHE: Dict[str, Any] = {"token": None, "expires_at": 0.0}
 
 
 def _utcnow() -> datetime:
@@ -486,6 +492,104 @@ def build_fcm_payload(
     }
 
 
+def load_fcm_service_account_info(
+    source: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Service account JSON (dosya yolu veya inline JSON)."""
+    raw = (source if source is not None else NOTIFY_PUSH_FCM_SERVICE_ACCOUNT_JSON) or ""
+    raw = raw.strip()
+    if not raw:
+        return None
+    if os.path.isfile(raw):
+        with open(raw, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def get_fcm_access_token(
+    *,
+    service_account_json: Optional[str] = None,
+    force_refresh: bool = False,
+) -> Optional[str]:
+    """FCM v1 OAuth access token (google-auth service account)."""
+    import time
+
+    now = time.time()
+    cached = _FCM_TOKEN_CACHE.get("token")
+    exp = float(_FCM_TOKEN_CACHE.get("expires_at") or 0.0)
+    if cached and not force_refresh and now < exp - 60:
+        return str(cached)
+    info = load_fcm_service_account_info(service_account_json)
+    if not info:
+        return None
+    try:
+        from google.oauth2 import service_account
+
+        creds = service_account.Credentials.from_service_account_info(
+            info,
+            scopes=["https://www.googleapis.com/auth/firebase.messaging"],
+        )
+        creds.refresh(__import__("google.auth.transport.requests", fromlist=["Request"]).Request())
+        token = creds.token
+        expiry = getattr(creds, "expiry", None)
+        expires_at = expiry.timestamp() if expiry is not None else now + 3500
+        _FCM_TOKEN_CACHE["token"] = token
+        _FCM_TOKEN_CACHE["expires_at"] = expires_at
+        return str(token) if token else None
+    except Exception:
+        return None
+
+
+def resolve_fcm_endpoint(
+    *,
+    project_id: Optional[str] = None,
+    url: Optional[str] = None,
+) -> str:
+    """FCM v1 messages:send URL; açık URL > project_id varsayılanı > NOTIFY_PUSH_URL."""
+    explicit = (url if url is not None else NOTIFY_PUSH_URL) or ""
+    explicit = explicit.strip()
+    if explicit:
+        return explicit
+    pid = (project_id if project_id is not None else NOTIFY_PUSH_FCM_PROJECT_ID) or ""
+    pid = pid.strip()
+    if pid:
+        return f"https://fcm.googleapis.com/v1/projects/{pid}/messages:send"
+    return ""
+
+
+def resolve_fcm_auth_header(
+    *,
+    api_key: Optional[str] = None,
+    service_account_json: Optional[str] = None,
+) -> Optional[str]:
+    """Bearer token: OAuth service account > statik API key."""
+    oauth = get_fcm_access_token(service_account_json=service_account_json)
+    if oauth:
+        return f"Bearer {oauth}"
+    key = (api_key if api_key is not None else NOTIFY_PUSH_API_KEY) or ""
+    key = key.strip()
+    if key:
+        if key.lower().startswith("bearer "):
+            return key
+        return f"Bearer {key}"
+    return None
+
+
+def is_push_configured() -> bool:
+    """Push kanalı yapılandırılmış mı (URL veya FCM project)."""
+    provider = (NOTIFY_PUSH_PROVIDER or "generic").lower()
+    if provider == "fcm":
+        return bool(resolve_fcm_endpoint())
+    return bool((NOTIFY_PUSH_URL or "").strip())
+
+
 def build_apns_payload(
     token: str,
     *,
@@ -533,7 +637,11 @@ def dispatch_push(
     ignore_quiet_hours: bool = False,
 ) -> bool:
     """Kayıtlı (süresi dolmamış) cihaz token'larına push gönderir."""
-    url = (NOTIFY_PUSH_URL or "").strip()
+    provider = (NOTIFY_PUSH_PROVIDER or "generic").lower()
+    if provider == "fcm":
+        url = resolve_fcm_endpoint()
+    else:
+        url = (NOTIFY_PUSH_URL or "").strip()
     if not url:
         return False
     tokens = list_device_tokens(username, include_expired=False, base=base)
@@ -550,13 +658,13 @@ def dispatch_push(
     try:
         import requests
 
-        provider = (NOTIFY_PUSH_PROVIDER or "generic").lower()
         headers: Dict[str, str] = {"Content-Type": "application/json"}
-        if NOTIFY_PUSH_API_KEY:
-            if provider == "fcm":
-                headers["Authorization"] = f"Bearer {NOTIFY_PUSH_API_KEY}"
-            else:
-                headers["Authorization"] = f"key={NOTIFY_PUSH_API_KEY}"
+        if provider == "fcm":
+            auth = resolve_fcm_auth_header()
+            if auth:
+                headers["Authorization"] = auth
+        elif NOTIFY_PUSH_API_KEY:
+            headers["Authorization"] = f"key={NOTIFY_PUSH_API_KEY}"
 
         ok_any = False
         if provider == "fcm":

@@ -277,7 +277,51 @@ def test_quiet_hours_user_profile_spec(tmp_path, monkeypatch):
     assert resolve_quiet_hours_spec(username="alice") == "22:00-07:00"
     night = datetime(2026, 1, 1, 23, 0, tzinfo=timezone.utc)
     assert is_quiet_hours(now=night, username="alice", timezone_name="UTC") is True
-    # açık off quiet hours'ı kapatır
     assert resolve_quiet_hours_spec(quiet_spec="off", username="alice") is None
     assert is_quiet_hours(now=night, quiet_spec="off", username="alice") is False
+
+
+def test_quiet_hours_summary_builders():
+    from rag.collab_notify_digest import (
+        build_quiet_hours_slack_blocks,
+        build_quiet_hours_summary_text,
+        build_quiet_hours_teams_card,
+    )
+
+    events = [
+        {
+            "workspace_key": "ws",
+            "from_user": "bob",
+            "body_preview": "gece",
+            "kind": "mention",
+        }
+    ]
+    text = build_quiet_hours_summary_text(events, "alice")
+    assert "Quiet hours özeti" in text
+    assert "bob" in text
+    blocks = build_quiet_hours_slack_blocks(events, "alice")
+    assert blocks[0]["type"] == "section"
+    card = build_quiet_hours_teams_card(events, "alice")
+    assert card["type"] == "AdaptiveCard"
+    assert "Quiet hours" in card["body"][0]["text"]
+
+
+def test_digest_thread_state_roundtrip(tmp_path):
+    from rag.collab_notify_digest import (
+        load_digest_thread_state,
+        resolve_digest_thread_refs,
+        save_digest_thread_state,
+    )
+
+    save_digest_thread_state(
+        "alice",
+        slack_thread_ts="111.222",
+        teams_reply_id="team-1",
+        base=str(tmp_path),
+    )
+    state = load_digest_thread_state("alice", base=str(tmp_path))
+    assert state["slack_thread_ts"] == "111.222"
+    refs = resolve_digest_thread_refs("alice", base=str(tmp_path))
+    assert refs["slack_thread_ts"] == "111.222"
+    assert refs["teams_reply_id"] == "team-1"
 

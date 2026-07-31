@@ -212,6 +212,8 @@ def test_build_lora_pr_status(tmp_path):
     assert bad["state"] == "failure"
     assert "rollback" in bad["description"].lower() or "LoRA" in bad["description"]
     assert "### LoRA rollback status" in bad["comment_markdown"]
+    assert "<!-- lora-rollback-bot -->" in bad["comment_markdown"]
+    assert bad.get("comment_marker") == "<!-- lora-rollback-bot -->"
 
     ok = build_lora_pr_status({"should_rollback": False, "reason": "ok", "regression_count": 0})
     assert ok["state"] == "success"

@@ -470,6 +470,9 @@ def run_lora_dp_eval_report(
     return report
 
 
+LORA_PR_COMMENT_MARKER = "<!-- lora-rollback-bot -->"
+
+
 def build_lora_pr_status(
     suggestion: Optional[Dict[str, Any]] = None,
     *,
@@ -489,6 +492,7 @@ def build_lora_pr_status(
         else "LoRA eval OK — rollback gerekmiyor"
     )
     comment_lines = [
+        LORA_PR_COMMENT_MARKER,
         "### LoRA rollback status",
         "",
         f"- **state**: `{state}`",
@@ -516,6 +520,7 @@ def build_lora_pr_status(
         "should_rollback": should,
         "reason": reason,
         "suggestion": sug,
+        "comment_marker": LORA_PR_COMMENT_MARKER,
         "comment_markdown": "\n".join(comment_lines) + "\n",
     }
 

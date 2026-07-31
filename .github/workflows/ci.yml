@@ -16,6 +16,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,8 +34,9 @@ jobs:
         run: pytest -q -m "not slow"
       - name: LoRA rollback PR status artifacts
         env:
-          LORA_PR_STATUS_POST: "0"
-          LORA_PR_COMMENT_POST: "0"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LORA_PR_STATUS_POST: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+          LORA_PR_COMMENT_POST: ${{ github.event_name == 'pull_request' && '1' || '0' }}
           LORA_PR_STATUS_FAIL_ON_ROLLBACK: "0"
         run: |
           python scripts/ci_lora_rollback.py || true

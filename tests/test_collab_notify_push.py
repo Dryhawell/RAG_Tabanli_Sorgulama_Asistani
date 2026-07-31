@@ -172,3 +172,65 @@ def test_device_quiet_hours_and_geofence(tmp_path, monkeypatch):
     assert "tok-qh" in tok_list
     assert "tok-geo" in tok_list
 
+
+def test_fcm_endpoint_and_auth_header(tmp_path, monkeypatch):
+    from rag.collab_notify_push import (
+        load_fcm_service_account_info,
+        resolve_fcm_auth_header,
+        resolve_fcm_endpoint,
+    )
+
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_URL", "")
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_FCM_PROJECT_ID", "demo-proj")
+    assert resolve_fcm_endpoint().endswith("/projects/demo-proj/messages:send")
+
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_URL", "https://gateway/push")
+    assert resolve_fcm_endpoint() == "https://gateway/push"
+
+    sa = tmp_path / "sa.json"
+    sa.write_text('{"type": "service_account", "project_id": "x"}', encoding="utf-8")
+    info = load_fcm_service_account_info(str(sa))
+    assert info["type"] == "service_account"
+
+    monkeypatch.setattr(
+        "rag.collab_notify_push.get_fcm_access_token",
+        lambda **kwargs: "oauth-token",
+    )
+    assert resolve_fcm_auth_header() == "Bearer oauth-token"
+
+    monkeypatch.setattr(
+        "rag.collab_notify_push.get_fcm_access_token",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_API_KEY", "static-key")
+    assert resolve_fcm_auth_header() == "Bearer static-key"
+
+
+def test_dispatch_push_fcm_uses_oauth_header(tmp_path, monkeypatch):
+    from rag.collab_notify_push import dispatch_push, register_device_token
+
+    monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_PROVIDER", "fcm")
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_URL", "")
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_FCM_PROJECT_ID", "p1")
+    monkeypatch.setattr(
+        "rag.collab_notify_push.resolve_fcm_auth_header",
+        lambda **kwargs: "Bearer tok-oauth",
+    )
+    register_device_token("alice", "device-fcm", platform="fcm")
+    calls = []
+
+    class FakeResp:
+        status_code = 200
+
+    def fake_post(url, json=None, headers=None, timeout=10):
+        calls.append({"url": url, "json": json, "headers": headers})
+        return FakeResp()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    assert dispatch_push("alice", title="T", body="B") is True
+    assert "fcm.googleapis.com/v1/projects/p1/messages:send" in calls[0]["url"]
+    assert calls[0]["headers"]["Authorization"] == "Bearer tok-oauth"
+    assert calls[0]["json"]["message"]["token"] == "device-fcm"
+
+

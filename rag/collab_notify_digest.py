@@ -9,19 +9,26 @@ from typing import Any, Dict, List, Optional
 
 try:
     from app.config import (
+        METADATA_DIR,
         NOTIFY_DIGEST_GROUP_BY,
         NOTIFY_DIGEST_HOURS,
         NOTIFY_DIGEST_HTML,
         NOTIFY_DIGEST_MENTIONS_ONLY,
         NOTIFY_DIGEST_MIN_PER_WORKSPACE,
         NOTIFY_DIGEST_QUIET_HOURS,
+        NOTIFY_DIGEST_SLACK_THREAD_TS,
+        NOTIFY_DIGEST_TEAMS_REPLY_ID,
+        NOTIFY_DIGEST_THREAD_REPLY,
         NOTIFY_DIGEST_TIMEZONE,
         NOTIFY_FROM_EMAIL,
+        NOTIFY_SLACK_BOT_TOKEN,
+        NOTIFY_SLACK_CHANNEL,
         NOTIFY_SMTP_HOST,
         NOTIFY_TENANT_TIMEZONES,
         NOTIFY_WEBHOOK_URL,
     )
 except ImportError:
+    METADATA_DIR = "metadata"
     NOTIFY_DIGEST_HOURS = 24
     NOTIFY_DIGEST_MENTIONS_ONLY = False
     NOTIFY_DIGEST_GROUP_BY = "thread"
@@ -30,6 +37,11 @@ except ImportError:
     NOTIFY_DIGEST_QUIET_HOURS = ""
     NOTIFY_DIGEST_TIMEZONE = "UTC"
     NOTIFY_TENANT_TIMEZONES = ""
+    NOTIFY_DIGEST_THREAD_REPLY = True
+    NOTIFY_DIGEST_SLACK_THREAD_TS = ""
+    NOTIFY_DIGEST_TEAMS_REPLY_ID = ""
+    NOTIFY_SLACK_BOT_TOKEN = ""
+    NOTIFY_SLACK_CHANNEL = ""
     NOTIFY_SMTP_HOST = ""
     NOTIFY_FROM_EMAIL = "noreply@localhost"
     NOTIFY_WEBHOOK_URL = ""
@@ -678,15 +690,25 @@ def build_digest_teams_payload(
     *,
     mentions_only: Optional[bool] = None,
     group_by: Optional[str] = None,
+    reply_to_id: Optional[str] = None,
+    quiet_hours_summary: bool = False,
 ) -> Dict[str, Any]:
     """Teams workflow webhook payload (Adaptive Card attachment)."""
-    card = build_digest_teams_adaptive_card(
-        events,
-        username,
-        mentions_only=mentions_only,
-        group_by=group_by,
-    )
-    return {
+    if quiet_hours_summary:
+        card = build_quiet_hours_teams_card(
+            events,
+            username,
+            mentions_only=mentions_only,
+            group_by=group_by,
+        )
+    else:
+        card = build_digest_teams_adaptive_card(
+            events,
+            username,
+            mentions_only=mentions_only,
+            group_by=group_by,
+        )
+    payload: Dict[str, Any] = {
         "type": "message",
         "attachments": [
             {
@@ -695,6 +717,238 @@ def build_digest_teams_payload(
                 "content": card,
             }
         ],
+    }
+    rid = (reply_to_id or "").strip()
+    if rid:
+        payload["replyToId"] = rid
+    return payload
+
+
+def digest_thread_state_path(base: Optional[str] = None) -> str:
+    root = base or METADATA_DIR
+    return os.path.join(root, "collab", "digest_threads.json")
+
+
+def load_digest_thread_state(
+    username: str,
+    *,
+    base: Optional[str] = None,
+) -> Dict[str, Any]:
+    path = digest_thread_state_path(base=base)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    row = data.get((username or "").strip().lower())
+    return dict(row) if isinstance(row, dict) else {}
+
+
+def save_digest_thread_state(
+    username: str,
+    *,
+    slack_thread_ts: Optional[str] = None,
+    teams_reply_id: Optional[str] = None,
+    channel: Optional[str] = None,
+    base: Optional[str] = None,
+) -> Dict[str, Any]:
+    path = digest_thread_state_path(base=base)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    data: Dict[str, Any] = {}
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:
+            data = {}
+    key = (username or "").strip().lower()
+    row = dict(data.get(key) or {})
+    if slack_thread_ts:
+        row["slack_thread_ts"] = str(slack_thread_ts).strip()
+    if teams_reply_id:
+        row["teams_reply_id"] = str(teams_reply_id).strip()
+    if channel:
+        row["channel"] = str(channel).strip()
+    row["updated_at"] = datetime.now(timezone.utc).isoformat()
+    data[key] = row
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return row
+
+
+def resolve_digest_thread_refs(
+    username: str,
+    *,
+    base: Optional[str] = None,
+    slack_thread_ts: Optional[str] = None,
+    teams_reply_id: Optional[str] = None,
+) -> Dict[str, Optional[str]]:
+    """Öncelik: açık argüman > env > kayıtlı state."""
+    state = load_digest_thread_state(username, base=base)
+    slack_ts = (
+        (slack_thread_ts or "").strip()
+        or NOTIFY_DIGEST_SLACK_THREAD_TS
+        or str(state.get("slack_thread_ts") or "").strip()
+        or None
+    )
+    teams_id = (
+        (teams_reply_id or "").strip()
+        or NOTIFY_DIGEST_TEAMS_REPLY_ID
+        or str(state.get("teams_reply_id") or "").strip()
+        or None
+    )
+    channel = (NOTIFY_SLACK_CHANNEL or str(state.get("channel") or "").strip() or None)
+    return {
+        "slack_thread_ts": slack_ts,
+        "teams_reply_id": teams_id,
+        "channel": channel,
+    }
+
+
+def build_quiet_hours_summary_text(
+    events: List[Dict[str, Any]],
+    username: str,
+    *,
+    mentions_only: Optional[bool] = None,
+    group_by: Optional[str] = None,
+) -> str:
+    """Quiet hours thread reply için kısa metin özeti."""
+    prep = prepare_digest_events(
+        events,
+        mentions_only=mentions_only,
+        group_by=group_by,
+    )
+    lines = [
+        f"Quiet hours özeti — {username}",
+        f"Toplam {prep['total']} bekleyen bildirim"
+        + (" (yalnızca @mention)" if prep["mentions_only"] else ""),
+        "Tam digest sessiz saat bitince gönderilecek.",
+    ]
+    shown = 0
+    for group_key, group_events in prep["grouped"].items():
+        if group_key != "all":
+            lines.append(f"[{group_key}] {len(group_events)}")
+        for ev in group_events[:5]:
+            preview = (ev.get("body_preview") or "").strip() or "—"
+            lines.append(
+                f"- {ev.get('from_user') or '-'}: {preview[:120]}"
+            )
+            shown += 1
+            if shown >= 8:
+                break
+        if shown >= 8:
+            break
+    if prep["total"] > shown:
+        lines.append(f"+{prep['total'] - shown} daha")
+    return "\n".join(lines)
+
+
+def build_quiet_hours_slack_blocks(
+    events: List[Dict[str, Any]],
+    username: str,
+    *,
+    mentions_only: Optional[bool] = None,
+    group_by: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    prep = prepare_digest_events(
+        events,
+        mentions_only=mentions_only,
+        group_by=group_by,
+    )
+    blocks: List[Dict[str, Any]] = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*Quiet hours özeti — {username}*\n"
+                    f"Toplam *{prep['total']}* bekleyen bildirim. "
+                    "Tam digest sessiz saat bitince gelecek."
+                ),
+            },
+        }
+    ]
+    shown = 0
+    for _gk, group_events in prep["grouped"].items():
+        for ev in group_events:
+            if shown >= 8:
+                break
+            preview = (ev.get("body_preview") or "").strip() or "—"
+            blocks.append(
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": (
+                                f"{ev.get('from_user') or '-'} · "
+                                f"`{ev.get('workspace_key') or '-'}` · {preview[:140]}"
+                            ),
+                        }
+                    ],
+                }
+            )
+            shown += 1
+        if shown >= 8:
+            break
+    return blocks
+
+
+def build_quiet_hours_teams_card(
+    events: List[Dict[str, Any]],
+    username: str,
+    *,
+    mentions_only: Optional[bool] = None,
+    group_by: Optional[str] = None,
+) -> Dict[str, Any]:
+    prep = prepare_digest_events(
+        events,
+        mentions_only=mentions_only,
+        group_by=group_by,
+    )
+    body: List[Dict[str, Any]] = [
+        {
+            "type": "TextBlock",
+            "text": f"Quiet hours özeti — {username}",
+            "weight": "Bolder",
+            "size": "Medium",
+        },
+        {
+            "type": "TextBlock",
+            "text": (
+                f"{prep['total']} bekleyen bildirim. "
+                "Tam digest sessiz saat bitince gönderilecek."
+            ),
+            "wrap": True,
+            "isSubtle": True,
+        },
+    ]
+    facts: List[Dict[str, str]] = []
+    for _gk, group_events in prep["grouped"].items():
+        for ev in group_events:
+            if len(facts) >= 8:
+                break
+            facts.append(
+                {
+                    "title": str(ev.get("from_user") or "-"),
+                    "value": (ev.get("body_preview") or "—")[:160],
+                }
+            )
+        if len(facts) >= 8:
+            break
+    if facts:
+        body.append({"type": "FactSet", "facts": facts})
+    return {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "body": body,
     }
 
 
@@ -724,12 +978,15 @@ def send_digest_email(
         username=username,
     )
     try:
-        from app.config import NOTIFY_PUSH_URL
+        from rag.collab_notify_push import is_push_configured
     except ImportError:
-        NOTIFY_PUSH_URL = ""
-    push_configured = bool((NOTIFY_PUSH_URL or "").strip())
-    # Push yoksa quiet hours'ta erken çık (cihaz override yok).
-    if in_quiet and not push_configured:
+        def is_push_configured() -> bool:  # type: ignore
+            return False
+    push_configured = is_push_configured()
+    webhook_configured = bool((NOTIFY_WEBHOOK_URL or "").strip())
+    thread_reply_ok = bool(NOTIFY_DIGEST_THREAD_REPLY) and webhook_configured
+    # Quiet hours: push veya thread-reply kanalı yoksa erken çık.
+    if in_quiet and not push_configured and not thread_reply_ok:
         return {
             "sent": False,
             "count": 0,
@@ -758,7 +1015,9 @@ def send_digest_email(
     email_ok = False
     webhook_ok = False
     push_ok = False
-    # E-posta/webhook: kullanıcı quiet hours'ta atlanır.
+    thread_reply = False
+    # E-posta: quiet hours'ta atlanır.
+    # Webhook: normal digest veya quiet-hours thread reply.
     # Push: cihaz bazlı sessiz saat / geofence override ile filtrelenir.
     if not in_quiet:
         if NOTIFY_SMTP_HOST:
@@ -771,7 +1030,7 @@ def send_digest_email(
                 group_by=group_by,
                 min_per_workspace=min_per_workspace,
             )
-        if NOTIFY_WEBHOOK_URL:
+        if webhook_configured:
             from rag.collab_notify_dispatch import dispatch_digest_webhook
 
             webhook_ok = dispatch_digest_webhook(
@@ -780,7 +1039,21 @@ def send_digest_email(
                 mentions_only=mentions_only,
                 group_by=group_by,
                 min_per_workspace=min_per_workspace,
+                base=base,
+                persist_thread=True,
             )
+    elif thread_reply_ok:
+        from rag.collab_notify_dispatch import dispatch_quiet_hours_thread_reply
+
+        webhook_ok = dispatch_quiet_hours_thread_reply(
+            username,
+            events,
+            mentions_only=mentions_only,
+            group_by=group_by,
+            min_per_workspace=min_per_workspace,
+            base=base,
+        )
+        thread_reply = bool(webhook_ok)
     if push_configured:
         from rag.collab_notify_push import dispatch_digest_push
 
@@ -792,7 +1065,7 @@ def send_digest_email(
             min_per_workspace=min_per_workspace,
             base=base,
         )
-    if not NOTIFY_SMTP_HOST and not NOTIFY_WEBHOOK_URL and not push_configured:
+    if not NOTIFY_SMTP_HOST and not webhook_configured and not push_configured:
         return {"sent": False, "count": len(filtered), "reason": "no_channel"}
     sent = email_ok or webhook_ok or push_ok
     if not sent and in_quiet:
@@ -805,6 +1078,7 @@ def send_digest_email(
         "email": email_ok,
         "webhook": webhook_ok,
         "push": push_ok,
+        "thread_reply": thread_reply,
         "reason": reason,
         "quiet_hours": resolved_qh,
         "mentions_only": prep["mentions_only"],

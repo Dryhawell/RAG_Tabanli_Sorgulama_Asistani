@@ -226,8 +226,17 @@ def dispatch_digest_webhook(
     mentions_only: Optional[bool] = None,
     group_by: Optional[str] = None,
     min_per_workspace: Optional[int] = None,
+    thread_ts: Optional[str] = None,
+    reply_to_id: Optional[str] = None,
+    quiet_hours_summary: bool = False,
+    base: Optional[str] = None,
+    persist_thread: bool = False,
 ) -> bool:
-    """Digest özetini webhook'a gönderir (Teams/Slack/Discord/generic)."""
+    """Digest özetini webhook'a gönderir (Teams/Slack/Discord/generic).
+
+    Slack: `thread_ts` ile thread reply; Teams: `replyToId`.
+    Quiet hours özeti: kısa summary payload.
+    """
     url = (NOTIFY_WEBHOOK_URL or "").strip()
     if not url or not events:
         return False
@@ -239,11 +248,24 @@ def dispatch_digest_webhook(
             build_digest_discord_embed,
             build_digest_slack_blocks,
             build_digest_teams_payload,
+            build_quiet_hours_slack_blocks,
+            build_quiet_hours_summary_text,
             is_discord_webhook_url,
             is_slack_webhook_url,
             is_teams_webhook_url,
             prepare_digest_events,
+            resolve_digest_thread_refs,
+            save_digest_thread_state,
         )
+
+        refs = resolve_digest_thread_refs(
+            username,
+            base=base,
+            slack_thread_ts=thread_ts,
+            teams_reply_id=reply_to_id,
+        )
+        slack_ts = refs.get("slack_thread_ts")
+        teams_id = refs.get("teams_reply_id")
 
         prep = prepare_digest_events(
             events,
@@ -251,23 +273,34 @@ def dispatch_digest_webhook(
             group_by=group_by,
             min_per_workspace=min_per_workspace,
         )
-        text = build_digest_body(
-            events,
-            username,
-            mentions_only=mentions_only,
-            group_by=group_by,
-            min_per_workspace=min_per_workspace,
-        )
+        if quiet_hours_summary:
+            text = build_quiet_hours_summary_text(
+                events,
+                username,
+                mentions_only=mentions_only,
+                group_by=group_by,
+            )
+        else:
+            text = build_digest_body(
+                events,
+                username,
+                mentions_only=mentions_only,
+                group_by=group_by,
+                min_per_workspace=min_per_workspace,
+            )
         if is_teams_webhook_url(url):
             payload = build_digest_teams_payload(
                 events,
                 username,
                 mentions_only=mentions_only,
                 group_by=group_by,
+                reply_to_id=teams_id if quiet_hours_summary else None,
+                quiet_hours_summary=quiet_hours_summary,
             )
         elif is_discord_webhook_url(url):
+            prefix = "Quiet hours özeti" if quiet_hours_summary else "Bildirim özeti"
             payload = {
-                "content": f"Bildirim özeti — {username} ({prep['total']})",
+                "content": f"{prefix} — {username} ({prep['total']})",
                 "embeds": build_digest_discord_embed(
                     events,
                     username,
@@ -275,21 +308,140 @@ def dispatch_digest_webhook(
                     group_by=group_by,
                 ),
             }
+            if quiet_hours_summary:
+                payload["content"] = (
+                    f"Quiet hours özeti — {username} ({prep['total']} bekleyen)"
+                )
         else:
             payload: Dict[str, Any] = {
-                "type": "collab_digest",
+                "type": "collab_digest_quiet_hours" if quiet_hours_summary else "collab_digest",
                 "username": username,
                 "count": prep["total"],
                 "text": text,
+                "quiet_hours_summary": quiet_hours_summary,
             }
             if is_slack_webhook_url(url):
-                payload["blocks"] = build_digest_slack_blocks(
-                    events,
-                    username,
-                    mentions_only=mentions_only,
-                    group_by=group_by,
-                )
+                if quiet_hours_summary:
+                    payload["blocks"] = build_quiet_hours_slack_blocks(
+                        events,
+                        username,
+                        mentions_only=mentions_only,
+                        group_by=group_by,
+                    )
+                else:
+                    payload["blocks"] = build_digest_slack_blocks(
+                        events,
+                        username,
+                        mentions_only=mentions_only,
+                        group_by=group_by,
+                    )
+                if quiet_hours_summary and slack_ts:
+                    payload["thread_ts"] = slack_ts
+                elif not quiet_hours_summary and slack_ts:
+                    # Parent thread'e de yazılabilir (opsiyonel env)
+                    payload["thread_ts"] = slack_ts
         r = requests.post(url, json=payload, timeout=10)
-        return r.status_code < 400
+        if r.status_code >= 400:
+            return False
+        # Bot/API yanıtından thread_ts yakala
+        if persist_thread and not quiet_hours_summary:
+            try:
+                content = getattr(r, "content", None)
+                body = r.json() if content else {}
+            except Exception:
+                body = {}
+            if isinstance(body, dict):
+                ts = str(body.get("ts") or body.get("message_ts") or "").strip()
+                rid = str(body.get("id") or body.get("replyToId") or "").strip()
+                if ts or rid:
+                    save_digest_thread_state(
+                        username,
+                        slack_thread_ts=ts or None,
+                        teams_reply_id=rid or None,
+                        base=base,
+                    )
+        return True
     except Exception:
         return False
+
+
+def dispatch_quiet_hours_thread_reply(
+    username: str,
+    events: List[Dict[str, Any]],
+    *,
+    mentions_only: Optional[bool] = None,
+    group_by: Optional[str] = None,
+    min_per_workspace: Optional[int] = None,
+    base: Optional[str] = None,
+) -> bool:
+    """Quiet hours sırasında Slack/Teams thread reply özeti gönderir."""
+    from rag.collab_notify_digest import (
+        NOTIFY_DIGEST_THREAD_REPLY,
+        NOTIFY_SLACK_BOT_TOKEN,
+        NOTIFY_SLACK_CHANNEL,
+        resolve_digest_thread_refs,
+    )
+
+    if not NOTIFY_DIGEST_THREAD_REPLY:
+        return False
+    refs = resolve_digest_thread_refs(username, base=base)
+    # Parent yoksa yine de quiet summary webhook'a gider (üst seviye mesaj).
+    # Slack bot token varsa chat.postMessage ile thread reply dene.
+    bot = (NOTIFY_SLACK_BOT_TOKEN or "").strip()
+    channel = (NOTIFY_SLACK_CHANNEL or refs.get("channel") or "").strip()
+    slack_ts = refs.get("slack_thread_ts")
+    if bot and channel and slack_ts:
+        try:
+            import requests
+
+            from rag.collab_notify_digest import (
+                build_quiet_hours_slack_blocks,
+                build_quiet_hours_summary_text,
+            )
+
+            text = build_quiet_hours_summary_text(
+                events,
+                username,
+                mentions_only=mentions_only,
+                group_by=group_by,
+            )
+            blocks = build_quiet_hours_slack_blocks(
+                events,
+                username,
+                mentions_only=mentions_only,
+                group_by=group_by,
+            )
+            r = requests.post(
+                "https://slack.com/api/chat.postMessage",
+                headers={
+                    "Authorization": f"Bearer {bot}",
+                    "Content-Type": "application/json; charset=utf-8",
+                },
+                json={
+                    "channel": channel,
+                    "thread_ts": slack_ts,
+                    "text": text,
+                    "blocks": blocks,
+                },
+                timeout=10,
+            )
+            if r.status_code < 400:
+                data = {}
+                try:
+                    data = r.json()
+                except Exception:
+                    pass
+                if data.get("ok"):
+                    return True
+        except Exception:
+            pass
+    return dispatch_digest_webhook(
+        username,
+        events,
+        mentions_only=mentions_only,
+        group_by=group_by,
+        min_per_workspace=min_per_workspace,
+        quiet_hours_summary=True,
+        base=base,
+        persist_thread=False,
+    )

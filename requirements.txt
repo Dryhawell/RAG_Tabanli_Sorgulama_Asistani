@@ -10,7 +10,7 @@ pydantic
 openai
 requests
 pytest
-PyJWT[crypto]
+google-auth>=2.0.0; python_version>='3.9'
 prometheus-client
 Pillow
 pytesseract

@@ -333,11 +333,25 @@ NOTIFY_DIGEST_QUIET_HOURS = os.getenv("RAG_NOTIFY_DIGEST_QUIET_HOURS", "").strip
 NOTIFY_DIGEST_TIMEZONE = os.getenv("RAG_NOTIFY_DIGEST_TIMEZONE", "UTC").strip() or "UTC"
 # Tenant → timezone JSON veya "id:tz,id2:tz2"
 NOTIFY_TENANT_TIMEZONES = os.getenv("RAG_NOTIFY_TENANT_TIMEZONES", "").strip()
+# Quiet hours sırasında Slack/Teams thread reply özeti
+NOTIFY_DIGEST_THREAD_REPLY = os.getenv("RAG_NOTIFY_DIGEST_THREAD_REPLY", "1") not in {
+    "0",
+    "false",
+    "False",
+}
+NOTIFY_DIGEST_SLACK_THREAD_TS = os.getenv("RAG_NOTIFY_DIGEST_SLACK_THREAD_TS", "").strip()
+NOTIFY_DIGEST_TEAMS_REPLY_ID = os.getenv("RAG_NOTIFY_DIGEST_TEAMS_REPLY_ID", "").strip()
+NOTIFY_SLACK_BOT_TOKEN = os.getenv("RAG_NOTIFY_SLACK_BOT_TOKEN", "").strip()
+NOTIFY_SLACK_CHANNEL = os.getenv("RAG_NOTIFY_SLACK_CHANNEL", "").strip()
 # Mobil push PoC (FCM HTTP / generic push endpoint)
 NOTIFY_PUSH_URL = os.getenv("RAG_NOTIFY_PUSH_URL", "").strip()
 NOTIFY_PUSH_API_KEY = os.getenv("RAG_NOTIFY_PUSH_API_KEY", "").strip()
 NOTIFY_PUSH_PROVIDER = os.getenv("RAG_NOTIFY_PUSH_PROVIDER", "generic").strip().lower()
 NOTIFY_PUSH_TOKEN_TTL_DAYS = int(os.getenv("RAG_NOTIFY_PUSH_TOKEN_TTL_DAYS", "90"))
+NOTIFY_PUSH_FCM_PROJECT_ID = os.getenv("RAG_NOTIFY_PUSH_FCM_PROJECT_ID", "").strip()
+NOTIFY_PUSH_FCM_SERVICE_ACCOUNT_JSON = os.getenv(
+    "RAG_NOTIFY_PUSH_FCM_SERVICE_ACCOUNT_JSON", ""
+).strip()
 LORA_DP_EVAL_AUTO_ROLLBACK = os.getenv("RAG_LORA_DP_EVAL_AUTO_ROLLBACK", "0") not in {
     "0",
     "false",

@@ -176,3 +176,76 @@ def test_dispatch_digest_email_html(monkeypatch):
     assert len(sent) == 1
     assert "multipart/alternative" in sent[0]
     assert "text/html" in sent[0]
+
+
+def test_dispatch_quiet_hours_thread_reply_slack(monkeypatch, tmp_path):
+    from rag.collab_notify_digest import save_digest_thread_state
+    from rag.collab_notify_dispatch import dispatch_quiet_hours_thread_reply
+
+    monkeypatch.setattr(
+        "rag.collab_notify_dispatch.NOTIFY_WEBHOOK_URL",
+        "https://hooks.slack.com/services/T/B/X",
+    )
+    monkeypatch.setattr("rag.collab_notify_digest.METADATA_DIR", str(tmp_path))
+    monkeypatch.setattr("rag.collab_notify_digest.NOTIFY_DIGEST_THREAD_REPLY", True)
+    monkeypatch.setattr("rag.collab_notify_digest.NOTIFY_DIGEST_SLACK_THREAD_TS", "")
+    save_digest_thread_state("alice", slack_thread_ts="1234.5678", base=str(tmp_path))
+    calls = []
+
+    class FakeResp:
+        status_code = 200
+        content = b""
+
+    def fake_post(url, json=None, timeout=10, headers=None):
+        calls.append({"url": url, "json": json})
+        return FakeResp()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    events = [
+        {
+            "workspace_key": "ws",
+            "from_user": "bob",
+            "body_preview": "gece ping",
+            "kind": "mention",
+        }
+    ]
+    ok = dispatch_quiet_hours_thread_reply("alice", events, base=str(tmp_path))
+    assert ok is True
+    assert calls[0]["json"]["type"] == "collab_digest_quiet_hours"
+    assert calls[0]["json"]["thread_ts"] == "1234.5678"
+    assert calls[0]["json"]["quiet_hours_summary"] is True
+
+
+def test_dispatch_quiet_hours_teams_reply_to(monkeypatch, tmp_path):
+    from rag.collab_notify_dispatch import dispatch_digest_webhook
+
+    monkeypatch.setattr(
+        "rag.collab_notify_dispatch.NOTIFY_WEBHOOK_URL",
+        "https://outlook.office.com/webhook/abc/IncomingWebhook/xyz",
+    )
+    monkeypatch.setattr("rag.collab_notify_digest.METADATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "rag.collab_notify_digest.NOTIFY_DIGEST_TEAMS_REPLY_ID",
+        "msg-parent-1",
+    )
+    calls = []
+
+    class FakeResp:
+        status_code = 200
+        content = b""
+
+    def fake_post(url, json=None, timeout=10, headers=None):
+        calls.append(json)
+        return FakeResp()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    events = [{"workspace_key": "ws", "from_user": "bob", "body_preview": "x"}]
+    ok = dispatch_digest_webhook(
+        "alice",
+        events,
+        quiet_hours_summary=True,
+        base=str(tmp_path),
+    )
+    assert ok is True
+    assert calls[0]["replyToId"] == "msg-parent-1"
+    assert "Quiet hours" in calls[0]["attachments"][0]["content"]["body"][0]["text"]
