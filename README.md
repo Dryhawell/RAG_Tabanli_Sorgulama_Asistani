@@ -293,10 +293,11 @@ python -m rag.cli embed-pipeline --collected-pairs metadata/domain_training/pair
 - **Bildirim merkezi**: `python -m rag.cli collab-notifications --user alice`
 - **E-posta/webhook**: `RAG_NOTIFY_SMTP_HOST`, `RAG_NOTIFY_WEBHOOK_URL` (Slack/Discord/generic)
 - **Digest**: `python -m rag.cli collab-notifications --digest --user alice --digest-mentions-only --digest-group-by thread` (e-posta + Slack/Discord/Teams + mobil push)
-- **Quiet hours**: profil `quiet_hours` + timezone; sessiz saatte Slack/Teams **thread reply özeti** (`RAG_NOTIFY_DIGEST_THREAD_REPLY`)
-- **Mobil push PoC**: cihaz meta + quiet/geofence; **FCM v1** OAuth service account (`RAG_NOTIFY_PUSH_FCM_*`) veya Bearer API key
-- **LoRA rollback**: CI status artifact + PR comment bot (marker upsert, `pull_request`'ta canlı `gh api`)
-- GitHub Actions: `collab-notify-digest.yml` (günlük schedule)
+- **Quiet hours**: profil `quiet_hours` + timezone; thread reply özeti; bitince **otomatik tam digest flush** (`--digest-flush-quiet`)
+- **Mobil push PoC**: FCM v1 OAuth; **APNs HTTP/2** (.p8 JWT, `RAG_NOTIFY_PUSH_APNS_*`); cihaz quiet/geofence
+- **LoRA rollback**: CI status artifact + PR comment bot (marker upsert)
+- **Collab presence**: disk snapshot + typing indicator (`op: typing`)
+- GitHub Actions: `collab-notify-digest.yml` (flush + digest, force yok)
 - **Mark katmanları**: çoklu stil birleşimi (bold+italic) canlı editör + katman haritası + audit diff görselleştirme
 
 ### CRDT işbirlikçi not
@@ -438,6 +439,13 @@ export RAG_ENABLE_COLLAB_RICHTEXT=1
 | `RAG_NOTIFY_PUSH_TOKEN_TTL_DAYS` | Push token TTL (gün, varsayılan 90) |
 | `RAG_NOTIFY_PUSH_FCM_PROJECT_ID` | FCM v1 project id (URL boşsa endpoint üretir) |
 | `RAG_NOTIFY_PUSH_FCM_SERVICE_ACCOUNT_JSON` | Service account JSON yolu veya inline JSON |
+| `RAG_NOTIFY_PUSH_APNS_KEY_ID` | APNs Key ID |
+| `RAG_NOTIFY_PUSH_APNS_TEAM_ID` | Apple Team ID |
+| `RAG_NOTIFY_PUSH_APNS_TOPIC` | Bundle ID / apns-topic |
+| `RAG_NOTIFY_PUSH_APNS_P8_PATH` | `.p8` dosya yolu |
+| `RAG_NOTIFY_PUSH_APNS_P8_CONTENT` | `.p8` PEM içeriği (inline) |
+| `RAG_NOTIFY_PUSH_APNS_USE_SANDBOX` | APNs sandbox host (1/0) |
+| `RAG_COLLAB_PRESENCE_TTL_SEC` | Presence snapshot TTL (saniye, varsayılan 90) |
 | `RAG_LORA_DP_EVAL_AUTO_ROLLBACK` | Gate başarısızsa rollback_suggestion.json yaz (1/0) |
 | `RAG_EMBED_PIPELINE_REPORT_PATH` | Pipeline JSON rapor yolu |
 | `RAG_DOMAIN_EMBEDDING_MODEL` | Domain/fine-tuned embedding model yolu veya Hub adı |
@@ -483,7 +491,7 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 - CLI: `python -m rag.cli judge` (heuristic) veya `--mode llm --provider ollama --model phi3:mini`
 
 ## Sonraki adaylar
-- Push: APNs native HTTP/2 (.p8 JWT)
-- Collab: presence + typing indicator kalıcılığı
-- Digest: quiet-hours sonrası otomatik tam digest flush
 - Eval: LLM-as-judge CI gate
+- Collab: presence multi-worker (Redis) backend
+- Push: FCM invalid-token otomatik revoke
+- Digest: kullanıcı başına digest tercihleri (kanal matrisi)

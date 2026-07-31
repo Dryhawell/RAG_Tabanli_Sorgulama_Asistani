@@ -373,6 +373,21 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
             "quiet_hours",
         }
         return 0 if result.get("sent") or result.get("reason") in empty_reasons else 1
+    if args.digest_flush_quiet:
+        from rag.collab_notify_digest import flush_quiet_hours_digests
+
+        result = flush_quiet_hours_digests(
+            hours=args.digest_hours,
+            mentions_only=args.digest_mentions_only,
+            group_by=args.digest_group_by,
+            min_per_workspace=args.digest_min_per_workspace,
+            quiet_hours=args.digest_quiet_hours,
+            timezone_name=args.digest_timezone,
+            tenant_id=args.digest_tenant,
+            force=bool(args.digest_force),
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
     if args.digest_all:
         from rag.collab_notify_digest import send_digest_all
 
@@ -1034,6 +1049,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--digest-force",
         action="store_true",
         help="Quiet hours'ı yok sayarak digest gönder",
+    )
+    p_cnot.add_argument(
+        "--digest-flush-quiet",
+        action="store_true",
+        help="Quiet hours bitince bekleyen tam digest flush",
     )
     p_cnot.add_argument(
         "--register-push-token",

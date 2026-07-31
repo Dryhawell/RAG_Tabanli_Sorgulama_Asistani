@@ -964,6 +964,7 @@ def send_digest_email(
     quiet_hours: Optional[str] = None,
     timezone_name: Optional[str] = None,
     tenant_id: Optional[str] = None,
+    skip_quiet_tracking: bool = False,
 ) -> Dict[str, Any]:
     tz_resolved = resolve_digest_timezone(
         timezone_name=timezone_name,
@@ -971,12 +972,30 @@ def send_digest_email(
         username=username,
     )
     resolved_qh = resolve_quiet_hours_spec(quiet_spec=quiet_hours, username=username)
-    in_quiet = (not ignore_quiet_hours) and is_quiet_hours(
+    actually_quiet = is_quiet_hours(
         quiet_spec=quiet_hours,
         timezone_name=tz_resolved,
         tenant_id=tenant_id,
         username=username,
     )
+    in_quiet = (not ignore_quiet_hours) and actually_quiet
+    quiet_row: Dict[str, Any] = {}
+    flushed_after_quiet = False
+    if not skip_quiet_tracking:
+        quiet_row = record_quiet_hours_observation(
+            username,
+            actually_quiet,
+            base=base,
+        )
+        # Quiet bitmiş ve pending flush varsa tam digest'i zorla
+        if (
+            not ignore_quiet_hours
+            and not actually_quiet
+            and quiet_row.get("pending_flush")
+        ):
+            ignore_quiet_hours = True
+            in_quiet = False
+            flushed_after_quiet = True
     try:
         from rag.collab_notify_push import is_push_configured
     except ImportError:
@@ -1072,6 +1091,16 @@ def send_digest_email(
         reason = "quiet_hours"
     else:
         reason = None if sent else "send_failed"
+    if flushed_after_quiet and not skip_quiet_tracking:
+        mark_quiet_flush_done(
+            username,
+            base=base,
+            result={
+                "sent": sent,
+                "reason": reason,
+                "count": len(filtered),
+            },
+        )
     return {
         "sent": sent,
         "count": len(filtered),
@@ -1079,6 +1108,7 @@ def send_digest_email(
         "webhook": webhook_ok,
         "push": push_ok,
         "thread_reply": thread_reply,
+        "flushed_after_quiet": flushed_after_quiet,
         "reason": reason,
         "quiet_hours": resolved_qh,
         "mentions_only": prep["mentions_only"],
@@ -1087,6 +1117,210 @@ def send_digest_email(
         "workspace_filtered": prep.get("workspace_filtered", 0),
         "timezone": tz_resolved,
         "tenant_id": tenant_id,
+    }
+
+
+def digest_quiet_flush_path(base: Optional[str] = None) -> str:
+    root = base or METADATA_DIR
+    return os.path.join(root, "collab", "digest_quiet_flush.json")
+
+
+def load_quiet_flush_state(*, base: Optional[str] = None) -> Dict[str, Any]:
+    path = digest_quiet_flush_path(base=base)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_quiet_flush_state(
+    state: Dict[str, Any],
+    *,
+    base: Optional[str] = None,
+) -> str:
+    path = digest_quiet_flush_path(base=base)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+    return path
+
+
+def record_quiet_hours_observation(
+    username: str,
+    in_quiet: bool,
+    *,
+    base: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Kullanıcının quiet/non-quiet geçişini state'e yazar."""
+    key = (username or "").strip().lower()
+    if not key:
+        return {}
+    state = load_quiet_flush_state(base=base)
+    row = dict(state.get(key) or {})
+    prev = row.get("in_quiet")
+    current = bool(in_quiet)
+    ts = (now or datetime.now(timezone.utc)).isoformat()
+    row["in_quiet"] = current
+    row["observed_at"] = ts
+    # quiet → active geçişi: bir kez tam digest flush bekler
+    if prev is True and not current:
+        row["quiet_ended_at"] = ts
+        row["pending_flush"] = True
+    state[key] = row
+    save_quiet_flush_state(state, base=base)
+    return row
+
+
+def mark_quiet_flush_done(
+    username: str,
+    *,
+    base: Optional[str] = None,
+    now: Optional[datetime] = None,
+    result: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    key = (username or "").strip().lower()
+    state = load_quiet_flush_state(base=base)
+    row = dict(state.get(key) or {})
+    row["pending_flush"] = False
+    row["flushed_at"] = (now or datetime.now(timezone.utc)).isoformat()
+    if result is not None:
+        row["last_flush_result"] = {
+            "sent": bool(result.get("sent")),
+            "reason": result.get("reason"),
+            "count": result.get("count"),
+        }
+    state[key] = row
+    save_quiet_flush_state(state, base=base)
+    return row
+
+
+def maybe_flush_after_quiet_hours(
+    username: str,
+    *,
+    hours: Optional[int] = None,
+    base: Optional[str] = None,
+    mentions_only: Optional[bool] = None,
+    group_by: Optional[str] = None,
+    min_per_workspace: Optional[int] = None,
+    quiet_hours: Optional[str] = None,
+    timezone_name: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+    now: Optional[datetime] = None,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Quiet hours bittikten sonra bir kez tam digest gönderir."""
+    tz_resolved = resolve_digest_timezone(
+        timezone_name=timezone_name,
+        tenant_id=tenant_id,
+        username=username,
+    )
+    in_quiet = is_quiet_hours(
+        now=now,
+        quiet_spec=quiet_hours,
+        timezone_name=tz_resolved,
+        tenant_id=tenant_id,
+        username=username,
+    )
+    row = record_quiet_hours_observation(
+        username,
+        in_quiet,
+        base=base,
+        now=now,
+    )
+    if in_quiet:
+        return {
+            "flushed": False,
+            "reason": "still_quiet",
+            "state": row,
+        }
+    if not force and not row.get("pending_flush"):
+        return {
+            "flushed": False,
+            "reason": "not_pending",
+            "state": row,
+        }
+
+    result = send_digest_email(
+        username,
+        hours=hours,
+        base=base,
+        mentions_only=mentions_only,
+        group_by=group_by,
+        min_per_workspace=min_per_workspace,
+        ignore_quiet_hours=True,
+        quiet_hours=quiet_hours,
+        timezone_name=timezone_name,
+        tenant_id=tenant_id,
+        skip_quiet_tracking=True,
+    )
+    row = mark_quiet_flush_done(
+        username,
+        base=base,
+        now=now,
+        result=result,
+    )
+    return {
+        "flushed": bool(result.get("sent")),
+        "reason": result.get("reason") or ("sent" if result.get("sent") else "send_failed"),
+        "digest": result,
+        "state": row,
+    }
+
+
+def flush_quiet_hours_digests(
+    *,
+    hours: Optional[int] = None,
+    base: Optional[str] = None,
+    mentions_only: Optional[bool] = None,
+    group_by: Optional[str] = None,
+    min_per_workspace: Optional[int] = None,
+    quiet_hours: Optional[str] = None,
+    timezone_name: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+    now: Optional[datetime] = None,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Hedef kullanıcılar için quiet-hours sonrası flush dener."""
+    users = list_digest_target_users(hours=hours, base=base)
+    state = load_quiet_flush_state(base=base)
+    extra = [
+        u
+        for u, row in state.items()
+        if isinstance(row, dict) and row.get("pending_flush")
+    ]
+    seen = {u.lower() for u in users}
+    for u in extra:
+        if u.lower() not in seen:
+            users.append(u)
+            seen.add(u.lower())
+    results: Dict[str, Any] = {}
+    flushed = 0
+    for user in users:
+        r = maybe_flush_after_quiet_hours(
+            user,
+            hours=hours,
+            base=base,
+            mentions_only=mentions_only,
+            group_by=group_by,
+            min_per_workspace=min_per_workspace,
+            quiet_hours=quiet_hours,
+            timezone_name=timezone_name,
+            tenant_id=tenant_id,
+            now=now,
+            force=force,
+        )
+        results[user] = r
+        if r.get("flushed"):
+            flushed += 1
+    return {
+        "users": users,
+        "flushed": flushed,
+        "results": results,
     }
 
 

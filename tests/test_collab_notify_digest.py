@@ -325,3 +325,51 @@ def test_digest_thread_state_roundtrip(tmp_path):
     assert refs["slack_thread_ts"] == "111.222"
     assert refs["teams_reply_id"] == "team-1"
 
+
+
+def test_quiet_hours_flush_after_transition(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    from rag.collab_notify_digest import (
+        load_quiet_flush_state,
+        maybe_flush_after_quiet_hours,
+        record_quiet_hours_observation,
+    )
+
+    monkeypatch.setattr("rag.collab_notify_digest.METADATA_DIR", str(tmp_path))
+    monkeypatch.setattr("rag.collab_notify_digest.NOTIFY_DIGEST_QUIET_HOURS", "22:00-07:00")
+    monkeypatch.setattr("rag.collab_notify_digest.NOTIFY_WEBHOOK_URL", "")
+    monkeypatch.setattr("rag.collab_notify_digest.NOTIFY_SMTP_HOST", "")
+
+    night = datetime(2026, 1, 1, 23, 0, tzinfo=timezone.utc)
+    day = datetime(2026, 1, 2, 10, 0, tzinfo=timezone.utc)
+    record_quiet_hours_observation("alice", True, base=str(tmp_path), now=night)
+    state = load_quiet_flush_state(base=str(tmp_path))
+    assert state["alice"]["in_quiet"] is True
+
+    calls = []
+
+    def fake_send(username, **kwargs):
+        calls.append({"username": username, **kwargs})
+        return {"sent": True, "count": 2, "reason": None}
+
+    monkeypatch.setattr(
+        "rag.collab_notify_digest.send_digest_email",
+        fake_send,
+    )
+    monkeypatch.setattr(
+        "rag.collab_notify_digest.is_quiet_hours",
+        lambda **kwargs: False,
+    )
+    result = maybe_flush_after_quiet_hours(
+        "alice",
+        base=str(tmp_path),
+        now=day,
+    )
+    assert result["flushed"] is True
+    assert calls and calls[0]["ignore_quiet_hours"] is True
+
+    # ikinci çağrı pending değil
+    result2 = maybe_flush_after_quiet_hours("alice", base=str(tmp_path), now=day)
+    assert result2["flushed"] is False
+    assert result2["reason"] == "not_pending"

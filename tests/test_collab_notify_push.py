@@ -234,3 +234,84 @@ def test_dispatch_push_fcm_uses_oauth_header(tmp_path, monkeypatch):
     assert calls[0]["json"]["message"]["token"] == "device-fcm"
 
 
+
+
+def test_apns_http2_body_and_endpoint(tmp_path, monkeypatch):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    from rag.collab_notify_push import (
+        build_apns_http2_body,
+        get_apns_provider_token,
+        load_apns_p8,
+        resolve_apns_endpoint,
+    )
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
+    p8 = tmp_path / "AuthKey.p8"
+    p8.write_text(pem, encoding="utf-8")
+
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_APNS_KEY_ID", "KEY1234567")
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_APNS_TEAM_ID", "TEAM123456")
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_APNS_TOPIC", "com.example.app")
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_APNS_P8_PATH", str(p8))
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_APNS_USE_SANDBOX", True)
+    monkeypatch.setattr("rag.collab_notify_push._APNS_TOKEN_CACHE", {"token": None, "expires_at": 0.0})
+
+    assert "BEGIN PRIVATE KEY" in (load_apns_p8() or "")
+    token = get_apns_provider_token()
+    assert token and isinstance(token, str)
+    url = resolve_apns_endpoint("abcd1234")
+    assert url.startswith("https://api.sandbox.push.apple.com/3/device/")
+    body = build_apns_http2_body(title="T", body="B", data={"k": "v"})
+    assert body["aps"]["alert"]["title"] == "T"
+    assert body["k"] == "v"
+
+
+def test_dispatch_apns_native_httpx(tmp_path, monkeypatch):
+    from rag.collab_notify_push import dispatch_push, register_device_token
+
+    monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_PROVIDER", "apns")
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_URL", "")
+    monkeypatch.setattr("rag.collab_notify_push.apns_native_configured", lambda: True)
+    monkeypatch.setattr(
+        "rag.collab_notify_push.get_apns_provider_token",
+        lambda **kwargs: "jwt-token",
+    )
+    monkeypatch.setattr("rag.collab_notify_push.NOTIFY_PUSH_APNS_TOPIC", "com.example.app")
+    monkeypatch.setattr(
+        "rag.collab_notify_push.resolve_apns_endpoint",
+        lambda tok, **kwargs: f"https://api.push.apple.com/3/device/{tok}",
+    )
+    register_device_token("alice", "devicetok", platform="apns")
+    calls = []
+
+    class FakeResp:
+        status_code = 200
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, json=None, headers=None):
+            calls.append({"url": url, "json": json, "headers": headers})
+            return FakeResp()
+
+    monkeypatch.setattr("httpx.Client", FakeClient)
+    assert dispatch_push("alice", title="Hi", body="There") is True
+    assert calls
+    assert "authorization" in calls[0]["headers"]
+    assert calls[0]["headers"]["apns-topic"] == "com.example.app"
+    assert "aps" in calls[0]["json"]

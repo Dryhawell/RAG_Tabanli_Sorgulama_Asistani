@@ -12,6 +12,12 @@ try:
     from app.config import (
         METADATA_DIR,
         NOTIFY_PUSH_API_KEY,
+        NOTIFY_PUSH_APNS_KEY_ID,
+        NOTIFY_PUSH_APNS_P8_CONTENT,
+        NOTIFY_PUSH_APNS_P8_PATH,
+        NOTIFY_PUSH_APNS_TEAM_ID,
+        NOTIFY_PUSH_APNS_TOPIC,
+        NOTIFY_PUSH_APNS_USE_SANDBOX,
         NOTIFY_PUSH_FCM_PROJECT_ID,
         NOTIFY_PUSH_FCM_SERVICE_ACCOUNT_JSON,
         NOTIFY_PUSH_PROVIDER,
@@ -26,8 +32,15 @@ except ImportError:
     NOTIFY_PUSH_TOKEN_TTL_DAYS = 90
     NOTIFY_PUSH_FCM_PROJECT_ID = ""
     NOTIFY_PUSH_FCM_SERVICE_ACCOUNT_JSON = ""
+    NOTIFY_PUSH_APNS_KEY_ID = ""
+    NOTIFY_PUSH_APNS_TEAM_ID = ""
+    NOTIFY_PUSH_APNS_TOPIC = ""
+    NOTIFY_PUSH_APNS_P8_PATH = ""
+    NOTIFY_PUSH_APNS_P8_CONTENT = ""
+    NOTIFY_PUSH_APNS_USE_SANDBOX = False
 
 _FCM_TOKEN_CACHE: Dict[str, Any] = {"token": None, "expires_at": 0.0}
+_APNS_TOKEN_CACHE: Dict[str, Any] = {"token": None, "expires_at": 0.0}
 
 
 def _utcnow() -> datetime:
@@ -583,11 +596,123 @@ def resolve_fcm_auth_header(
 
 
 def is_push_configured() -> bool:
-    """Push kanalı yapılandırılmış mı (URL veya FCM project)."""
+    """Push kanalı yapılandırılmış mı (URL veya FCM/APNs native)."""
     provider = (NOTIFY_PUSH_PROVIDER or "generic").lower()
     if provider == "fcm":
         return bool(resolve_fcm_endpoint())
+    if provider == "apns":
+        return apns_native_configured() or bool((NOTIFY_PUSH_URL or "").strip())
     return bool((NOTIFY_PUSH_URL or "").strip())
+
+
+def load_apns_p8(
+    *,
+    path: Optional[str] = None,
+    content: Optional[str] = None,
+) -> Optional[str]:
+    """APNs .p8 PEM içeriğini yükler."""
+    raw = (content if content is not None else NOTIFY_PUSH_APNS_P8_CONTENT) or ""
+    raw = raw.strip()
+    if raw and "BEGIN PRIVATE KEY" in raw:
+        return raw.replace("\\n", "\n")
+    p8_path = (path if path is not None else NOTIFY_PUSH_APNS_P8_PATH) or ""
+    p8_path = p8_path.strip()
+    if p8_path and os.path.isfile(p8_path):
+        with open(p8_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return None
+
+
+def apns_native_configured() -> bool:
+    return bool(
+        (NOTIFY_PUSH_APNS_KEY_ID or "").strip()
+        and (NOTIFY_PUSH_APNS_TEAM_ID or "").strip()
+        and (NOTIFY_PUSH_APNS_TOPIC or "").strip()
+        and load_apns_p8()
+    )
+
+
+def get_apns_provider_token(
+    *,
+    force_refresh: bool = False,
+    key_id: Optional[str] = None,
+    team_id: Optional[str] = None,
+    p8: Optional[str] = None,
+) -> Optional[str]:
+    """APNs provider authentication token (ES256 JWT, ~1h)."""
+    import time
+
+    now = time.time()
+    cached = _APNS_TOKEN_CACHE.get("token")
+    exp = float(_APNS_TOKEN_CACHE.get("expires_at") or 0.0)
+    if cached and not force_refresh and now < exp - 60:
+        return str(cached)
+    kid = (key_id if key_id is not None else NOTIFY_PUSH_APNS_KEY_ID) or ""
+    tid = (team_id if team_id is not None else NOTIFY_PUSH_APNS_TEAM_ID) or ""
+    pem = p8 if p8 is not None else load_apns_p8()
+    if not (kid.strip() and tid.strip() and pem):
+        return None
+    try:
+        import jwt
+    except ImportError:
+        return None
+    try:
+        token = jwt.encode(
+            {"iss": tid.strip(), "iat": int(now)},
+            pem,
+            algorithm="ES256",
+            headers={"alg": "ES256", "kid": kid.strip()},
+        )
+        if isinstance(token, bytes):
+            token = token.decode("utf-8")
+        _APNS_TOKEN_CACHE["token"] = token
+        _APNS_TOKEN_CACHE["expires_at"] = now + 3500
+        return str(token)
+    except Exception:
+        return None
+
+
+def resolve_apns_host(*, use_sandbox: Optional[bool] = None) -> str:
+    sandbox = (
+        NOTIFY_PUSH_APNS_USE_SANDBOX if use_sandbox is None else bool(use_sandbox)
+    )
+    if sandbox:
+        return "https://api.sandbox.push.apple.com"
+    return "https://api.push.apple.com"
+
+
+def resolve_apns_endpoint(
+    device_token: str,
+    *,
+    use_sandbox: Optional[bool] = None,
+) -> str:
+    """Native APNs URL; .p8 yoksa boş (gateway path kullanılsın)."""
+    if not apns_native_configured():
+        return ""
+    tok = (device_token or "").strip()
+    if not tok:
+        return ""
+    return f"{resolve_apns_host(use_sandbox=use_sandbox)}/3/device/{tok}"
+
+
+def build_apns_http2_body(
+    *,
+    title: str,
+    body: str,
+    data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Apple HTTP/2 APNs JSON gövdesi (yalnızca aps + custom data)."""
+    payload: Dict[str, Any] = {
+        "aps": {
+            "alert": {"title": title, "body": body[:200]},
+            "sound": "default",
+        }
+    }
+    for k, v in (data or {}).items():
+        if k == "aps":
+            continue
+        payload[str(k)] = v
+    return payload
 
 
 def build_apns_payload(
@@ -597,7 +722,7 @@ def build_apns_payload(
     body: str,
     data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """APNs benzeri PoC payload (gateway üzerinden iletilir)."""
+    """APNs gateway PoC payload (HTTP gateway üzerinden)."""
     return {
         "device_token": token,
         "aps": {
@@ -606,6 +731,49 @@ def build_apns_payload(
         },
         "data": data or {},
     }
+
+
+def _dispatch_apns_native(
+    tokens: List[Dict[str, Any]],
+    *,
+    username: str,
+    title: str,
+    body: str,
+    data: Optional[Dict[str, Any]],
+    base: Optional[str],
+) -> bool:
+    jwt_token = get_apns_provider_token()
+    topic = (NOTIFY_PUSH_APNS_TOPIC or "").strip()
+    if not jwt_token or not topic:
+        return False
+    try:
+        import httpx
+    except ImportError:
+        return False
+    ok_any = False
+    headers_base = {
+        "authorization": f"bearer {jwt_token}",
+        "apns-topic": topic,
+        "apns-push-type": "alert",
+        "content-type": "application/json",
+    }
+    payload = build_apns_http2_body(title=title, body=body, data=data)
+    try:
+        with httpx.Client(http2=True, timeout=15.0) as client:
+            for tok in tokens:
+                t = str(tok.get("token") or "").strip()
+                if not t:
+                    continue
+                url = resolve_apns_endpoint(t)
+                if not url:
+                    continue
+                r = client.post(url, json=payload, headers=headers_base)
+                if r.status_code < 400:
+                    ok_any = True
+                    touch_device_last_seen(username, t, base=base)
+    except Exception:
+        return False
+    return ok_any
 
 
 def build_generic_push_payload(
@@ -640,6 +808,8 @@ def dispatch_push(
     provider = (NOTIFY_PUSH_PROVIDER or "generic").lower()
     if provider == "fcm":
         url = resolve_fcm_endpoint()
+    elif provider == "apns" and apns_native_configured():
+        url = "__apns_native__"
     else:
         url = (NOTIFY_PUSH_URL or "").strip()
     if not url:
@@ -656,6 +826,16 @@ def dispatch_push(
         if not tokens:
             return False
     try:
+        if provider == "apns" and url == "__apns_native__":
+            return _dispatch_apns_native(
+                tokens,
+                username=username,
+                title=title,
+                body=body,
+                data=data,
+                base=base,
+            )
+
         import requests
 
         headers: Dict[str, str] = {"Content-Type": "application/json"}

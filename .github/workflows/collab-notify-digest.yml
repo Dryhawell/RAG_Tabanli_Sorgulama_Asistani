@@ -39,6 +39,7 @@ jobs:
           RAG_NOTIFY_PUSH_API_KEY: ${{ secrets.RAG_NOTIFY_PUSH_API_KEY }}
           RAG_NOTIFY_PUSH_PROVIDER: ${{ secrets.RAG_NOTIFY_PUSH_PROVIDER }}
         run: |
+          python -m rag.cli collab-notifications --digest-flush-quiet \
+            --digest-hours "${{ inputs.digest_hours || '24' }}"
           python -m rag.cli collab-notifications --digest-all \
-            --digest-hours "${{ inputs.digest_hours || '24' }}" \
-            --digest-force
+            --digest-hours "${{ inputs.digest_hours || '24' }}"

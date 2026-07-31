@@ -214,6 +214,7 @@ _COLLAB_EDITOR_HTML = """
       const chip = document.createElement("span");
       chip.style.cssText = "padding:2px 8px;border-radius:12px;background:#f4f4f4;border:1px solid #ddd;";
       chip.innerHTML = '<span style="color:' + p.color + '">●</span> ' + name +
+        (p.typing ? ' <em>yazıyor…</em>' : '') +
         (p.cursor != null ? ' @' + p.cursor : '');
       presenceEl.appendChild(chip);
     });
@@ -283,7 +284,8 @@ _COLLAB_EDITOR_HTML = """
     peers[user.username] = {
       color: user.color || "#888",
       cursor: user.cursor || 0,
-      selection_end: user.selection_end || 0
+      selection_end: user.selection_end || 0,
+      typing: !!user.typing
     };
     renderPresence();
   }
@@ -321,6 +323,24 @@ _COLLAB_EDITOR_HTML = """
       selection_end: sel.end,
       username: USERNAME
     }));
+  }
+
+  let typingTimer = null;
+  let typingActive = false;
+  function sendTyping(flag) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!!flag === typingActive && flag) return;
+    typingActive = !!flag;
+    ws.send(JSON.stringify({
+      op: "typing",
+      typing: typingActive,
+      username: USERNAME
+    }));
+  }
+  function bumpTyping() {
+    sendTyping(true);
+    if (typingTimer) clearTimeout(typingTimer);
+    typingTimer = setTimeout(function() { sendTyping(false); }, 1200);
   }
 
   function sendUndoRedo(kind) {
@@ -430,6 +450,7 @@ _COLLAB_EDITOR_HTML = """
   editor.addEventListener("input", function(e) {
     if (composing || (e && e.isComposing)) return;
     dirty = true;
+    bumpTyping();
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(flushEdit, 450);
   });

@@ -352,6 +352,19 @@ NOTIFY_PUSH_FCM_PROJECT_ID = os.getenv("RAG_NOTIFY_PUSH_FCM_PROJECT_ID", "").str
 NOTIFY_PUSH_FCM_SERVICE_ACCOUNT_JSON = os.getenv(
     "RAG_NOTIFY_PUSH_FCM_SERVICE_ACCOUNT_JSON", ""
 ).strip()
+# APNs HTTP/2 native (.p8 JWT) — boşsa gateway URL kullanılır
+NOTIFY_PUSH_APNS_KEY_ID = os.getenv("RAG_NOTIFY_PUSH_APNS_KEY_ID", "").strip()
+NOTIFY_PUSH_APNS_TEAM_ID = os.getenv("RAG_NOTIFY_PUSH_APNS_TEAM_ID", "").strip()
+NOTIFY_PUSH_APNS_TOPIC = os.getenv("RAG_NOTIFY_PUSH_APNS_TOPIC", "").strip()
+NOTIFY_PUSH_APNS_P8_PATH = os.getenv("RAG_NOTIFY_PUSH_APNS_P8_PATH", "").strip()
+NOTIFY_PUSH_APNS_P8_CONTENT = os.getenv("RAG_NOTIFY_PUSH_APNS_P8_CONTENT", "").strip()
+NOTIFY_PUSH_APNS_USE_SANDBOX = os.getenv("RAG_NOTIFY_PUSH_APNS_USE_SANDBOX", "0") not in {
+    "0",
+    "false",
+    "False",
+}
+# Presence snapshot TTL (saniye)
+COLLAB_PRESENCE_TTL_SEC = int(os.getenv("RAG_COLLAB_PRESENCE_TTL_SEC", "90"))
 LORA_DP_EVAL_AUTO_ROLLBACK = os.getenv("RAG_LORA_DP_EVAL_AUTO_ROLLBACK", "0") not in {
     "0",
     "false",

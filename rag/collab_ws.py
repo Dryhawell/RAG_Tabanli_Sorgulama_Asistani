@@ -11,10 +11,13 @@ from typing import Any, Dict, List, Optional, Set
 from rag.collab_notes import load_note, save_note
 from rag.collab_presence import (
     bind_client,
+    merge_presence_for_join,
+    persist_room_presence,
     presence_entry,
     presence_list,
     release_client,
     update_cursor,
+    update_typing,
 )
 
 try:
@@ -147,11 +150,12 @@ async def _handle_client(websocket) -> None:
                     "content": content,
                     "crdt": ENABLE_COLLAB_CRDT,
                     "richtext": ENABLE_COLLAB_RICHTEXT,
-                    "presence": presence_list(room.clients),
+                    "presence": merge_presence_for_join(workspace_key, room.clients),
                 }
                 if ENABLE_COLLAB_RICHTEXT and richtext_snapshot is not None:
                     snap_payload["rich"] = richtext_snapshot(workspace_key)
                 await websocket.send(json.dumps(snap_payload, ensure_ascii=False))
+                persist_room_presence(workspace_key, room.clients)
                 await _broadcast(
                     workspace_key,
                     {"op": "presence_join", "user": presence_entry(meta)},
@@ -170,9 +174,28 @@ async def _handle_client(websocket) -> None:
                     selection_end=int(sel_end) if sel_end is not None else None,
                 )
                 if updated:
+                    persist_room_presence(workspace_key, _room(workspace_key).clients)
                     await _broadcast(
                         workspace_key,
                         {"op": "presence_update", "user": presence_entry(updated)},
+                        exclude=websocket,
+                    )
+                continue
+
+            if op == "typing":
+                if not workspace_key:
+                    continue
+                is_typing = bool(data.get("typing"))
+                updated = update_typing(websocket, is_typing)
+                if updated:
+                    persist_room_presence(workspace_key, _room(workspace_key).clients)
+                    await _broadcast(
+                        workspace_key,
+                        {
+                            "op": "presence_update",
+                            "user": presence_entry(updated),
+                            "typing": is_typing,
+                        },
                         exclude=websocket,
                     )
                 continue
@@ -415,6 +438,7 @@ async def _handle_client(websocket) -> None:
             released = release_client(websocket)
             if released:
                 try:
+                    persist_room_presence(workspace_key, room.clients)
                     await _broadcast(
                         workspace_key,
                         {"op": "presence_leave", "user": presence_entry(released)},

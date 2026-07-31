@@ -11,6 +11,8 @@ openai
 requests
 pytest
 google-auth>=2.0.0; python_version>='3.9'
+PyJWT[crypto]
+httpx[http2]>=0.27.0
 prometheus-client
 Pillow
 pytesseract
