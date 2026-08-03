@@ -42,13 +42,24 @@ jobs:
           RAG_JUDGE_MODE: heuristic
           RAG_JUDGE_MIN_ACCURACY: "1.0"
           RAG_JUDGE_OUTPUT: metadata/judge_report.json
+          RAG_JUDGE_METRICS_PATH: metadata/metrics.jsonl
         run: python scripts/ci_judge.py
+      - name: Judge soft-fail Slack alert
+        if: always()
+        env:
+          RAG_JUDGE_OUTPUT: metadata/judge_report.json
+          RAG_JUDGE_METRICS_PATH: metadata/metrics.jsonl
+          RAG_JUDGE_SOFT_FAIL: ${{ vars.RAG_JUDGE_SOFT_FAIL || '0' }}
+          RAG_JUDGE_SLACK_WEBHOOK: ${{ secrets.RAG_JUDGE_SLACK_WEBHOOK }}
+        run: python scripts/ci_judge_slack_alert.py
       - name: Upload judge report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: judge-report-${{ github.run_id }}
-          path: metadata/judge_report.json
+          path: |
+            metadata/judge_report.json
+            metadata/metrics.jsonl
           if-no-files-found: ignore
       - name: LoRA rollback PR status artifacts
         env:
@@ -127,6 +138,14 @@ jobs:
             exit 0
           fi
           python scripts/ci_judge.py
+      - name: Judge soft-fail Slack alert (llm)
+        if: always()
+        env:
+          RAG_JUDGE_OUTPUT: metadata/judge_report_llm.json
+          RAG_JUDGE_METRICS_PATH: metadata/metrics.jsonl
+          RAG_JUDGE_SOFT_FAIL: ${{ vars.RAG_JUDGE_SOFT_FAIL || '1' }}
+          RAG_JUDGE_SLACK_WEBHOOK: ${{ secrets.RAG_JUDGE_SLACK_WEBHOOK }}
+        run: python scripts/ci_judge_slack_alert.py
       - name: Upload LLM judge report
         if: always()
         uses: actions/upload-artifact@v4

@@ -538,3 +538,34 @@ def test_generate_vapid_keys():
     assert "RAG_NOTIFY_PUSH_VAPID_PUBLIC=" in env
     assert "RAG_NOTIFY_PUSH_VAPID_PRIVATE=" in env
 
+
+def test_rotate_vapid_vault(tmp_path, monkeypatch):
+    from rag.collab_notify_push import (
+        load_vapid_vault,
+        rotate_vapid_keys,
+        vapid_public_fingerprint,
+    )
+
+    monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
+    vault = tmp_path / "vapid_keys.json"
+    first = rotate_vapid_keys(
+        subject="mailto:a@example.com",
+        path=str(vault),
+        previous_public="old-public-key-material",
+    )
+    assert first["fingerprint"]
+    assert first["archived_fingerprint"] == vapid_public_fingerprint(
+        "old-public-key-material"
+    )
+    assert first["history_len"] == 1
+    doc = load_vapid_vault(str(vault))
+    assert doc["current"]["public"] == first["public"]
+    assert "private" not in (doc["current"] or {})
+    assert "BEGIN PRIVATE KEY" not in vault.read_text(encoding="utf-8")
+
+    second = rotate_vapid_keys(path=str(vault))
+    assert second["fingerprint"] != first["fingerprint"]
+    assert second["history_len"] == 2
+    doc2 = load_vapid_vault(str(vault))
+    assert len(doc2["history"]) == 2
+

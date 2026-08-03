@@ -1,0 +1,50 @@
+"""Digest rapor alert eşiği (cron)."""
+
+name: Digest Alert Check
+
+on:
+  schedule:
+    - cron: "15 8 * * *"  # digest sonrası (08:15 UTC)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Webhook göndermeden kontrol et"
+        required: false
+        default: false
+        type: boolean
+      tenant_id:
+        description: "Tenant filtresi (opsiyonel)"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  digest-alert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Digest alert check
+        env:
+          RAG_DIGEST_ALERT_WEBHOOK_URL: ${{ secrets.RAG_DIGEST_ALERT_WEBHOOK_URL }}
+          RAG_NOTIFY_WEBHOOK_URL: ${{ secrets.RAG_NOTIFY_WEBHOOK_URL }}
+          RAG_DIGEST_ALERT_SKIP_THRESHOLD: ${{ vars.RAG_DIGEST_ALERT_SKIP_THRESHOLD || '0.5' }}
+          RAG_DIGEST_ALERT_FAIL_RATE: ${{ vars.RAG_DIGEST_ALERT_FAIL_RATE || '0.2' }}
+          RAG_DIGEST_ALERT_MIN_SAMPLES: ${{ vars.RAG_DIGEST_ALERT_MIN_SAMPLES || '5' }}
+        run: |
+          EXTRA=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            EXTRA="--digest-alert-dry-run"
+          fi
+          if [ -n "${{ inputs.tenant_id }}" ]; then
+            EXTRA="$EXTRA --digest-tenant ${{ inputs.tenant_id }}"
+          fi
+          # shellcheck disable=SC2086
+          python -m rag.cli collab-notifications --digest-alert-check $EXTRA

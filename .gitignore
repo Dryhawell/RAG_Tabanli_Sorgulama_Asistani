@@ -11,6 +11,8 @@ __pycache__/
 
 # Env
 .env
+*.vapid.env
+vapid_keys.json
 
 # Runtime data (not tracked)
 data/

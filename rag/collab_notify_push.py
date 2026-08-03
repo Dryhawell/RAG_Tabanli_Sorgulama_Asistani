@@ -820,6 +820,120 @@ def format_vapid_env(keys: Dict[str, str]) -> str:
     return str(keys.get("env") or "")
 
 
+def vapid_public_fingerprint(public: Optional[str] = None) -> str:
+    """Public key SHA-256 fingerprint (hex, kısa)."""
+    import hashlib
+
+    raw = (public if public is not None else vapid_public_key()).strip()
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def vapid_vault_path(base: Optional[str] = None) -> str:
+    root = base or METADATA_DIR
+    return os.path.join(root, "vapid_keys.json")
+
+
+def load_vapid_vault(path: Optional[str] = None) -> Dict[str, Any]:
+    p = path or vapid_vault_path()
+    if not os.path.isfile(p):
+        return {"current": None, "history": []}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"current": None, "history": []}
+        data.setdefault("current", None)
+        data.setdefault("history", [])
+        if not isinstance(data["history"], list):
+            data["history"] = []
+        return data
+    except Exception:
+        return {"current": None, "history": []}
+
+
+def save_vapid_vault(doc: Dict[str, Any], path: Optional[str] = None) -> str:
+    p = path or vapid_vault_path()
+    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=2)
+    return p
+
+
+def rotate_vapid_keys(
+    *,
+    subject: Optional[str] = None,
+    path: Optional[str] = None,
+    archive_private: bool = False,
+    write_env: Optional[str] = None,
+    previous_public: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Yeni VAPID üretir, eski public fingerprint'i vault history'ye yazar.
+    Varsayılan: private vault'a yazılmaz (archive_private=False).
+    """
+    vault_file = path or vapid_vault_path()
+    doc = load_vapid_vault(vault_file)
+    now = _utcnow_iso()
+    old_public = previous_public
+    if not old_public and isinstance(doc.get("current"), dict):
+        old_public = str(doc["current"].get("public") or "") or None
+    if not old_public:
+        old_public = vapid_public_key() or None
+
+    archived_fp = ""
+    if old_public:
+        archived_fp = vapid_public_fingerprint(old_public)
+        hist_row: Dict[str, Any] = {
+            "fingerprint": archived_fp,
+            "public": old_public,
+            "rotated_at": (
+                (doc.get("current") or {}).get("rotated_at")
+                if isinstance(doc.get("current"), dict)
+                else None
+            ),
+            "retired_at": now,
+        }
+        if archive_private and isinstance(doc.get("current"), dict):
+            priv = doc["current"].get("private")
+            if priv:
+                hist_row["private"] = priv
+        history = list(doc.get("history") or [])
+        history.append(hist_row)
+        doc["history"] = history[-50:]
+
+    keys = generate_vapid_keys(subject=subject)
+    fp = vapid_public_fingerprint(keys["public"])
+    current: Dict[str, Any] = {
+        "public": keys["public"],
+        "subject": keys["subject"],
+        "fingerprint": fp,
+        "rotated_at": now,
+    }
+    if archive_private:
+        current["private"] = keys["private"]
+    doc["current"] = current
+    save_vapid_vault(doc, vault_file)
+
+    if write_env:
+        os.makedirs(os.path.dirname(write_env) or ".", exist_ok=True)
+        with open(write_env, "a", encoding="utf-8") as f:
+            f.write("\n# vapid rotate " + now + "\n")
+            f.write(format_vapid_env(keys))
+
+    return {
+        "public": keys["public"],
+        "private": keys["private"],
+        "subject": keys["subject"],
+        "env": keys["env"],
+        "fingerprint": fp,
+        "archived_fingerprint": archived_fp or None,
+        "path": vault_file,
+        "history_len": len(doc.get("history") or []),
+    }
+
+
 def vapid_public_key() -> str:
     return (NOTIFY_PUSH_VAPID_PUBLIC or "").strip()
 

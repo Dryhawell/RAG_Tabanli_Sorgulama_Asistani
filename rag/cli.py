@@ -423,6 +423,30 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
             print(json.dumps({k: keys[k] for k in ("public", "subject")}, ensure_ascii=False, indent=2))
             print(format_vapid_env(keys), end="")
         return 0
+    if args.rotate_vapid:
+        from rag.collab_notify_push import format_vapid_env, rotate_vapid_keys
+
+        result = rotate_vapid_keys(
+            subject=args.vapid_subject,
+            path=args.vapid_vault,
+            archive_private=bool(args.vapid_archive_private),
+            write_env=args.vapid_write,
+        )
+        out = {
+            "public": result.get("public"),
+            "subject": result.get("subject"),
+            "fingerprint": result.get("fingerprint"),
+            "archived_fingerprint": result.get("archived_fingerprint"),
+            "path": result.get("path"),
+            "history_len": result.get("history_len"),
+        }
+        if args.vapid_show_private:
+            out["private"] = result.get("private")
+            out["env"] = result.get("env")
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        if args.vapid_show_private:
+            print(format_vapid_env(result), end="")
+        return 0
     if args.webpush_sw:
         from rag.collab_notify_push import (
             load_service_worker_js,
@@ -1205,6 +1229,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--generate-vapid",
         action="store_true",
         help="Yeni VAPID anahtar çifti üret",
+    )
+    p_cnot.add_argument(
+        "--rotate-vapid",
+        action="store_true",
+        help="VAPID rotate + vault history (private varsayılan yazılmaz)",
+    )
+    p_cnot.add_argument(
+        "--vapid-vault",
+        default=None,
+        help="VAPID vault JSON yolu (varsayılan metadata/vapid_keys.json)",
+    )
+    p_cnot.add_argument(
+        "--vapid-archive-private",
+        action="store_true",
+        help="Rotate sırasında private'ı vault'a yaz (önerilmez)",
+    )
+    p_cnot.add_argument(
+        "--vapid-show-private",
+        action="store_true",
+        help="Rotate çıktısında private/env göster",
     )
     p_cnot.add_argument(
         "--vapid-subject",

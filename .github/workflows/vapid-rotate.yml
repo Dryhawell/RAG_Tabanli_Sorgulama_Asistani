@@ -1,0 +1,45 @@
+"""VAPID anahtar rotate (workflow_dispatch; secret commit edilmez)."""
+
+name: VAPID Rotate
+
+on:
+  workflow_dispatch:
+    inputs:
+      subject:
+        description: "VAPID subject (mailto:...)"
+        required: false
+        default: "mailto:admin@localhost"
+        type: string
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Rotate VAPID (vault; private not archived)
+        run: |
+          mkdir -p metadata
+          python -m rag.cli collab-notifications --rotate-vapid \
+            --vapid-subject "${{ inputs.subject }}" \
+            --vapid-vault metadata/vapid_keys.json \
+            | tee metadata/vapid_rotate_public.json
+      - name: Upload public rotate artifact (no private key)
+        uses: actions/upload-artifact@v4
+        with:
+          name: vapid-rotate-${{ github.run_id }}
+          path: |
+            metadata/vapid_rotate_public.json
+            metadata/vapid_keys.json
+          if-no-files-found: ignore
+      - name: Reminder
+        run: |
+          echo "Private key CI çıktısında yoktur (varsayılan)."
+          echo "Yeni public fingerprint'i secrets/env'e manuel uygulayın; --vapid-show-private yalnızca yerel kullanın."

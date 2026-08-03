@@ -159,8 +159,10 @@ python -m rag.cli prometheus --dump
 ```
 Grafana'da Prometheus datasource ekleyip `rag_queries_total`, `rag_query_latency_seconds` panelleri kurulabilir.
 Judge soft-fail paneli: `grafana/dashboards/rag_judge.json` (provisioning: `grafana/provisioning/dashboards/`).
+Judge Slack alert kuralı: `grafana/alerting/rag_judge_soft_fail.yaml` + CI `scripts/ci_judge_slack_alert.py` (`RAG_JUDGE_SLACK_WEBHOOK`).
 VAPID üretimi: `python -m rag.cli collab-notifications --generate-vapid`
-Digest alert: `python -m rag.cli collab-notifications --digest-alert-check --digest-alert-dry-run`
+VAPID rotate/vault: `python -m rag.cli collab-notifications --rotate-vapid` (Actions: **VAPID Rotate**)
+Digest alert: `python -m rag.cli collab-notifications --digest-alert-check` (cron: `.github/workflows/digest-alert.yml`)
 
 ### Qdrant (uzak / dağıtık vektör DB)
 ```bash
@@ -499,7 +501,8 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
-- Push: Web Push VAPID secret vault / rotate workflow
-- Judge: LLM judge soft-fail Slack alert rule (Grafana)
-- Tenant: digest alert cron workflow (GitHub Actions)
+- Push: Web Push VAPID GitHub secret otomatik güncelleme (API)
+- Judge: LLM judge soft-fail PagerDuty / Opsgenie bridge
+- Tenant: digest alert multi-tenant fan-out
 - Ingest: incremental chunk diff / delta rebuild
+- Observability: OpenTelemetry trace export
