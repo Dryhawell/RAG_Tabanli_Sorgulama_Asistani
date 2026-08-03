@@ -158,6 +158,9 @@ python -m rag.cli prometheus
 python -m rag.cli prometheus --dump
 ```
 Grafana'da Prometheus datasource ekleyip `rag_queries_total`, `rag_query_latency_seconds` panelleri kurulabilir.
+Judge soft-fail paneli: `grafana/dashboards/rag_judge.json` (provisioning: `grafana/provisioning/dashboards/`).
+VAPID üretimi: `python -m rag.cli collab-notifications --generate-vapid`
+Digest alert: `python -m rag.cli collab-notifications --digest-alert-check --digest-alert-dry-run`
 
 ### Qdrant (uzak / dağıtık vektör DB)
 ```bash
@@ -496,7 +499,7 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
-- Push: Web Push VAPID key üretimi CLI + Streamlit native register bridge
-- Judge: LLM judge soft-fail Grafana dashboard örneği
-- Tenant: digest rapor webhook alert eşikleri
+- Push: Web Push VAPID secret vault / rotate workflow
+- Judge: LLM judge soft-fail Slack alert rule (Grafana)
+- Tenant: digest alert cron workflow (GitHub Actions)
 - Ingest: incremental chunk diff / delta rebuild

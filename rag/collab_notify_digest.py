@@ -1183,6 +1183,173 @@ def export_digest_report_csv(
     return buf.getvalue()
 
 
+def digest_alert_should_fire(
+    summary: Dict[str, Any],
+    *,
+    skip_threshold: Optional[float] = None,
+    fail_rate: Optional[float] = None,
+    min_samples: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """Skip/fail oranları eşiği aşarsa alert payload döner; aksi halde None."""
+    try:
+        from app.config import (
+            DIGEST_ALERT_FAIL_RATE,
+            DIGEST_ALERT_MIN_SAMPLES,
+            DIGEST_ALERT_SKIP_THRESHOLD,
+        )
+    except ImportError:
+        DIGEST_ALERT_SKIP_THRESHOLD = 0.5
+        DIGEST_ALERT_FAIL_RATE = 0.2
+        DIGEST_ALERT_MIN_SAMPLES = 5
+
+    total = int(summary.get("total") or 0)
+    skipped = int(summary.get("skipped") or 0)
+    by_reason = summary.get("by_reason") or {}
+    if not isinstance(by_reason, dict):
+        by_reason = {}
+    send_failed = int(by_reason.get("send_failed") or 0)
+    skip_th = (
+        DIGEST_ALERT_SKIP_THRESHOLD if skip_threshold is None else float(skip_threshold)
+    )
+    fail_th = DIGEST_ALERT_FAIL_RATE if fail_rate is None else float(fail_rate)
+    min_n = DIGEST_ALERT_MIN_SAMPLES if min_samples is None else int(min_samples)
+    if total < max(1, min_n):
+        return None
+    skip_rate = skipped / total if total else 0.0
+    fail_ratio = send_failed / total if total else 0.0
+    reasons: List[str] = []
+    if skip_rate >= skip_th:
+        reasons.append("skip_rate")
+    if fail_ratio >= fail_th:
+        reasons.append("fail_rate")
+    if not reasons:
+        return None
+    return {
+        "type": "digest_alert",
+        "reasons": reasons,
+        "total": total,
+        "skipped": skipped,
+        "send_failed": send_failed,
+        "skip_rate": round(skip_rate, 4),
+        "fail_rate": round(fail_ratio, 4),
+        "skip_threshold": skip_th,
+        "fail_threshold": fail_th,
+        "by_reason": by_reason,
+        "channels": summary.get("channels") or {},
+    }
+
+
+def dispatch_digest_alert(
+    payload: Dict[str, Any],
+    *,
+    url: Optional[str] = None,
+) -> bool:
+    """Digest alert webhook gönderir (Slack/Discord/generic)."""
+    try:
+        from app.config import DIGEST_ALERT_WEBHOOK_URL, NOTIFY_WEBHOOK_URL
+    except ImportError:
+        DIGEST_ALERT_WEBHOOK_URL = ""
+        NOTIFY_WEBHOOK_URL = ""
+    target = (url or DIGEST_ALERT_WEBHOOK_URL or NOTIFY_WEBHOOK_URL or "").strip()
+    if not target or not payload:
+        return False
+    try:
+        import requests
+    except ImportError:
+        return False
+    text = (
+        f"Digest alert: {', '.join(payload.get('reasons') or [])} · "
+        f"total={payload.get('total')} skip_rate={payload.get('skip_rate')} "
+        f"fail_rate={payload.get('fail_rate')}"
+    )
+    body: Dict[str, Any]
+    if is_slack_webhook_url(target):
+        body = {
+            "text": text,
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"*Digest alert*\n{text}"},
+                }
+            ],
+        }
+    elif is_discord_webhook_url(target):
+        body = {
+            "content": text,
+            "embeds": [
+                {
+                    "title": "Digest alert",
+                    "description": text,
+                    "fields": [
+                        {"name": k, "value": str(v), "inline": True}
+                        for k, v in [
+                            ("total", payload.get("total")),
+                            ("skip_rate", payload.get("skip_rate")),
+                            ("fail_rate", payload.get("fail_rate")),
+                        ]
+                    ],
+                }
+            ],
+        }
+    else:
+        body = {"type": "collab_digest_alert", **payload, "text": text}
+    try:
+        r = requests.post(target, json=body, timeout=10)
+        return r.status_code < 400
+    except Exception:
+        return False
+
+
+def check_digest_alerts(
+    *,
+    base: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+    username: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    limit: Optional[int] = None,
+    skip_threshold: Optional[float] = None,
+    fail_rate: Optional[float] = None,
+    min_samples: Optional[int] = None,
+    dry_run: bool = False,
+    webhook_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Digest özetine göre alert kontrolü; gerekirse webhook gönderir."""
+    summary = summarize_digest_report(
+        base=base,
+        tenant_id=tenant_id,
+        username=username,
+        since=since,
+        until=until,
+        limit=limit,
+    )
+    alert = digest_alert_should_fire(
+        summary,
+        skip_threshold=skip_threshold,
+        fail_rate=fail_rate,
+        min_samples=min_samples,
+    )
+    result: Dict[str, Any] = {
+        "fired": False,
+        "dry_run": dry_run,
+        "summary": {
+            "total": summary.get("total"),
+            "sent": summary.get("sent"),
+            "skipped": summary.get("skipped"),
+            "by_reason": summary.get("by_reason"),
+        },
+        "alert": alert,
+        "dispatched": False,
+    }
+    if alert is None:
+        return result
+    result["fired"] = True
+    if dry_run:
+        return result
+    result["dispatched"] = dispatch_digest_alert(alert, url=webhook_url)
+    return result
+
+
 def _finish_digest_result(
     username: str,
     result: Dict[str, Any],

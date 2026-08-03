@@ -625,3 +625,82 @@ def test_digest_report_time_and_user_filter(tmp_path, monkeypatch):
     )
     assert "alice" in csv_text and "bob" not in csv_text
 
+
+def test_digest_alert_thresholds(tmp_path, monkeypatch):
+    from rag.collab_notify_digest import (
+        append_digest_report,
+        check_digest_alerts,
+        digest_alert_should_fire,
+    )
+
+    monkeypatch.setattr("rag.collab_notify_digest.METADATA_DIR", str(tmp_path))
+    for i in range(6):
+        append_digest_report(
+            f"u{i}",
+            {
+                "sent": False,
+                "count": 0,
+                "reason": "send_failed" if i < 3 else "empty",
+                "tenant_id": "acme",
+            },
+            base=str(tmp_path),
+        )
+    summary = {
+        "total": 6,
+        "skipped": 6,
+        "sent": 0,
+        "by_reason": {"send_failed": 3, "empty": 3},
+    }
+    alert = digest_alert_should_fire(
+        summary, skip_threshold=0.5, fail_rate=0.4, min_samples=5
+    )
+    assert alert is not None
+    assert "skip_rate" in alert["reasons"]
+    assert "fail_rate" in alert["reasons"]
+
+    calls = []
+
+    def fake_post(url, json=None, timeout=10):
+        calls.append({"url": url, "json": json})
+
+        class R:
+            status_code = 200
+
+        return R()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr(
+        "app.config.DIGEST_ALERT_WEBHOOK_URL",
+        "https://hooks.example.com/digest",
+    )
+    # also patch inside dispatch via module-level import path
+    result = check_digest_alerts(
+        base=str(tmp_path),
+        tenant_id="acme",
+        min_samples=5,
+        skip_threshold=0.5,
+        fail_rate=0.4,
+        webhook_url="https://hooks.example.com/digest",
+    )
+    assert result["fired"] is True
+    assert result["dispatched"] is True
+    assert calls
+
+    dry = check_digest_alerts(
+        base=str(tmp_path),
+        tenant_id="acme",
+        min_samples=5,
+        skip_threshold=0.5,
+        fail_rate=0.4,
+        dry_run=True,
+        webhook_url="https://hooks.example.com/digest",
+    )
+    assert dry["fired"] is True
+    assert dry["dispatched"] is False
+
+    low = digest_alert_should_fire(
+        {"total": 2, "skipped": 2, "by_reason": {"empty": 2}},
+        min_samples=5,
+    )
+    assert low is None
+

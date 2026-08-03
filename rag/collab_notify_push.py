@@ -759,6 +759,67 @@ def vapid_configured() -> bool:
     )
 
 
+def generate_vapid_keys(
+    *,
+    subject: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Yeni VAPID anahtar çifti üretir.
+    public: tarayıcı applicationServerKey (URL-safe base64, uncompressed point)
+    private: pywebpush uyumlu PEM
+    """
+    import base64
+
+    sub = (subject or NOTIFY_PUSH_VAPID_SUBJECT or "mailto:admin@localhost").strip()
+    public_b64 = ""
+    private_pem = ""
+    try:
+        from py_vapid import Vapid
+        from cryptography.hazmat.primitives import serialization
+
+        vapid = Vapid()
+        vapid.generate_keys()
+        private_pem = vapid.private_pem().decode("utf-8") if isinstance(
+            vapid.private_pem(), bytes
+        ) else str(vapid.private_pem())
+        raw = vapid.public_key.public_bytes(
+            encoding=serialization.Encoding.X962,
+            format=serialization.PublicFormat.UncompressedPoint,
+        )
+        public_b64 = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    except Exception:
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives import serialization
+
+        key = ec.generate_private_key(ec.SECP256R1())
+        private_pem = key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+        raw = key.public_key().public_bytes(
+            encoding=serialization.Encoding.X962,
+            format=serialization.PublicFormat.UncompressedPoint,
+        )
+        public_b64 = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    env_block = (
+        f"RAG_NOTIFY_PUSH_VAPID_PUBLIC={public_b64}\n"
+        f"RAG_NOTIFY_PUSH_VAPID_PRIVATE={private_pem.replace(chr(10), r'\\n')}\n"
+        f"RAG_NOTIFY_PUSH_VAPID_SUBJECT={sub}\n"
+    )
+    return {
+        "public": public_b64,
+        "private": private_pem,
+        "subject": sub,
+        "env": env_block,
+    }
+
+
+def format_vapid_env(keys: Dict[str, str]) -> str:
+    return str(keys.get("env") or "")
+
+
 def vapid_public_key() -> str:
     return (NOTIFY_PUSH_VAPID_PUBLIC or "").strip()
 

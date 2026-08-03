@@ -608,8 +608,35 @@ with st.sidebar:
                     key="digest_report_csv_dl",
                     use_container_width=True,
                 )
+                if st.button(
+                    t("collab_digest_alert_check"),
+                    key="digest_alert_check_btn",
+                    use_container_width=True,
+                ):
+                    from rag.collab_notify_digest import check_digest_alerts
+
+                    _alert = check_digest_alerts(
+                        tenant_id=_filter_tid,
+                        username=_filter_user,
+                        since=_since_v,
+                        until=_until_v,
+                        limit=500,
+                        dry_run=True,
+                    )
+                    if _alert.get("fired"):
+                        st.warning(
+                            t(
+                                "collab_digest_alert_fired",
+                                reasons=", ".join((_alert.get("alert") or {}).get("reasons") or []),
+                            )
+                        )
+                        st.json(_alert.get("alert") or {})
+                    else:
+                        st.success(t("collab_digest_alert_ok"))
             from rag.collab_notify_push import (
+                generate_vapid_keys,
                 load_service_worker_js,
+                parse_webpush_subscription,
                 prune_expired_tokens,
                 register_device_token,
                 revoke_device_token,
@@ -619,6 +646,15 @@ with st.sidebar:
             )
 
             st.markdown(t("collab_push_devices"))
+            if current_user and current_user.role == "admin":
+                with st.expander(t("collab_push_vapid_generate"), expanded=False):
+                    if st.button(t("collab_push_vapid_generate_btn"), key="vapid_gen"):
+                        _vk = generate_vapid_keys()
+                        st.session_state["vapid_generated"] = _vk
+                    _vk_show = st.session_state.get("vapid_generated")
+                    if _vk_show:
+                        st.caption(t("collab_push_vapid_generate_hint"))
+                        st.code(_vk_show.get("env") or "")
             if vapid_configured():
                 with st.expander(t("collab_push_browser"), expanded=False):
                     st.caption(t("collab_push_browser_help"))
@@ -651,6 +687,30 @@ with st.sidebar:
                         render_webpush_subscribe_widget(username=_nc_user)
                     except Exception as _wp_exc:
                         st.caption(f"{t('collab_push_browser_error')}: {_wp_exc}")
+                    _bridge = st.text_area(
+                        t("collab_push_bridge_json"),
+                        key="webpush_bridge_json",
+                        height=100,
+                        help=t("collab_push_bridge_help"),
+                    )
+                    if st.button(
+                        t("collab_push_bridge_save"),
+                        key="webpush_bridge_save",
+                        use_container_width=True,
+                    ):
+                        if parse_webpush_subscription(_bridge or ""):
+                            register_device_token(
+                                _nc_user,
+                                _bridge.strip(),
+                                platform="webpush",
+                                label="streamlit-bridge",
+                                device_name="Browser",
+                                os_name="web",
+                            )
+                            st.success(t("collab_push_bridge_ok"))
+                            st.rerun()
+                        else:
+                            st.warning(t("collab_push_bridge_invalid"))
             else:
                 st.caption(t("collab_push_vapid_missing"))
             _devices = summarize_user_devices(_nc_user)

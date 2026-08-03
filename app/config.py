@@ -379,6 +379,13 @@ NOTIFY_PUSH_VAPID_SUBJECT = os.getenv(
     "RAG_NOTIFY_PUSH_VAPID_SUBJECT",
     "mailto:admin@localhost",
 ).strip()
+# Digest rapor webhook alert eşikleri
+DIGEST_ALERT_SKIP_THRESHOLD = float(
+    os.getenv("RAG_DIGEST_ALERT_SKIP_THRESHOLD", "0.5")
+)
+DIGEST_ALERT_FAIL_RATE = float(os.getenv("RAG_DIGEST_ALERT_FAIL_RATE", "0.2"))
+DIGEST_ALERT_MIN_SAMPLES = int(os.getenv("RAG_DIGEST_ALERT_MIN_SAMPLES", "5"))
+DIGEST_ALERT_WEBHOOK_URL = os.getenv("RAG_DIGEST_ALERT_WEBHOOK_URL", "").strip()
 # Presence snapshot TTL (saniye)
 COLLAB_PRESENCE_TTL_SEC = int(os.getenv("RAG_COLLAB_PRESENCE_TTL_SEC", "90"))
 LORA_DP_EVAL_AUTO_ROLLBACK = os.getenv("RAG_LORA_DP_EVAL_AUTO_ROLLBACK", "0") not in {

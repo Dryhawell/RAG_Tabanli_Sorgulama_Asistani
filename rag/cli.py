@@ -394,6 +394,35 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
         )
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0
+    if args.digest_alert_check:
+        from rag.collab_notify_digest import check_digest_alerts
+
+        result = check_digest_alerts(
+            tenant_id=args.digest_tenant,
+            username=args.digest_report_user,
+            since=args.digest_since,
+            until=args.digest_until,
+            limit=args.digest_report_limit,
+            dry_run=bool(args.digest_alert_dry_run),
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if (not result.get("fired")) or result.get("dispatched") or result.get("dry_run") else 1
+    if args.generate_vapid:
+        from rag.collab_notify_push import format_vapid_env, generate_vapid_keys
+
+        keys = generate_vapid_keys(subject=args.vapid_subject)
+        if args.vapid_write:
+            import os
+
+            path = args.vapid_write
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write("\n" + format_vapid_env(keys))
+            print(json.dumps({"wrote": path, "public": keys["public"]}, ensure_ascii=False))
+        else:
+            print(json.dumps({k: keys[k] for k in ("public", "subject")}, ensure_ascii=False, indent=2))
+            print(format_vapid_env(keys), end="")
+        return 0
     if args.webpush_sw:
         from rag.collab_notify_push import (
             load_service_worker_js,
@@ -1171,6 +1200,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--webpush-sw",
         action="store_true",
         help="Web Push SW yolu ve VAPID public özeti",
+    )
+    p_cnot.add_argument(
+        "--generate-vapid",
+        action="store_true",
+        help="Yeni VAPID anahtar çifti üret",
+    )
+    p_cnot.add_argument(
+        "--vapid-subject",
+        default=None,
+        help="VAPID subject (mailto:...)",
+    )
+    p_cnot.add_argument(
+        "--vapid-write",
+        default=None,
+        metavar="PATH",
+        help="VAPID env satırlarını dosyaya ekle",
+    )
+    p_cnot.add_argument(
+        "--digest-alert-check",
+        action="store_true",
+        help="Digest skip/fail eşik alert kontrolü",
+    )
+    p_cnot.add_argument(
+        "--digest-alert-dry-run",
+        action="store_true",
+        help="Alert kontrolü yap, webhook gönderme",
     )
     p_cnot.add_argument(
         "--register-push-token",

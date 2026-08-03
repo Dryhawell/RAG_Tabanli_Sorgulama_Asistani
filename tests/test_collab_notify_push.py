@@ -521,3 +521,20 @@ def test_vapid_application_server_key_and_sw(tmp_path, monkeypatch):
     if sw:
         assert "addEventListener" in sw and "push" in sw
 
+
+def test_generate_vapid_keys():
+    from rag.collab_notify_push import (
+        format_vapid_env,
+        generate_vapid_keys,
+        vapid_application_server_key,
+    )
+
+    keys = generate_vapid_keys(subject="mailto:ops@example.com")
+    assert keys["public"]
+    assert "BEGIN PRIVATE KEY" in keys["private"]
+    assert keys["subject"] == "mailto:ops@example.com"
+    assert vapid_application_server_key(keys["public"]) is not None
+    env = format_vapid_env(keys)
+    assert "RAG_NOTIFY_PUSH_VAPID_PUBLIC=" in env
+    assert "RAG_NOTIFY_PUSH_VAPID_PRIVATE=" in env
+
