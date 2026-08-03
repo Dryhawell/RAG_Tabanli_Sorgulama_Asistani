@@ -20,3 +20,6 @@ Pillow
 pytesseract
 opacus>=1.4; python_version>='3.9'
 peft>=0.11.0; python_version>='3.9'
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+opentelemetry-exporter-otlp>=1.20.0

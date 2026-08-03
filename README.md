@@ -159,11 +159,12 @@ python -m rag.cli prometheus --dump
 ```
 Grafana'da Prometheus datasource ekleyip `rag_queries_total`, `rag_query_latency_seconds` panelleri kurulabilir.
 Judge soft-fail paneli: `grafana/dashboards/rag_judge.json` (provisioning: `grafana/provisioning/dashboards/`).
-Judge Slack alert kuralı: `grafana/alerting/rag_judge_soft_fail.yaml` + CI `scripts/ci_judge_slack_alert.py` (`RAG_JUDGE_SLACK_WEBHOOK`, opsiyonel `RAG_JUDGE_PAGERDUTY_ROUTING_KEY` / `RAG_JUDGE_OPSGENIE_API_KEY`; soft-fail → OK geçişinde auto-resolve, state: `RAG_JUDGE_ALERT_STATE`).
+Judge Slack alert kuralı: `grafana/alerting/rag_judge_soft_fail.yaml` + CI `scripts/ci_judge_slack_alert.py` (`RAG_JUDGE_SLACK_WEBHOOK`, opsiyonel `RAG_JUDGE_PAGERDUTY_ROUTING_KEY` / `RAG_JUDGE_OPSGENIE_API_KEY`; soft-fail → OK geçişinde auto-resolve, state: `RAG_JUDGE_ALERT_STATE`; manuel ack: `POST /judge/ack` + `RAG_JUDGE_ACK_TOKEN`).
 VAPID üretimi: `python -m rag.cli collab-notifications --generate-vapid`
 VAPID rotate/vault: `python -m rag.cli collab-notifications --rotate-vapid` (Actions: **VAPID Rotate**; secret sync için `GH_PAT` + `--update-github-secrets`)
 Digest alert: `python -m rag.cli collab-notifications --digest-alert-check --digest-alert-all` (cron: `.github/workflows/digest-alert.yml`; tenant webhook: `RAG_DIGEST_ALERT_WEBHOOKS_JSON` veya `metadata/digest_alert_webhooks.json`)
-OpenTelemetry (opsiyonel): `RAG_OTEL_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT` + `opentelemetry-*` paketleri; yoksa no-op (`rag/otel.py`).
+OpenTelemetry (opsiyonel): `RAG_OTEL_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT` + `opentelemetry-*` paketleri; resource: `OTEL_SERVICE_NAME`, `RAG_ENVIRONMENT`, `OTEL_RESOURCE_ATTRIBUTES` (`rag/otel.py`).
+Delta rebuild: `python -m rag.cli rebuild --delta` (`metadata/ingest_manifest.json` fingerprint).
 
 ### Qdrant (uzak / dağıtık vektör DB)
 ```bash
@@ -502,7 +503,7 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
-- Push: Web Push VAPID environment secret sync (Deploy keys / OIDC)
-- Judge: soft-fail ack webhook / manuel acknowledge API
-- Ingest: incremental chunk diff / delta rebuild
-- Observability: OpenTelemetry OTLP exporter (sdk + BatchSpanProcessor prod wiring)
+- Push: Web Push VAPID environment secret sync (Deploy keys / OIDC / GitHub Environments)
+- Judge: soft-fail ack UI + CI artifact state persistence
+- Ingest: chunk-level diff (stable chunk ids across edits)
+- Observability: more spans (judge / query / LLM) + metrics exemplars

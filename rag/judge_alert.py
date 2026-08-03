@@ -389,6 +389,151 @@ def dispatch_judge_resolve(
     }
 
 
+def build_slack_ack_payload(
+    report: Dict[str, Any],
+    *,
+    source: str,
+    actor: str,
+    note: str = "",
+) -> Dict[str, Any]:
+    text = (
+        f"RAG judge soft-fail ACK ({source}): by={actor}"
+        + (f" note={note}" if note else "")
+    )
+    blocks: List[Dict[str, Any]] = [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*RAG judge soft-fail acknowledged*\n{text}"},
+        }
+    ]
+    return {"text": text, "blocks": blocks}
+
+
+def post_opsgenie_ack(*, api_key: str, source: str, note: str = "") -> bool:
+    key = (api_key or "").strip()
+    if not key:
+        return False
+    alias = f"rag-judge-soft-fail/{source}"
+    body: Dict[str, Any] = {"user": "rag-ci"}
+    if note:
+        body["note"] = note[:15000]
+    try:
+        import requests
+        from urllib.parse import quote
+
+        r = requests.post(
+            f"https://api.opsgenie.com/v2/alerts/{quote(alias, safe='')}/acknowledge",
+            params={"identifierType": "alias"},
+            headers={
+                "Authorization": f"GenieKey {key}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=10,
+        )
+        return r.status_code < 300
+    except Exception:
+        return False
+
+
+def dispatch_judge_ack(
+    report: Dict[str, Any],
+    *,
+    source: str,
+    actor: str,
+    note: str = "",
+    slack_webhook: Optional[str] = None,
+    pagerduty_routing_key: Optional[str] = None,
+    opsgenie_api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    slack_url, pd_key, og_key = _channel_creds(
+        slack_webhook=slack_webhook,
+        pagerduty_routing_key=pagerduty_routing_key,
+        opsgenie_api_key=opsgenie_api_key,
+    )
+    channels: Dict[str, Any] = {}
+    any_ok = False
+    if slack_url:
+        ok = post_slack(
+            slack_url,
+            build_slack_ack_payload(report, source=source, actor=actor, note=note),
+        )
+        channels["slack"] = ok
+        any_ok = any_ok or ok
+    if pd_key:
+        ok = post_pagerduty(
+            routing_key=pd_key,
+            report=report,
+            source=source,
+            event_action="acknowledge",
+        )
+        channels["pagerduty"] = ok
+        any_ok = any_ok or ok
+    if og_key:
+        ok = post_opsgenie_ack(api_key=og_key, source=source, note=note or f"acked by {actor}")
+        channels["opsgenie"] = ok
+        any_ok = any_ok or ok
+    return {
+        "acked": any_ok,
+        "channels": channels,
+        "source": source,
+        "soft_fail": True,
+        "configured": bool(slack_url or pd_key or og_key),
+        "actor": actor,
+        "note": note,
+    }
+
+
+def acknowledge_judge_alert(
+    *,
+    actor: str,
+    note: str = "",
+    state_path: Optional[str] = None,
+    notify: bool = True,
+    report: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Manuel soft-fail acknowledge; state'e yazar, opsiyonel kanal bildirimi."""
+    who = (actor or "").strip()
+    if not who:
+        return {"ok": False, "error": "actor_required"}
+    state = load_judge_alert_state(state_path)
+    if not state.get("soft_fail"):
+        return {
+            "ok": False,
+            "error": "no_active_soft_fail",
+            "state": state,
+        }
+    if state.get("acknowledged"):
+        return {
+            "ok": True,
+            "already": True,
+            "state": state,
+            "notify": {"acked": False, "reason": "already_acknowledged"},
+        }
+    source = str(state.get("source") or "report")
+    new_state = {
+        **state,
+        "soft_fail": True,
+        "source": source,
+        "acknowledged": True,
+        "acknowledged_at": _utcnow_iso(),
+        "acknowledged_by": who,
+        "ack_note": (note or "")[:500],
+        "updated_at": _utcnow_iso(),
+        "last_action": "ack",
+    }
+    save_judge_alert_state(new_state, state_path)
+    notify_result: Dict[str, Any] = {"acked": False, "skipped": True}
+    if notify:
+        notify_result = dispatch_judge_ack(
+            report or {"summary": {"ok": False}},
+            source=source,
+            actor=who,
+            note=note or "",
+        )
+    return {"ok": True, "already": False, "state": new_state, "notify": notify_result}
+
+
 def detect_and_dispatch(
     *,
     report_path: str,
@@ -397,7 +542,8 @@ def detect_and_dispatch(
     state_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    soft_fail → alert + state; önceki soft_fail + şimdi ok → resolve + state temizle.
+    soft_fail → alert + state; ack'lı soft-fail → yeniden alert yok;
+    önceki soft_fail + şimdi ok → resolve + state temizle.
     """
     fired, source, report = detect_soft_fail(
         report_path=report_path,
@@ -407,8 +553,19 @@ def detect_and_dispatch(
     state = load_judge_alert_state(state_path)
     prev = bool(state.get("soft_fail"))
     prev_source = str(state.get("source") or "report")
+    acked = bool(state.get("acknowledged"))
 
     if fired:
+        if prev and acked:
+            return {
+                "action": "ack_hold",
+                "soft_fail": True,
+                "alerted": False,
+                "reason": "acknowledged",
+                "acknowledged_by": state.get("acknowledged_by"),
+                "acknowledged_at": state.get("acknowledged_at"),
+                "source": source or prev_source,
+            }
         result = dispatch_judge_alerts(report or {"summary": {}}, source=source or "unknown")
         save_judge_alert_state(
             {
@@ -416,6 +573,10 @@ def detect_and_dispatch(
                 "source": source or "unknown",
                 "updated_at": _utcnow_iso(),
                 "last_action": "alert",
+                "acknowledged": False,
+                "acknowledged_at": None,
+                "acknowledged_by": None,
+                "ack_note": None,
             },
             state_path,
         )
@@ -436,6 +597,10 @@ def detect_and_dispatch(
                 "source": None,
                 "updated_at": _utcnow_iso(),
                 "last_action": "resolve",
+                "acknowledged": False,
+                "acknowledged_at": None,
+                "acknowledged_by": None,
+                "ack_note": None,
             },
             state_path,
         )

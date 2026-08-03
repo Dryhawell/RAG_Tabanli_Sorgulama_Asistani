@@ -44,6 +44,90 @@ def handle_sw_js() -> Tuple[int, Dict[str, str], bytes]:
     return 200, headers, body
 
 
+def _json_error(code: int, error: str) -> Tuple[int, Dict[str, str], bytes]:
+    return (
+        code,
+        {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+        },
+        json.dumps({"ok": False, "error": error}).encode("utf-8"),
+    )
+
+
+def handle_judge_ack(body: bytes, *, headers: Optional[Dict[str, str]] = None) -> Tuple[int, Dict[str, str], bytes]:
+    """POST JSON: {actor, note?, token?} — soft-fail manuel acknowledge."""
+    expected = os.environ.get("RAG_JUDGE_ACK_TOKEN", "").strip()
+    if not expected:
+        return _json_error(403, "ack_token_not_configured")
+    try:
+        data = json.loads(body.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return _json_error(400, "invalid_json")
+    if not isinstance(data, dict):
+        return _json_error(400, "object_required")
+    hdrs = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+    token = str(data.get("token") or "").strip()
+    if not token:
+        token = hdrs.get("x-judge-ack-token", "").strip()
+    if not token:
+        auth = hdrs.get("authorization", "").strip()
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+    if token != expected:
+        return _json_error(401, "invalid_token")
+    actor = str(data.get("actor") or data.get("by") or "").strip()
+    note = str(data.get("note") or "")[:500]
+    state_path = os.environ.get("RAG_JUDGE_ALERT_STATE", "").strip() or None
+    notify = str(data.get("notify", "1")).strip().lower() not in {"0", "false", "no", "off"}
+    from rag.judge_alert import acknowledge_judge_alert
+
+    result = acknowledge_judge_alert(
+        actor=actor,
+        note=note,
+        state_path=state_path,
+        notify=notify,
+    )
+    if not result.get("ok") and result.get("error") == "actor_required":
+        return _json_error(400, "actor_required")
+    if not result.get("ok") and result.get("error") == "no_active_soft_fail":
+        return _json_error(409, "no_active_soft_fail")
+    payload = {"ok": True, **{k: v for k, v in result.items() if k != "ok"}}
+    return (
+        200,
+        {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+        },
+        json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+    )
+
+
+def handle_judge_alert_state() -> Tuple[int, Dict[str, str], bytes]:
+    """GET soft-fail alert state (token gerekmez; soft_fail bayrağı + ack özeti)."""
+    state_path = os.environ.get("RAG_JUDGE_ALERT_STATE", "").strip() or None
+    from rag.judge_alert import load_judge_alert_state
+
+    state = load_judge_alert_state(state_path)
+    public = {
+        "soft_fail": bool(state.get("soft_fail")),
+        "source": state.get("source"),
+        "acknowledged": bool(state.get("acknowledged")),
+        "acknowledged_by": state.get("acknowledged_by"),
+        "acknowledged_at": state.get("acknowledged_at"),
+        "last_action": state.get("last_action"),
+        "updated_at": state.get("updated_at"),
+    }
+    return (
+        200,
+        {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+        },
+        json.dumps({"ok": True, "state": public}, ensure_ascii=False).encode("utf-8"),
+    )
+
+
 def handle_webpush_register(body: bytes) -> Tuple[int, Dict[str, str], bytes]:
     """POST JSON: {username, subscription|token, label?} → register_device_token."""
     try:
@@ -196,7 +280,7 @@ def _cors_preflight() -> Tuple[int, Dict[str, str], bytes]:
         {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Judge-Ack-Token",
             "Access-Control-Max-Age": "86400",
         },
         b"",
@@ -238,9 +322,22 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
                 )
             )
             return
+        if path in {"/judge/alert", "/judge/alert-state"}:
+            self._send(*handle_judge_alert_state())
+            return
         if path in {"/", "/health"}:
             body = json.dumps(
-                {"ok": True, "service": "collab-http", "routes": ["/sw.js", "/webpush", "/webpush/register"]}
+                {
+                    "ok": True,
+                    "service": "collab-http",
+                    "routes": [
+                        "/sw.js",
+                        "/webpush",
+                        "/webpush/register",
+                        "/judge/ack",
+                        "/judge/alert",
+                    ],
+                }
             ).encode("utf-8")
             self._send(200, {"Content-Type": "application/json"}, body)
             return
@@ -253,6 +350,10 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length > 0 else b"{}"
         if path == "/webpush/register":
             self._send(*handle_webpush_register(raw))
+            return
+        if path == "/judge/ack":
+            hdrs = {k: v for k, v in self.headers.items()}
+            self._send(*handle_judge_ack(raw, headers=hdrs))
             return
         self._send(404, {"Content-Type": "text/plain"}, b"not found\n")
 
@@ -311,7 +412,7 @@ def run_collab_http_server(
         public_base = public
 
     server = ThreadingHTTPServer((host, bind_port), _Handler)
-    print(f"Collab HTTP: {public}  (/sw.js, /webpush, /webpush/register)")
+    print(f"Collab HTTP: {public}  (/sw.js, /webpush, /webpush/register, /judge/ack)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

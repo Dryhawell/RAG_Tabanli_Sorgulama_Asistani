@@ -2,6 +2,7 @@
 
 Örnekler:
   python -m rag.cli rebuild
+  python -m rag.cli rebuild --delta
   python -m rag.cli ingest path/to/file.pdf
   python -m rag.cli list
   python -m rag.cli eval
@@ -69,7 +70,12 @@ from app.config import (
 from rag.embed import Embedder, resolve_embedding_model
 from rag.eval import run_regression
 from rag.hash_embed import HashEmbedder
-from rag.ingest import ingest_path, list_data_files, rebuild_from_data_dir
+from rag.ingest import (
+    ingest_path,
+    list_data_files,
+    rebuild_delta_from_data_dir,
+    rebuild_from_data_dir,
+)
 from rag.judge import run_judge_file
 from rag.metrics import summarize_metrics
 from rag.prometheus_sink import ensure_prometheus_server, prometheus_available, render_prometheus
@@ -135,6 +141,29 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
     model = resolve_embedding_model(args.embedding)
     print(f"Embedding: {model}")
     emb = Embedder(model_name=model)
+    if getattr(args, "delta", False):
+        index = _load_index(emb.dim, emb.model_name)
+        index, reports, summary = rebuild_delta_from_data_dir(DATA_DIR, emb, index)
+        index.save(INDEX_PATH, DOCSTORE_PATH)
+        print(
+            f"Delta rebuild: updated={summary.get('updated')} "
+            f"unchanged={summary.get('unchanged')} removed={summary.get('removed')} "
+            f"chunks={index.size} -> {INDEX_PATH}"
+        )
+        for r in reports:
+            action = r.get("action") or ("skip" if r.get("skipped") else "ok")
+            if action in {"unchanged"}:
+                continue
+            if r.get("skipped") and action != "removed":
+                print(f"ATLANDI {r['source_file']}: {r.get('reason')}")
+            elif action == "removed":
+                print(f"SİLİNDİ {r['source_file']}: {r.get('chunks_removed', 0)} chunk")
+            else:
+                print(
+                    f"{action.upper()} {r['source_file']}: "
+                    f"+{r.get('chunks_added', 0)} -{r.get('chunks_removed', 0)}"
+                )
+        return 0
     index, reports = rebuild_from_data_dir(DATA_DIR, emb)
     index.save(INDEX_PATH, DOCSTORE_PATH)
     ok = [r for r in reports if not r.get("skipped")]
@@ -1074,6 +1103,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_rebuild = sub.add_parser("rebuild", help="data/ üzerinden indeksi sıfırdan kur")
     _add_embedding_arg(p_rebuild)
+    p_rebuild.add_argument(
+        "--delta",
+        action="store_true",
+        help="Incremental rebuild: değişmeyen kaynakları atla (ingest_manifest.json)",
+    )
     p_rebuild.set_defaults(func=cmd_rebuild)
 
     p_ingest = sub.add_parser("ingest", help="Dosya(lar)ı indekse ekle/yenile")

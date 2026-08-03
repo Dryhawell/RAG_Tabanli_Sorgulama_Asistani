@@ -5,6 +5,8 @@ import threading
 from http.client import HTTPConnection
 
 from rag.collab_http import (
+    handle_judge_ack,
+    handle_judge_alert_state,
     handle_sw_js,
     handle_webpush_register,
 )
@@ -16,6 +18,43 @@ def test_handle_sw_js():
     assert code == 200
     assert "javascript" in headers["Content-Type"]
     assert b"push" in body
+
+
+def test_handle_judge_ack(tmp_path, monkeypatch):
+    from rag.judge_alert import save_judge_alert_state
+
+    state = str(tmp_path / "judge_state.json")
+    save_judge_alert_state(
+        {
+            "soft_fail": True,
+            "source": "report",
+            "acknowledged": False,
+            "last_action": "alert",
+        },
+        state,
+    )
+    monkeypatch.setenv("RAG_JUDGE_ACK_TOKEN", "secret-ack")
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", state)
+    monkeypatch.delenv("RAG_JUDGE_SLACK_WEBHOOK", raising=False)
+    monkeypatch.delenv("RAG_JUDGE_PAGERDUTY_ROUTING_KEY", raising=False)
+    monkeypatch.delenv("RAG_JUDGE_OPSGENIE_API_KEY", raising=False)
+
+    code, _, body = handle_judge_ack(b'{"actor":"alice"}')
+    assert code == 401
+
+    code, _, body = handle_judge_ack(
+        json.dumps({"actor": "alice", "token": "secret-ack", "note": "looking"}).encode()
+    )
+    assert code == 200
+    data = json.loads(body.decode("utf-8"))
+    assert data["ok"] is True
+    assert data["state"]["acknowledged_by"] == "alice"
+
+    code, _, body = handle_judge_alert_state()
+    assert code == 200
+    st = json.loads(body.decode("utf-8"))["state"]
+    assert st["soft_fail"] is True
+    assert st["acknowledged"] is True
 
 
 def test_handle_webpush_register(tmp_path, monkeypatch):

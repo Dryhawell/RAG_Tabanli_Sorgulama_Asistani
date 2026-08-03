@@ -213,3 +213,57 @@ def test_detect_and_dispatch_auto_resolve(tmp_path, monkeypatch):
         st = json.load(f)
     assert st["soft_fail"] is False
     assert st["last_action"] == "resolve"
+
+
+def test_acknowledge_holds_realert(tmp_path, monkeypatch):
+    from rag.judge_alert import acknowledge_judge_alert, detect_and_dispatch
+
+    state = str(tmp_path / "state.json")
+    fail_report = tmp_path / "fail.json"
+    fail_report.write_text(
+        json.dumps({"summary": {"ok": False, "accuracy": 0.3}}),
+        encoding="utf-8",
+    )
+    metrics = str(tmp_path / "none.jsonl")
+    monkeypatch.setenv("RAG_JUDGE_SLACK_WEBHOOK", "https://hooks.slack.test/xxx")
+    monkeypatch.delenv("RAG_JUDGE_PAGERDUTY_ROUTING_KEY", raising=False)
+    monkeypatch.delenv("RAG_JUDGE_OPSGENIE_API_KEY", raising=False)
+    calls = []
+
+    def fake_post(url, json=None, headers=None, params=None, timeout=10):
+        calls.append({"url": url, "json": json})
+
+        class R:
+            status_code = 200
+
+        return R()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    first = detect_and_dispatch(
+        report_path=str(fail_report),
+        metrics_path=metrics,
+        soft_fail_env=True,
+        state_path=state,
+    )
+    assert first["action"] == "alert"
+    calls.clear()
+    ack = acknowledge_judge_alert(
+        actor="oncall",
+        note="investigating",
+        state_path=state,
+        notify=True,
+    )
+    assert ack["ok"] is True
+    assert ack["state"]["acknowledged"] is True
+    assert calls and "ACK" in calls[0]["json"]["text"]
+    calls.clear()
+    held = detect_and_dispatch(
+        report_path=str(fail_report),
+        metrics_path=metrics,
+        soft_fail_env=True,
+        state_path=state,
+    )
+    assert held["action"] == "ack_hold"
+    assert held["alerted"] is False
+    assert not calls
+
