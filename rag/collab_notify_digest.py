@@ -1350,6 +1350,71 @@ def check_digest_alerts(
     return result
 
 
+def list_digest_alert_tenants(
+    *,
+    base: Optional[str] = None,
+    include_users: bool = True,
+) -> List[str]:
+    """Rapordaki + (opsiyonel) users.json tenant birleşimi."""
+    tids = set(list_digest_report_tenants(base=base))
+    if include_users:
+        try:
+            from rag.auth import list_users_detail
+
+            for row in list_users_detail():
+                tid = str((row or {}).get("tenant_id") or "").strip()
+                if tid:
+                    tids.add(tid)
+        except Exception:
+            pass
+    return sorted(tids)
+
+
+def check_digest_alerts_all(
+    *,
+    base: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    limit: Optional[int] = None,
+    skip_threshold: Optional[float] = None,
+    fail_rate: Optional[float] = None,
+    min_samples: Optional[int] = None,
+    dry_run: bool = False,
+    webhook_url: Optional[str] = None,
+    include_users: bool = True,
+) -> Dict[str, Any]:
+    """Tüm tenant'lar için digest alert fan-out."""
+    tenants = list_digest_alert_tenants(base=base, include_users=include_users)
+    results: Dict[str, Any] = {}
+    any_fired = False
+    any_failed_dispatch = False
+    for tid in tenants:
+        row = check_digest_alerts(
+            base=base,
+            tenant_id=tid,
+            since=since,
+            until=until,
+            limit=limit,
+            skip_threshold=skip_threshold,
+            fail_rate=fail_rate,
+            min_samples=min_samples,
+            dry_run=dry_run,
+            webhook_url=webhook_url,
+        )
+        results[tid] = row
+        if row.get("fired"):
+            any_fired = True
+            if not dry_run and not row.get("dispatched"):
+                any_failed_dispatch = True
+    return {
+        "tenants": tenants,
+        "results": results,
+        "any_fired": any_fired,
+        "any_failed_dispatch": any_failed_dispatch,
+        "dry_run": dry_run,
+    }
+
+
 def _finish_digest_result(
     username: str,
     result: Dict[str, Any],

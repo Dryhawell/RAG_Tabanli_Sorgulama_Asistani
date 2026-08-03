@@ -704,3 +704,39 @@ def test_digest_alert_thresholds(tmp_path, monkeypatch):
     )
     assert low is None
 
+
+def test_digest_alert_fanout_all_tenants(tmp_path, monkeypatch):
+    from rag.collab_notify_digest import (
+        append_digest_report,
+        check_digest_alerts_all,
+        list_digest_alert_tenants,
+    )
+
+    monkeypatch.setattr("rag.collab_notify_digest.METADATA_DIR", str(tmp_path))
+    for tid, n in [("acme", 6), ("beta", 6)]:
+        for i in range(n):
+            append_digest_report(
+                f"{tid}-u{i}",
+                {
+                    "sent": False,
+                    "count": 0,
+                    "reason": "send_failed",
+                    "tenant_id": tid,
+                },
+                base=str(tmp_path),
+            )
+    tenants = list_digest_alert_tenants(base=str(tmp_path), include_users=False)
+    assert tenants == ["acme", "beta"]
+    result = check_digest_alerts_all(
+        base=str(tmp_path),
+        include_users=False,
+        min_samples=5,
+        skip_threshold=0.5,
+        fail_rate=0.4,
+        dry_run=True,
+    )
+    assert result["any_fired"] is True
+    assert set(result["tenants"]) == {"acme", "beta"}
+    assert result["results"]["acme"]["fired"] is True
+    assert result["results"]["beta"]["fired"] is True
+

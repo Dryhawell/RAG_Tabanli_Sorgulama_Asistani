@@ -17,6 +17,11 @@ on:
         required: false
         default: ""
         type: string
+      all_tenants:
+        description: "Tüm tenant'lara fan-out"
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   digest-alert:
@@ -43,7 +48,13 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
             EXTRA="--digest-alert-dry-run"
           fi
-          if [ -n "${{ inputs.tenant_id }}" ]; then
+          # schedule: always fan-out; dispatch: respect inputs
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.all_tenants }}" = "true" ]; then
+            if [ -z "${{ inputs.tenant_id }}" ] || [ "${{ inputs.all_tenants }}" = "true" ]; then
+              EXTRA="$EXTRA --digest-alert-all"
+            fi
+          fi
+          if [ -n "${{ inputs.tenant_id }}" ] && [ "${{ inputs.all_tenants }}" != "true" ]; then
             EXTRA="$EXTRA --digest-tenant ${{ inputs.tenant_id }}"
           fi
           # shellcheck disable=SC2086

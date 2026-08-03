@@ -51,6 +51,8 @@ jobs:
           RAG_JUDGE_METRICS_PATH: metadata/metrics.jsonl
           RAG_JUDGE_SOFT_FAIL: ${{ vars.RAG_JUDGE_SOFT_FAIL || '0' }}
           RAG_JUDGE_SLACK_WEBHOOK: ${{ secrets.RAG_JUDGE_SLACK_WEBHOOK }}
+          RAG_JUDGE_PAGERDUTY_ROUTING_KEY: ${{ secrets.RAG_JUDGE_PAGERDUTY_ROUTING_KEY }}
+          RAG_JUDGE_OPSGENIE_API_KEY: ${{ secrets.RAG_JUDGE_OPSGENIE_API_KEY }}
         run: python scripts/ci_judge_slack_alert.py
       - name: Upload judge report
         if: always()
@@ -145,6 +147,8 @@ jobs:
           RAG_JUDGE_METRICS_PATH: metadata/metrics.jsonl
           RAG_JUDGE_SOFT_FAIL: ${{ vars.RAG_JUDGE_SOFT_FAIL || '1' }}
           RAG_JUDGE_SLACK_WEBHOOK: ${{ secrets.RAG_JUDGE_SLACK_WEBHOOK }}
+          RAG_JUDGE_PAGERDUTY_ROUTING_KEY: ${{ secrets.RAG_JUDGE_PAGERDUTY_ROUTING_KEY }}
+          RAG_JUDGE_OPSGENIE_API_KEY: ${{ secrets.RAG_JUDGE_OPSGENIE_API_KEY }}
         run: python scripts/ci_judge_slack_alert.py
       - name: Upload LLM judge report
         if: always()

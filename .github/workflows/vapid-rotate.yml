@@ -10,10 +10,27 @@ on:
         required: false
         default: "mailto:admin@localhost"
         type: string
+      update_secrets:
+        description: "GitHub Actions secrets güncelle (GH_PAT gerekir)"
+        required: false
+        default: false
+        type: boolean
+      include_private:
+        description: "PRIVATE secret'ı da güncelle"
+        required: false
+        default: false
+        type: boolean
+      secrets_dry_run:
+        description: "Secret güncellemeyi dry-run yap"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   rotate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,13 +41,72 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pynacl
       - name: Rotate VAPID (vault; private not archived)
+        id: rotate
         run: |
           mkdir -p metadata
+          EXTRA=""
+          if [ "${{ inputs.update_secrets }}" = "true" ]; then
+            EXTRA="--update-github-secrets"
+            if [ "${{ inputs.include_private }}" = "true" ]; then
+              EXTRA="$EXTRA --vapid-show-private --vapid-secrets-include-private"
+            fi
+            if [ "${{ inputs.secrets_dry_run }}" = "true" ]; then
+              EXTRA="$EXTRA --vapid-secrets-dry-run"
+            fi
+          fi
+          # shellcheck disable=SC2086
           python -m rag.cli collab-notifications --rotate-vapid \
             --vapid-subject "${{ inputs.subject }}" \
             --vapid-vault metadata/vapid_keys.json \
-            | tee metadata/vapid_rotate_public.json
+            $EXTRA | tee metadata/vapid_rotate_out.json
+          # public-only artifact (strip private/env if present)
+          python - <<'PY'
+          import json
+          raw = open("metadata/vapid_rotate_out.json", encoding="utf-8").read()
+          objs = []
+          start = 0
+          while True:
+              i = raw.find("{", start)
+              if i < 0:
+                  break
+              depth = 0
+              for j in range(i, len(raw)):
+                  if raw[j] == "{":
+                      depth += 1
+                  elif raw[j] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          try:
+                              objs.append(json.loads(raw[i : j + 1]))
+                          except json.JSONDecodeError:
+                              pass
+                          start = j + 1
+                          break
+              else:
+                  break
+          data = objs[0] if objs else {}
+          safe = {
+              "public": data.get("public"),
+              "fingerprint": data.get("fingerprint"),
+              "archived_fingerprint": data.get("archived_fingerprint"),
+              "subject": data.get("subject"),
+              "history_len": data.get("history_len"),
+              "path": data.get("path"),
+          }
+          if len(objs) > 1 and "github_secrets" in objs[-1]:
+              safe["github_secrets"] = objs[-1]["github_secrets"]
+          elif data.get("github_secrets"):
+              safe["github_secrets"] = data["github_secrets"]
+          open("metadata/vapid_rotate_public.json", "w", encoding="utf-8").write(
+              json.dumps(safe, ensure_ascii=False, indent=2)
+          )
+          print(json.dumps(safe, ensure_ascii=False, indent=2))
+          PY
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
       - name: Upload public rotate artifact (no private key)
         uses: actions/upload-artifact@v4
         with:
@@ -41,5 +117,5 @@ jobs:
           if-no-files-found: ignore
       - name: Reminder
         run: |
-          echo "Private key CI çıktısında yoktur (varsayılan)."
-          echo "Yeni public fingerprint'i secrets/env'e manuel uygulayın; --vapid-show-private yalnızca yerel kullanın."
+          echo "GH_PAT (secrets:write) yoksa secret güncelleme atlanır/fail eder."
+          echo "Private key artifact'a yazılmaz; include_private yalnızca Actions secret'a gider."

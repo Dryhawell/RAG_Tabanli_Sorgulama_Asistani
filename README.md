@@ -159,10 +159,10 @@ python -m rag.cli prometheus --dump
 ```
 Grafana'da Prometheus datasource ekleyip `rag_queries_total`, `rag_query_latency_seconds` panelleri kurulabilir.
 Judge soft-fail paneli: `grafana/dashboards/rag_judge.json` (provisioning: `grafana/provisioning/dashboards/`).
-Judge Slack alert kuralı: `grafana/alerting/rag_judge_soft_fail.yaml` + CI `scripts/ci_judge_slack_alert.py` (`RAG_JUDGE_SLACK_WEBHOOK`).
+Judge Slack alert kuralı: `grafana/alerting/rag_judge_soft_fail.yaml` + CI `scripts/ci_judge_slack_alert.py` (`RAG_JUDGE_SLACK_WEBHOOK`, opsiyonel `RAG_JUDGE_PAGERDUTY_ROUTING_KEY` / `RAG_JUDGE_OPSGENIE_API_KEY`).
 VAPID üretimi: `python -m rag.cli collab-notifications --generate-vapid`
-VAPID rotate/vault: `python -m rag.cli collab-notifications --rotate-vapid` (Actions: **VAPID Rotate**)
-Digest alert: `python -m rag.cli collab-notifications --digest-alert-check` (cron: `.github/workflows/digest-alert.yml`)
+VAPID rotate/vault: `python -m rag.cli collab-notifications --rotate-vapid` (Actions: **VAPID Rotate**; secret sync için `GH_PAT` + `--update-github-secrets`)
+Digest alert: `python -m rag.cli collab-notifications --digest-alert-check --digest-alert-all` (cron: `.github/workflows/digest-alert.yml`)
 
 ### Qdrant (uzak / dağıtık vektör DB)
 ```bash
@@ -501,8 +501,8 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
-- Push: Web Push VAPID GitHub secret otomatik güncelleme (API)
-- Judge: LLM judge soft-fail PagerDuty / Opsgenie bridge
-- Tenant: digest alert multi-tenant fan-out
+- Push: Web Push VAPID environment secret sync (Deploy keys / OIDC)
+- Judge: LLM judge soft-fail auto-resolve / ack webhook
+- Tenant: digest alert per-tenant webhook override
 - Ingest: incremental chunk diff / delta rebuild
 - Observability: OpenTelemetry trace export

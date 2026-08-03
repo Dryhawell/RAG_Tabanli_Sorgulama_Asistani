@@ -395,8 +395,17 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0
     if args.digest_alert_check:
-        from rag.collab_notify_digest import check_digest_alerts
+        from rag.collab_notify_digest import check_digest_alerts, check_digest_alerts_all
 
+        if getattr(args, "digest_alert_all", False):
+            result = check_digest_alerts_all(
+                since=args.digest_since,
+                until=args.digest_until,
+                limit=args.digest_report_limit,
+                dry_run=bool(args.digest_alert_dry_run),
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 1 if result.get("any_failed_dispatch") else 0
         result = check_digest_alerts(
             tenant_id=args.digest_tenant,
             username=args.digest_report_user,
@@ -446,6 +455,19 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
         print(json.dumps(out, ensure_ascii=False, indent=2))
         if args.vapid_show_private:
             print(format_vapid_env(result), end="")
+        if getattr(args, "update_github_secrets", False):
+            from scripts.update_github_vapid_secrets import update_vapid_github_secrets
+
+            gh = update_vapid_github_secrets(
+                public=str(result.get("public") or ""),
+                private=str(result.get("private") or "") or None,
+                subject=str(result.get("subject") or "") or None,
+                dry_run=bool(getattr(args, "vapid_secrets_dry_run", False)),
+                include_private=bool(getattr(args, "vapid_secrets_include_private", False)),
+            )
+            print(json.dumps({"github_secrets": gh}, ensure_ascii=False, indent=2))
+            if gh.get("failed") and not gh.get("dry_run"):
+                return 1
         return 0
     if args.webpush_sw:
         from rag.collab_notify_push import (
@@ -1251,6 +1273,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rotate çıktısında private/env göster",
     )
     p_cnot.add_argument(
+        "--update-github-secrets",
+        action="store_true",
+        help="Rotate sonrası VAPID GitHub Actions secrets güncelle (GH_PAT)",
+    )
+    p_cnot.add_argument(
+        "--vapid-secrets-dry-run",
+        action="store_true",
+        help="GitHub secret güncellemeyi simüle et",
+    )
+    p_cnot.add_argument(
+        "--vapid-secrets-include-private",
+        action="store_true",
+        help="PRIVATE secret'ı da güncelle (dikkat)",
+    )
+    p_cnot.add_argument(
         "--vapid-subject",
         default=None,
         help="VAPID subject (mailto:...)",
@@ -1270,6 +1307,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--digest-alert-dry-run",
         action="store_true",
         help="Alert kontrolü yap, webhook gönderme",
+    )
+    p_cnot.add_argument(
+        "--digest-alert-all",
+        action="store_true",
+        help="Tüm tenant'lar için digest alert fan-out",
     )
     p_cnot.add_argument(
         "--register-push-token",
