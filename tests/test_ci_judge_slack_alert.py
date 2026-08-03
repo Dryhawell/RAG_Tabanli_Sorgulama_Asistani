@@ -4,8 +4,10 @@ import json
 
 import scripts.ci_judge_slack_alert as alert_script
 from rag.judge_alert import (
+    detect_and_dispatch,
     detect_soft_fail,
     dispatch_judge_alerts,
+    dispatch_judge_resolve,
     soft_fail_from_metrics,
     soft_fail_from_report,
 )
@@ -78,6 +80,7 @@ def test_ci_judge_slack_alert_posts(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("RAG_JUDGE_OUTPUT", str(report))
     monkeypatch.setenv("RAG_JUDGE_METRICS_PATH", str(tmp_path / "none.jsonl"))
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", str(tmp_path / "state.json"))
     monkeypatch.setenv("RAG_JUDGE_SOFT_FAIL", "1")
     monkeypatch.setenv("RAG_JUDGE_SLACK_WEBHOOK", "https://hooks.slack.test/xxx")
     monkeypatch.delenv("RAG_JUDGE_PAGERDUTY_ROUTING_KEY", raising=False)
@@ -105,6 +108,7 @@ def test_ci_judge_slack_alert_noop_when_ok(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("RAG_JUDGE_OUTPUT", str(report))
     monkeypatch.setenv("RAG_JUDGE_METRICS_PATH", str(tmp_path / "none.jsonl"))
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", str(tmp_path / "state.json"))
     monkeypatch.setenv("RAG_JUDGE_SOFT_FAIL", "1")
     monkeypatch.setenv("RAG_JUDGE_SLACK_WEBHOOK", "https://hooks.slack.test/xxx")
     calls = []
@@ -125,3 +129,87 @@ def test_detect_soft_fail_helper(tmp_path):
         soft_fail_env=True,
     )
     assert fired and source == "report"
+
+
+def test_dispatch_judge_resolve_channels(monkeypatch):
+    calls = []
+
+    class FakeResp:
+        status_code = 202
+
+    def fake_post(url, json=None, headers=None, params=None, timeout=10):
+        calls.append({"url": url, "json": json, "params": params})
+        return FakeResp()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    report = {"summary": {"ok": True, "accuracy": 1.0}}
+    result = dispatch_judge_resolve(
+        report,
+        source="report",
+        slack_webhook="https://hooks.slack.test/resolve",
+        pagerduty_routing_key="pd-key",
+        opsgenie_api_key="og-key",
+    )
+    assert result["resolved"] is True
+    assert result["channels"]["slack"] is True
+    assert result["channels"]["pagerduty"] is True
+    assert result["channels"]["opsgenie"] is True
+    pd = next(c for c in calls if "pagerduty.com" in c["url"])
+    assert pd["json"]["event_action"] == "resolve"
+    assert any("/close" in c["url"] for c in calls)
+    slack = next(c for c in calls if "hooks.slack.test" in c["url"])
+    assert "resolved" in slack["json"]["text"].lower()
+
+
+def test_detect_and_dispatch_auto_resolve(tmp_path, monkeypatch):
+    state = str(tmp_path / "state.json")
+    fail_report = tmp_path / "fail.json"
+    ok_report = tmp_path / "ok.json"
+    fail_report.write_text(
+        json.dumps({"summary": {"ok": False, "accuracy": 0.4}}),
+        encoding="utf-8",
+    )
+    ok_report.write_text(
+        json.dumps({"summary": {"ok": True, "accuracy": 1.0}}),
+        encoding="utf-8",
+    )
+    metrics = str(tmp_path / "none.jsonl")
+    monkeypatch.setenv("RAG_JUDGE_SLACK_WEBHOOK", "https://hooks.slack.test/xxx")
+    monkeypatch.delenv("RAG_JUDGE_PAGERDUTY_ROUTING_KEY", raising=False)
+    monkeypatch.delenv("RAG_JUDGE_OPSGENIE_API_KEY", raising=False)
+    calls = []
+
+    def fake_post(url, json=None, headers=None, params=None, timeout=10):
+        calls.append({"url": url, "json": json})
+
+        class R:
+            status_code = 200
+
+        return R()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    alert = detect_and_dispatch(
+        report_path=str(fail_report),
+        metrics_path=metrics,
+        soft_fail_env=True,
+        state_path=state,
+    )
+    assert alert["action"] == "alert"
+    assert alert["soft_fail"] is True
+    with open(state, encoding="utf-8") as f:
+        assert json.load(f)["soft_fail"] is True
+
+    calls.clear()
+    resolved = detect_and_dispatch(
+        report_path=str(ok_report),
+        metrics_path=metrics,
+        soft_fail_env=True,
+        state_path=state,
+    )
+    assert resolved["action"] == "resolve"
+    assert resolved["soft_fail"] is False
+    assert calls and "resolved" in calls[0]["json"]["text"].lower()
+    with open(state, encoding="utf-8") as f:
+        st = json.load(f)
+    assert st["soft_fail"] is False
+    assert st["last_action"] == "resolve"

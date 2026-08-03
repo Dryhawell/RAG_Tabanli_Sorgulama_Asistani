@@ -1183,6 +1183,73 @@ def export_digest_report_csv(
     return buf.getvalue()
 
 
+def parse_digest_alert_webhooks(
+    spec: Optional[str] = None,
+    *,
+    base: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Tenant → webhook URL haritası.
+    Önce RAG_DIGEST_ALERT_WEBHOOKS_JSON, yoksa metadata/digest_alert_webhooks.json.
+    """
+    try:
+        from app.config import DIGEST_ALERT_WEBHOOKS_JSON
+    except ImportError:
+        DIGEST_ALERT_WEBHOOKS_JSON = ""
+    raw = spec if spec is not None else DIGEST_ALERT_WEBHOOKS_JSON
+    mapping: Dict[str, str] = {}
+    text = (raw or "").strip()
+    if text:
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    tid = str(k).strip()
+                    url = str(v or "").strip()
+                    if tid and url:
+                        mapping[tid] = url
+        except json.JSONDecodeError:
+            pass
+    if mapping:
+        return mapping
+    path = os.path.join(base or METADATA_DIR, "digest_alert_webhooks.json")
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    tid = str(k).strip()
+                    url = str(v or "").strip()
+                    if tid and url:
+                        mapping[tid] = url
+        except Exception:
+            pass
+    return mapping
+
+
+def resolve_digest_alert_webhook(
+    tenant_id: Optional[str] = None,
+    *,
+    url: Optional[str] = None,
+    base: Optional[str] = None,
+) -> str:
+    """url arg > tenant map > DIGEST_ALERT_WEBHOOK_URL > NOTIFY_WEBHOOK_URL."""
+    if url and str(url).strip():
+        return str(url).strip()
+    tid = (tenant_id or "").strip()
+    if tid:
+        mapping = parse_digest_alert_webhooks(base=base)
+        if tid in mapping:
+            return mapping[tid]
+    try:
+        from app.config import DIGEST_ALERT_WEBHOOK_URL, NOTIFY_WEBHOOK_URL
+    except ImportError:
+        DIGEST_ALERT_WEBHOOK_URL = ""
+        NOTIFY_WEBHOOK_URL = ""
+    return (DIGEST_ALERT_WEBHOOK_URL or NOTIFY_WEBHOOK_URL or "").strip()
+
+
 def digest_alert_should_fire(
     summary: Dict[str, Any],
     *,
@@ -1332,6 +1399,7 @@ def check_digest_alerts(
     result: Dict[str, Any] = {
         "fired": False,
         "dry_run": dry_run,
+        "tenant_id": tenant_id,
         "summary": {
             "total": summary.get("total"),
             "sent": summary.get("sent"),
@@ -1340,13 +1408,22 @@ def check_digest_alerts(
         },
         "alert": alert,
         "dispatched": False,
+        "webhook": None,
     }
     if alert is None:
         return result
     result["fired"] = True
     if dry_run:
+        result["webhook"] = resolve_digest_alert_webhook(
+            tenant_id, url=webhook_url, base=base
+        )
         return result
-    result["dispatched"] = dispatch_digest_alert(alert, url=webhook_url)
+    target = resolve_digest_alert_webhook(tenant_id, url=webhook_url, base=base)
+    result["webhook"] = target
+    if alert is not None:
+        alert = dict(alert)
+        alert["tenant_id"] = tenant_id
+    result["dispatched"] = dispatch_digest_alert(alert, url=target)
     return result
 
 
@@ -1389,6 +1466,8 @@ def check_digest_alerts_all(
     any_fired = False
     any_failed_dispatch = False
     for tid in tenants:
+        # webhook_url only if explicitly passed as global override for all;
+        # otherwise per-tenant resolve inside check_digest_alerts
         row = check_digest_alerts(
             base=base,
             tenant_id=tid,

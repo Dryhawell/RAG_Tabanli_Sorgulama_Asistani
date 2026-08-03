@@ -97,53 +97,67 @@ def retrieve(
     gate_score, no-answer eşiği için dense/hybrid skorlarının max'ıdır
     (rerank skoru farklı ölçekte olabileceği için gate'te kullanılmaz).
     """
-    if index.size == 0:
-        return [], 0.0
+    from rag.otel import set_span_attrs, start_span
 
-    cand = candidate_k or max(top_k * 3, RERANK_CANDIDATES if use_reranker else top_k)
-    # filtre varsa daha fazla aday çek
-    if source_filter or folder_filter or tag_filter:
-        cand = max(cand, min(index.size, top_k * 8))
-    cand = min(cand, index.size)
+    with start_span(
+        "rag.retrieve",
+        attributes={
+            "rag.top_k": top_k,
+            "rag.hybrid": bool(use_hybrid),
+            "rag.rerank": bool(use_reranker),
+            "rag.query_len": len(query_text or ""),
+        },
+    ) as span:
+        if index.size == 0:
+            set_span_attrs(span, {"rag.hits": 0, "rag.gate": 0.0})
+            return [], 0.0
 
-    dense_hits = index.search(query_vec, top_k=cand)
-    if use_hybrid and bm25 is not None:
-        hits = hybrid_search(
-            index,
-            query_vec,
-            query_text,
-            bm25,
-            top_k=cand,
-            alpha=hybrid_alpha,
+        cand = candidate_k or max(top_k * 3, RERANK_CANDIDATES if use_reranker else top_k)
+        # filtre varsa daha fazla aday çek
+        if source_filter or folder_filter or tag_filter:
+            cand = max(cand, min(index.size, top_k * 8))
+        cand = min(cand, index.size)
+
+        dense_hits = index.search(query_vec, top_k=cand)
+        if use_hybrid and bm25 is not None:
+            hits = hybrid_search(
+                index,
+                query_vec,
+                query_text,
+                bm25,
+                top_k=cand,
+                alpha=hybrid_alpha,
+            )
+        else:
+            hits = dense_hits
+
+        filt_kwargs = dict(
+            source_filter=source_filter or None,
+            folder_filter=folder_filter or None,
+            tag_filter=tag_filter or None,
+            tag_mode=tag_mode,
         )
-    else:
-        hits = dense_hits
+        if source_filter or folder_filter or tag_filter:
+            hits = apply_metadata_filters(hits, **filt_kwargs)
+            dense_hits = apply_metadata_filters(dense_hits, **filt_kwargs)
 
-    filt_kwargs = dict(
-        source_filter=source_filter or None,
-        folder_filter=folder_filter or None,
-        tag_filter=tag_filter or None,
-        tag_mode=tag_mode,
-    )
-    if source_filter or folder_filter or tag_filter:
-        hits = apply_metadata_filters(hits, **filt_kwargs)
-        dense_hits = apply_metadata_filters(dense_hits, **filt_kwargs)
+        if acl_user is not None:
+            hits = filter_chunks(acl_user, hits)
+            dense_hits = filter_chunks(acl_user, dense_hits)
 
-    if acl_user is not None:
-        hits = filter_chunks(acl_user, hits)
-        dense_hits = filter_chunks(acl_user, dense_hits)
+        # No-answer eşiği için yalnızca dense (cosine) skoru kullan.
+        # Hybrid füzyon min-max normalize edildiği için her zaman ~1 üretebilir.
+        gate = dense_hits[0].score if dense_hits else 0.0
 
-    # No-answer eşiği için yalnızca dense (cosine) skoru kullan.
-    # Hybrid füzyon min-max normalize edildiği için her zaman ~1 üretebilir.
-    gate = dense_hits[0].score if dense_hits else 0.0
+        if not hits or gate < threshold:
+            set_span_attrs(span, {"rag.hits": len(hits[:top_k]), "rag.gate": float(gate)})
+            return hits[:top_k], gate
 
-    if not hits or gate < threshold:
-        return hits[:top_k], gate
+        if use_reranker:
+            engine = reranker or LexicalReranker()
+            hits = rerank_chunks(query_text, hits, top_k=top_k, reranker=engine)
+        else:
+            hits = hits[:top_k]
 
-    if use_reranker:
-        engine = reranker or LexicalReranker()
-        hits = rerank_chunks(query_text, hits, top_k=top_k, reranker=engine)
-    else:
-        hits = hits[:top_k]
-
-    return hits, gate
+        set_span_attrs(span, {"rag.hits": len(hits), "rag.gate": float(gate)})
+        return hits, gate

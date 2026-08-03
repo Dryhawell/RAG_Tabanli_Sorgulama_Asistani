@@ -1,5 +1,7 @@
 """Bildirim digest testleri."""
 
+import json
+
 from rag.collab_notify_digest import (
     build_digest_body,
     collect_digest_events,
@@ -703,6 +705,79 @@ def test_digest_alert_thresholds(tmp_path, monkeypatch):
         min_samples=5,
     )
     assert low is None
+
+
+def test_digest_alert_per_tenant_webhook(tmp_path, monkeypatch):
+    from rag.collab_notify_digest import (
+        append_digest_report,
+        check_digest_alerts,
+        parse_digest_alert_webhooks,
+        resolve_digest_alert_webhook,
+    )
+
+    monkeypatch.setattr("rag.collab_notify_digest.METADATA_DIR", str(tmp_path))
+    mapping_path = tmp_path / "digest_alert_webhooks.json"
+    mapping_path.write_text(
+        json.dumps(
+            {
+                "acme": "https://hooks.example.com/acme",
+                "beta": "https://hooks.example.com/beta",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.config.DIGEST_ALERT_WEBHOOKS_JSON", "")
+    monkeypatch.setattr("app.config.DIGEST_ALERT_WEBHOOK_URL", "https://hooks.example.com/default")
+    parsed = parse_digest_alert_webhooks(base=str(tmp_path))
+    assert parsed["acme"].endswith("/acme")
+    assert (
+        resolve_digest_alert_webhook("acme", base=str(tmp_path))
+        == "https://hooks.example.com/acme"
+    )
+    assert (
+        resolve_digest_alert_webhook("unknown", base=str(tmp_path))
+        == "https://hooks.example.com/default"
+    )
+
+    for i in range(6):
+        append_digest_report(
+            f"u{i}",
+            {
+                "sent": False,
+                "count": 0,
+                "reason": "send_failed",
+                "tenant_id": "acme",
+            },
+            base=str(tmp_path),
+        )
+    calls = []
+
+    def fake_post(url, json=None, timeout=10):
+        calls.append({"url": url, "json": json})
+
+        class R:
+            status_code = 200
+
+        return R()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    result = check_digest_alerts(
+        base=str(tmp_path),
+        tenant_id="acme",
+        min_samples=5,
+        skip_threshold=0.5,
+        fail_rate=0.4,
+    )
+    assert result["fired"] is True
+    assert result["dispatched"] is True
+    assert result["webhook"] == "https://hooks.example.com/acme"
+    assert calls and calls[0]["url"] == "https://hooks.example.com/acme"
+
+    env_map = parse_digest_alert_webhooks(
+        '{"gamma":"https://hooks.example.com/gamma"}',
+        base=str(tmp_path),
+    )
+    assert env_map == {"gamma": "https://hooks.example.com/gamma"}
 
 
 def test_digest_alert_fanout_all_tenants(tmp_path, monkeypatch):
