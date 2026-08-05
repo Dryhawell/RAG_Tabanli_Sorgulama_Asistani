@@ -142,6 +142,32 @@ def handle_judge_slack_interactive(
         )
 
     result = handle_slack_interactive_ack(payload)
+    if result.get("mode") == "modal_open":
+        if result.get("ok"):
+            # Slack expects empty 200 for successful modal open from block_actions
+            return (200, {"Content-Type": "text/plain"}, b"")
+        return _json_error(400, str(result.get("error") or "modal_open_failed"))
+
+    if result.get("mode") == "modal_submit":
+        if result.get("ok"):
+            # clear modal; optional errors object for field validation
+            return (
+                200,
+                {"Content-Type": "application/json"},
+                b"{}",
+            )
+        err = str(result.get("error") or "ack_failed")
+        return (
+            200,
+            {"Content-Type": "application/json"},
+            json.dumps(
+                {
+                    "response_action": "errors",
+                    "errors": {"ack_note_block": f"Ack failed: {err}"},
+                }
+            ).encode("utf-8"),
+        )
+
     if result.get("ok"):
         text = (
             f"Soft-fail acknowledged by {result.get('state', {}).get('acknowledged_by')}"

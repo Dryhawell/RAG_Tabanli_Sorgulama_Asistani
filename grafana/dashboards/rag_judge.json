@@ -143,13 +143,13 @@
     {
       "type": "stat",
       "title": "LLM cost est. (1h USD)",
-      "description": "Heuristic: prompt*$0.00015/1K + completion*$0.0006/1K (override via RAG_LLM_PROMPT_USD_PER_1K / RAG_LLM_COMPLETION_USD_PER_1K in scrape-side recording rules if needed).",
+      "description": "Recording rule rag:llm_cost_usd_1h (grafana/rules/rag_llm_cost.yml).",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 6, "w": 6, "x": 0, "y": 24 },
       "id": 8,
       "targets": [
         {
-          "expr": "sum(increase(rag_llm_tokens_total{token_type=\"prompt\"}[1h])) * 0.00000015 + sum(increase(rag_llm_tokens_total{token_type=\"completion\"}[1h])) * 0.0000006",
+          "expr": "rag:llm_cost_usd_1h",
           "legendFormat": "usd",
           "refId": "A"
         }
@@ -165,13 +165,13 @@
     {
       "type": "timeseries",
       "title": "LLM cost rate (USD/h est.)",
-      "description": "Same heuristic pricing as LLM cost est. panel.",
+      "description": "Recording rule rag:llm_cost_usd_per_hour (see grafana/rules/rag_llm_cost.yml).",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 6, "w": 18, "x": 6, "y": 24 },
       "id": 9,
       "targets": [
         {
-          "expr": "sum(rate(rag_llm_tokens_total{token_type=\"prompt\"}[5m])) * 3600 * 0.00000015 + sum(rate(rag_llm_tokens_total{token_type=\"completion\"}[5m])) * 3600 * 0.0000006",
+          "expr": "rag:llm_cost_usd_per_hour",
           "legendFormat": "usd_per_hour",
           "refId": "A"
         }

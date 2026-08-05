@@ -286,11 +286,55 @@ def test_slack_payload_interactive_button(monkeypatch):
     from rag.judge_alert import build_slack_payload
 
     monkeypatch.setenv("RAG_JUDGE_SLACK_SIGNING_SECRET", "sigsec")
+    monkeypatch.delenv("RAG_JUDGE_SLACK_BOT_TOKEN", raising=False)
     monkeypatch.delenv("RAG_JUDGE_ACK_PUBLIC_URL", raising=False)
     payload = build_slack_payload({"summary": {"ok": False}}, source="report")
     actions = [b for b in payload["blocks"] if b.get("type") == "actions"]
     assert actions
     assert any(e.get("action_id") == "judge_ack_interactive" for e in actions[0]["elements"])
+
+
+def test_slack_payload_modal_button(monkeypatch):
+    from rag.judge_alert import build_ack_modal_view, build_slack_payload
+
+    monkeypatch.setenv("RAG_JUDGE_SLACK_SIGNING_SECRET", "sigsec")
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.delenv("RAG_JUDGE_ACK_PUBLIC_URL", raising=False)
+    payload = build_slack_payload({"summary": {"ok": False}}, source="report")
+    actions = [b for b in payload["blocks"] if b.get("type") == "actions"][0]["elements"]
+    assert any(e.get("action_id") == "judge_ack_modal" for e in actions)
+    view = build_ack_modal_view(source="report")
+    assert view["callback_id"] == "judge_ack_modal"
+    assert view["blocks"][0]["block_id"] == "ack_note_block"
+
+
+def test_slack_modal_submission_ack(tmp_path, monkeypatch):
+    from rag.judge_alert import handle_slack_interactive_ack, save_judge_alert_state
+
+    state = str(tmp_path / "state.json")
+    save_judge_alert_state(
+        {"soft_fail": True, "source": "report", "acknowledged": False},
+        state,
+    )
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", state)
+    payload = {
+        "type": "view_submission",
+        "user": {"username": "ops"},
+        "view": {
+            "callback_id": "judge_ack_modal",
+            "state": {
+                "values": {
+                    "ack_note_block": {
+                        "ack_note": {"value": "looking into it"}
+                    }
+                }
+            },
+        },
+    }
+    result = handle_slack_interactive_ack(payload)
+    assert result["ok"] is True
+    assert result["mode"] == "modal_submit"
+    assert result["state"]["ack_note"] == "looking into it"
 
 
 def test_verify_slack_request_signature():

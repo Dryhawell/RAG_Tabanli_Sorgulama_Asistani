@@ -3,6 +3,7 @@
 Örnekler:
   python -m rag.cli rebuild
   python -m rag.cli rebuild --delta
+  python -m rag.cli migrate-vector --source faiss --target qdrant
   python -m rag.cli ingest path/to/file.pdf
   python -m rag.cli list
   python -m rag.cli eval
@@ -172,6 +173,20 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
     for r in bad:
         print(f"ATLANDI {r['source_file']}: {r.get('reason')}")
     return 0
+
+
+def cmd_migrate_vector(args: argparse.Namespace) -> int:
+    from rag.store import migrate_vector_store
+
+    report = migrate_vector_store(
+        source_backend=args.source,
+        target_backend=args.target,
+        index_path=INDEX_PATH,
+        docstore_path=DOCSTORE_PATH,
+        verify=not bool(args.no_verify),
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("ok") else 1
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
@@ -1110,6 +1125,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Incremental rebuild: değişmeyen kaynakları atla (ingest_manifest.json)",
     )
     p_rebuild.set_defaults(func=cmd_rebuild)
+
+    p_mig = sub.add_parser(
+        "migrate-vector",
+        help="FAISS ↔ Qdrant indeks migrasyonu (vektör kopyala + doğrula)",
+    )
+    p_mig.add_argument("--source", default="faiss", help="Kaynak backend (faiss|qdrant)")
+    p_mig.add_argument("--target", default="qdrant", help="Hedef backend (faiss|qdrant)")
+    p_mig.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Kaynak/hedef size+sources doğrulamasını atla",
+    )
+    p_mig.set_defaults(func=cmd_migrate_vector)
 
     p_ingest = sub.add_parser("ingest", help="Dosya(lar)ı indekse ekle/yenile")
     _add_embedding_arg(p_ingest)

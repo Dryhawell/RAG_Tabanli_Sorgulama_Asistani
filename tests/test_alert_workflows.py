@@ -39,6 +39,23 @@ def test_grafana_tempo_datasource_provisioning():
     assert "grafana:" in compose
 
 
+def test_alertmanager_and_llm_cost_rules():
+    rules = Path("grafana/rules/rag_llm_cost.yml").read_text(encoding="utf-8")
+    assert "rag:llm_cost_usd_per_hour" in rules
+    assert "rag:llm_cost_usd_1h" in rules
+    assert "RagLlmCostHigh" in rules
+    prom = Path("grafana/prometheus.yml").read_text(encoding="utf-8")
+    assert "rule_files:" in prom
+    assert "alertmanager:9093" in prom
+    am = Path("grafana/alertmanager.yml").read_text(encoding="utf-8")
+    assert "judge-webhook" in am
+    assert "rag-webhook" in am
+    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+    assert "alertmanager:" in compose
+    dash = Path("grafana/dashboards/rag_judge.json").read_text(encoding="utf-8")
+    assert "rag:llm_cost_usd_1h" in dash
+
+
 def test_digest_alert_workflow_yaml():
     path = Path(".github/workflows/digest-alert.yml")
     text = path.read_text(encoding="utf-8")

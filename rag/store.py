@@ -1,9 +1,11 @@
-"""Vektör deposu factory: FAISS (varsayılan) veya Qdrant."""
+"""Vektör deposu factory: FAISS (varsayılan) veya Qdrant (+ dual-write / migrate)."""
 
 from __future__ import annotations
 
 import os
-from typing import Any, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
+
+import numpy as np
 
 from app.config import (
     QDRANT_API_KEY,
@@ -13,6 +15,7 @@ from app.config import (
     VECTOR_BACKEND,
 )
 from rag.index import FaissIndex
+from rag.types import ChunkMetadata, RetrievedChunk
 
 VectorIndex = Union[FaissIndex, Any]
 
@@ -21,14 +24,52 @@ def vector_backend() -> str:
     return (VECTOR_BACKEND or "faiss").strip().lower()
 
 
+def dual_write_backend() -> str:
+    """İkincil backend (ör. RAG_VECTOR_DUAL_WRITE=qdrant). Boş = kapalı."""
+    return (
+        os.environ.get("RAG_VECTOR_DUAL_WRITE", "").strip()
+        or os.environ.get("RAG_VECTOR_MIGRATION_TARGET", "").strip()
+    ).lower()
+
+
 def create_index(
     dim: int,
     embedding_model: Optional[str] = None,
     *,
     backend: Optional[str] = None,
     collection: Optional[str] = None,
+    dual_write: Optional[str] = None,
 ) -> VectorIndex:
     kind = (backend or vector_backend()).lower()
+    primary = _create_single(
+        dim,
+        embedding_model,
+        backend=kind,
+        collection=collection,
+    )
+    secondary_kind = (dual_write if dual_write is not None else dual_write_backend()).lower()
+    if secondary_kind and secondary_kind != kind:
+        try:
+            secondary = _create_single(
+                dim,
+                embedding_model,
+                backend=secondary_kind,
+                collection=collection,
+            )
+            return DualWriteIndex(primary, secondary, secondary_backend=secondary_kind)
+        except Exception:
+            return primary
+    return primary
+
+
+def _create_single(
+    dim: int,
+    embedding_model: Optional[str],
+    *,
+    backend: str,
+    collection: Optional[str] = None,
+) -> VectorIndex:
+    kind = (backend or "faiss").lower()
     if kind == "qdrant":
         from rag.qdrant_index import QdrantIndex
 
@@ -52,6 +93,7 @@ def load_index(
     backend: Optional[str] = None,
     dim: Optional[int] = None,
     embedding_model: Optional[str] = None,
+    dual_write: Optional[str] = None,
 ) -> VectorIndex:
     kind = (backend or vector_backend()).lower()
     if kind == "qdrant":
@@ -60,7 +102,7 @@ def load_index(
         if os.path.isfile(docstore_path):
             url = (QDRANT_URL or "").strip() or None
             path = None if url else ((QDRANT_PATH or "").strip() or None)
-            return QdrantIndex.load(
+            primary = QdrantIndex.load(
                 index_path,
                 docstore_path,
                 url=url,
@@ -68,12 +110,237 @@ def load_index(
                 api_key=(QDRANT_API_KEY or "").strip() or None,
                 collection=QDRANT_COLLECTION,
             )
-        return create_index(
-            dim=dim or 384,
-            embedding_model=embedding_model,
-            backend="qdrant",
-        )
+        else:
+            primary = create_index(
+                dim=dim or 384,
+                embedding_model=embedding_model,
+                backend="qdrant",
+                dual_write="",
+            )
+    elif os.path.exists(index_path) and os.path.exists(docstore_path):
+        primary = FaissIndex.load(index_path, docstore_path)
+    else:
+        primary = FaissIndex(dim=dim or 384, embedding_model=embedding_model)
 
-    if os.path.exists(index_path) and os.path.exists(docstore_path):
-        return FaissIndex.load(index_path, docstore_path)
-    return FaissIndex(dim=dim or 384, embedding_model=embedding_model)
+    secondary_kind = (dual_write if dual_write is not None else dual_write_backend()).lower()
+    if secondary_kind and secondary_kind != kind:
+        try:
+            secondary = _create_single(
+                getattr(primary, "dim", dim or 384),
+                getattr(primary, "embedding_model", embedding_model),
+                backend=secondary_kind,
+            )
+            return DualWriteIndex(primary, secondary, secondary_backend=secondary_kind)
+        except Exception:
+            return primary
+    return primary
+
+
+class DualWriteIndex:
+    """Primary üzerinden okur; yazmaları secondary'ye de iletir (best-effort)."""
+
+    def __init__(
+        self,
+        primary: VectorIndex,
+        secondary: VectorIndex,
+        *,
+        secondary_backend: str = "",
+    ):
+        self.primary = primary
+        self.secondary = secondary
+        self.secondary_backend = secondary_backend
+        self._secondary_errors: List[str] = []
+
+    @property
+    def dim(self) -> int:
+        return int(getattr(self.primary, "dim", 0))
+
+    @property
+    def embedding_model(self) -> Optional[str]:
+        return getattr(self.primary, "embedding_model", None)
+
+    @embedding_model.setter
+    def embedding_model(self, value: Optional[str]) -> None:
+        self.primary.embedding_model = value
+        try:
+            self.secondary.embedding_model = value
+        except Exception:
+            pass
+
+    @property
+    def size(self) -> int:
+        return int(getattr(self.primary, "size", 0))
+
+    def _sec(self, fn_name: str, *args, **kwargs) -> None:
+        try:
+            fn = getattr(self.secondary, fn_name)
+            fn(*args, **kwargs)
+        except Exception as exc:
+            self._secondary_errors.append(f"{fn_name}:{type(exc).__name__}")
+
+    def add(self, embeddings: np.ndarray, texts: List[str], metas: List[ChunkMetadata]):
+        self.primary.add(embeddings, texts, metas)
+        self._sec("add", embeddings, texts, metas)
+
+    def remove_ids(self, ids: List[int]) -> int:
+        removed = self.primary.remove_ids(ids)
+        self._sec("remove_ids", ids)
+        return removed
+
+    def remove_source(self, source_file: str) -> int:
+        removed = self.primary.remove_source(source_file)
+        self._sec("remove_source", source_file)
+        return removed
+
+    def replace_source(
+        self,
+        source_file: str,
+        embeddings: np.ndarray,
+        texts: List[str],
+        metas: List[ChunkMetadata],
+    ) -> int:
+        removed = self.primary.replace_source(source_file, embeddings, texts, metas)
+        self._sec("replace_source", source_file, embeddings, texts, metas)
+        return removed
+
+    def ids_for_source(self, source_file: str) -> List[int]:
+        return self.primary.ids_for_source(source_file)
+
+    def ids_for_chunk_uids(self, source_file: str, uids: Sequence[str]):
+        return self.primary.ids_for_chunk_uids(source_file, uids)
+
+    def list_sources(self) -> List[str]:
+        return self.primary.list_sources()
+
+    def list_folders(self) -> List[str]:
+        return self.primary.list_folders()
+
+    def list_tags(self) -> List[str]:
+        return self.primary.list_tags()
+
+    def search(self, query: np.ndarray, top_k: int = 6) -> List[RetrievedChunk]:
+        return self.primary.search(query, top_k=top_k)
+
+    def save(self, index_path: str, docstore_path: str):
+        self.primary.save(index_path, docstore_path)
+        try:
+            # secondary için ayrı sidecar (qdrant marker)
+            sec_doc = docstore_path
+            if sec_doc.endswith(".json"):
+                sec_doc = sec_doc[:-5] + f".{self.secondary_backend or 'secondary'}.json"
+            else:
+                sec_doc = docstore_path + f".{self.secondary_backend or 'secondary'}"
+            sec_idx = index_path + f".{self.secondary_backend or 'secondary'}"
+            self.secondary.save(sec_idx, sec_doc)
+        except Exception as exc:
+            self._secondary_errors.append(f"save:{type(exc).__name__}")
+
+
+def _reconstruct_vector(index: VectorIndex, cid: int) -> Optional[np.ndarray]:
+    try:
+        if hasattr(index, "idmap"):
+            vec = index.idmap.reconstruct(int(cid))
+            return np.asarray(vec, dtype=np.float32)
+    except Exception:
+        pass
+    try:
+        # Qdrant: retrieve with vectors
+        client = getattr(index, "client", None)
+        if client is None:
+            return None
+        points = client.retrieve(
+            collection_name=index.collection,
+            ids=[int(cid)],
+            with_vectors=True,
+            with_payload=False,
+        )
+        if not points:
+            return None
+        vec = points[0].vector
+        if isinstance(vec, dict):
+            vec = next(iter(vec.values()))
+        return np.asarray(vec, dtype=np.float32)
+    except Exception:
+        return None
+
+
+def migrate_vector_store(
+    *,
+    source_backend: str,
+    target_backend: str,
+    index_path: str,
+    docstore_path: str,
+    verify: bool = True,
+    collection: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Kaynak indeksi hedefe kopyalar (vektör reconstruct + add)."""
+    src_kind = (source_backend or "faiss").strip().lower()
+    dst_kind = (target_backend or "qdrant").strip().lower()
+    if src_kind == dst_kind:
+        return {"ok": False, "error": "same_backend"}
+
+    src = load_index(
+        index_path,
+        docstore_path,
+        backend=src_kind,
+        dual_write="",
+    )
+    dst = create_index(
+        dim=getattr(src, "dim", 384),
+        embedding_model=getattr(src, "embedding_model", None),
+        backend=dst_kind,
+        collection=collection,
+        dual_write="",
+    )
+
+    id_map = getattr(src, "_id_to_meta", {}) or {}
+    text_map = getattr(src, "_id_to_text", {}) or {}
+    copied = 0
+    skipped = 0
+    for cid, meta in sorted(id_map.items(), key=lambda x: int(x[0])):
+        text = text_map.get(cid)
+        vec = _reconstruct_vector(src, int(cid))
+        if text is None or vec is None:
+            skipped += 1
+            continue
+        if vec.ndim == 1:
+            vec = vec.reshape(1, -1)
+        dst.add(vec, [text], [meta])
+        copied += 1
+
+    dst.embedding_model = getattr(src, "embedding_model", None)
+    # hedef path
+    if dst_kind == "qdrant":
+        out_doc = docstore_path
+        if out_doc.endswith(".json"):
+            out_doc = out_doc[:-5] + ".qdrant.json"
+        out_idx = index_path + ".qdrant"
+    else:
+        out_idx = index_path
+        out_doc = docstore_path
+    dst.save(out_idx, out_doc)
+
+    report: Dict[str, Any] = {
+        "ok": True,
+        "source": src_kind,
+        "target": dst_kind,
+        "copied": copied,
+        "skipped": skipped,
+        "source_size": getattr(src, "size", None),
+        "target_size": getattr(dst, "size", None),
+        "index_path": out_idx,
+        "docstore_path": out_doc,
+    }
+    if verify:
+        src_sources = set(src.list_sources())
+        dst_sources = set(dst.list_sources())
+        report["verify"] = {
+            "sources_match": src_sources == dst_sources,
+            "source_count": len(src_sources),
+            "target_count": len(dst_sources),
+            "size_match": int(getattr(src, "size", -1)) == int(getattr(dst, "size", -2)),
+        }
+        report["ok"] = bool(
+            report["verify"]["sources_match"] and report["verify"]["size_match"]
+        )
+    return report

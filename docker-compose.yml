@@ -35,10 +35,29 @@ services:
       - "9090:9090"
     volumes:
       - ./grafana/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./grafana/rules:/etc/prometheus/rules:ro
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --enable-feature=exemplar-storage
       - --web.enable-remote-write-receiver
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - alertmanager
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    profiles: ["obs"]
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./grafana/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    environment:
+      RAG_ALERTMANAGER_SLACK_WEBHOOK: ${RAG_ALERTMANAGER_SLACK_WEBHOOK:-}
+      RAG_ALERTMANAGER_WEBHOOK_URL: ${RAG_ALERTMANAGER_WEBHOOK_URL:-}
 
   tempo:
     image: grafana/tempo:2.6.1
@@ -66,6 +85,7 @@ services:
     depends_on:
       - prometheus
       - tempo
+      - alertmanager
 
 volumes:
   qdrant_data:

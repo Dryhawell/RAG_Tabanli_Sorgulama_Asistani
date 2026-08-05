@@ -202,14 +202,25 @@ def build_slack_payload(report: Dict[str, Any], *, source: str) -> Dict[str, Any
         os.environ.get("RAG_JUDGE_SLACK_INTERACTIVE", "").strip().lower()
         in {"1", "true", "yes", "on"}
     )
+    bot_token = os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
     if interactive:
+        if bot_token:
+            elements.append(
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Ack + note"},
+                    "action_id": "judge_ack_modal",
+                    "value": "ack_modal",
+                    "style": "primary",
+                }
+            )
         elements.append(
             {
                 "type": "button",
                 "text": {"type": "plain_text", "text": "Ack now"},
                 "action_id": "judge_ack_interactive",
                 "value": "ack",
-                "style": "primary",
+                "style": "danger" if bot_token else "primary",
             }
         )
     ack_url = judge_ack_public_url()
@@ -234,6 +245,82 @@ def build_slack_payload(report: Dict[str, Any], *, source: str) -> Dict[str, Any
             }
         )
     return {"text": text, "blocks": blocks}
+
+
+def build_ack_modal_view(*, source: str = "report") -> Dict[str, Any]:
+    """Slack Block Kit modal: note alanı ile acknowledge."""
+    return {
+        "type": "modal",
+        "callback_id": "judge_ack_modal",
+        "title": {"type": "plain_text", "text": "Judge soft-fail ACK"},
+        "submit": {"type": "plain_text", "text": "Acknowledge"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "private_metadata": json.dumps({"source": source}, ensure_ascii=False),
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "ack_note_block",
+                "optional": True,
+                "label": {"type": "plain_text", "text": "Note"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "ack_note",
+                    "multiline": True,
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": "inceleme notu (opsiyonel)",
+                    },
+                },
+            }
+        ],
+    }
+
+
+def open_slack_modal(
+    *,
+    trigger_id: str,
+    view: Dict[str, Any],
+    bot_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    token = (
+        bot_token
+        if bot_token is not None
+        else os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
+    )
+    if not token:
+        return {"ok": False, "error": "bot_token_missing"}
+    if not (trigger_id or "").strip():
+        return {"ok": False, "error": "trigger_id_missing"}
+    try:
+        import requests
+
+        r = requests.post(
+            "https://slack.com/api/views.open",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            json={"trigger_id": trigger_id.strip(), "view": view},
+            timeout=10,
+        )
+        data = r.json() if r.content else {}
+        if r.status_code >= 400 or not data.get("ok"):
+            return {
+                "ok": False,
+                "error": str(data.get("error") or f"http_{r.status_code}"),
+                "response": data,
+            }
+        return {"ok": True, "response": data}
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__}
+
+
+def extract_modal_ack_note(payload: Dict[str, Any]) -> str:
+    view = payload.get("view") or {}
+    state = (view.get("state") or {}).get("values") or {}
+    block = state.get("ack_note_block") or {}
+    field = block.get("ack_note") or {}
+    return str(field.get("value") or "")[:500]
 
 
 def verify_slack_request_signature(
@@ -307,26 +394,70 @@ def slack_interactive_actor(payload: Dict[str, Any]) -> str:
 
 
 def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """block_actions → acknowledge_judge_alert."""
+    """block_actions / view_submission → modal open veya acknowledge_judge_alert."""
+    ptype = str(payload.get("type") or "")
+
+    if ptype == "view_submission":
+        view = payload.get("view") or {}
+        if str(view.get("callback_id") or "") != "judge_ack_modal":
+            return {"ok": False, "error": "unknown_view"}
+        actor = slack_interactive_actor(payload) or "slack"
+        note = extract_modal_ack_note(payload) or "slack modal ack"
+        state_path = os.environ.get("RAG_JUDGE_ALERT_STATE", "").strip() or None
+        result = acknowledge_judge_alert(
+            actor=actor,
+            note=note,
+            state_path=state_path,
+            notify=False,
+        )
+        result["mode"] = "modal_submit"
+        return result
+
     actions = payload.get("actions") or []
     action_ids = {
         str((a or {}).get("action_id") or "")
         for a in actions
         if isinstance(a, dict)
     }
-    if "judge_ack_interactive" not in action_ids and payload.get("type") == "block_actions":
-        # yine de ack dene (tek buton senaryosu)
-        if not any(str((a or {}).get("value") or "") == "ack" for a in actions if isinstance(a, dict)):
+
+    if "judge_ack_modal" in action_ids:
+        trigger_id = str(payload.get("trigger_id") or "").strip()
+        source = "report"
+        try:
+            # private metadata yok; alert state kaynağını kullan
+            st = load_judge_alert_state(
+                os.environ.get("RAG_JUDGE_ALERT_STATE", "").strip() or None
+            )
+            source = str(st.get("source") or "report")
+        except Exception:
+            pass
+        opened = open_slack_modal(
+            trigger_id=trigger_id,
+            view=build_ack_modal_view(source=source),
+        )
+        return {
+            "ok": bool(opened.get("ok")),
+            "mode": "modal_open",
+            "error": opened.get("error"),
+            "opened": opened,
+        }
+
+    if "judge_ack_interactive" not in action_ids and ptype == "block_actions":
+        if not any(
+            str((a or {}).get("value") or "") == "ack" for a in actions if isinstance(a, dict)
+        ):
             return {"ok": False, "error": "unknown_action"}
     actor = slack_interactive_actor(payload) or "slack"
     note = "slack interactive ack"
     state_path = os.environ.get("RAG_JUDGE_ALERT_STATE", "").strip() or None
-    return acknowledge_judge_alert(
+    result = acknowledge_judge_alert(
         actor=actor,
         note=note,
         state_path=state_path,
         notify=False,
     )
+    result["mode"] = "instant"
+    return result
 
 
 def build_slack_resolve_payload(report: Dict[str, Any], *, source: str) -> Dict[str, Any]:
