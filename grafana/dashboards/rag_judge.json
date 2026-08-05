@@ -106,10 +106,41 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "LLM tokens (rate)",
+      "description": "rag_llm_tokens_total by token_type. Enable Tempo/Jaeger datasource for exemplar→trace links from query latency panels.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "id": 6,
+      "targets": [
+        {
+          "expr": "sum by (provider, model, token_type) (rate(rag_llm_tokens_total[5m]))",
+          "legendFormat": "{{provider}}/{{model}} {{token_type}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Query latency (exemplars)",
+      "description": "Histogram exemplars attach OTel trace_id/span_id when available. In Grafana: Prometheus datasource → Exemplars → link to Tempo.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "id": 7,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(rag_query_latency_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "A",
+          "exemplar": true
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
     }
   ],
   "schemaVersion": 39,
-  "tags": ["rag", "judge", "soft-fail"],
+  "tags": ["rag", "judge", "soft-fail", "llm", "otel"],
   "templating": { "list": [] },
   "time": { "from": "now-6h", "to": "now" },
   "timezone": "browser",

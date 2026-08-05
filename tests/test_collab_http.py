@@ -57,6 +57,16 @@ def test_handle_judge_ack(tmp_path, monkeypatch):
     assert st["acknowledged"] is True
 
 
+def test_handle_judge_ack_form():
+    from rag.collab_http import handle_judge_ack_form
+
+    code, headers, body = handle_judge_ack_form()
+    assert code == 200
+    assert "text/html" in headers["Content-Type"]
+    assert b"/judge/ack" in body
+    assert b"Acknowledge" in body
+
+
 def test_handle_webpush_register(tmp_path, monkeypatch):
     monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
     sub = {

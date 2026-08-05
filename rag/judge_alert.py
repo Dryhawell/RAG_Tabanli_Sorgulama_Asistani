@@ -22,6 +22,11 @@ def judge_alert_state_path(base: Optional[str] = None) -> str:
 
 
 def load_judge_alert_state(path: Optional[str] = None) -> Dict[str, Any]:
+    # Explicit path → sadece dosya (test/izolasyon); aksi halde remote öncelikli
+    if path is None:
+        remote = _load_remote_judge_state()
+        if remote is not None:
+            return remote
     p = path or judge_alert_state_path()
     if not os.path.isfile(p):
         return {"soft_fail": False, "source": None, "updated_at": None}
@@ -38,7 +43,67 @@ def save_judge_alert_state(state: Dict[str, Any], path: Optional[str] = None) ->
     os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+    _save_remote_judge_state(state)
     return p
+
+
+def judge_alert_state_url() -> str:
+    return (
+        os.environ.get("RAG_JUDGE_ALERT_STATE_URL", "").strip()
+        or os.environ.get("RAG_JUDGE_STATE_URL", "").strip()
+    )
+
+
+def _load_remote_judge_state() -> Optional[Dict[str, Any]]:
+    url = judge_alert_state_url()
+    if not url:
+        return None
+    try:
+        import requests
+
+        r = requests.get(url, timeout=10)
+        if r.status_code >= 400:
+            return None
+        data = r.json()
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _save_remote_judge_state(state: Dict[str, Any]) -> bool:
+    url = judge_alert_state_url()
+    if not url:
+        return False
+    try:
+        import requests
+
+        r = requests.put(url, json=state, timeout=10)
+        if r.status_code >= 400:
+            r = requests.post(url, json=state, timeout=10)
+        return r.status_code < 400
+    except Exception:
+        return False
+
+
+def judge_ack_public_url() -> str:
+    """Slack deep-link hedefi (ack form)."""
+    explicit = (
+        os.environ.get("RAG_JUDGE_ACK_PUBLIC_URL", "").strip()
+        or os.environ.get("RAG_JUDGE_ACK_URL", "").strip()
+    )
+    if explicit:
+        return explicit.rstrip("/")
+    try:
+        from app.config import COLLAB_HTTP_PORT, COLLAB_WS_PUBLIC_HOST
+
+        host = (COLLAB_WS_PUBLIC_HOST or "localhost").strip() or "localhost"
+        port = int(COLLAB_HTTP_PORT or 8766)
+        return f"http://{host}:{port}/judge/ack-form"
+    except Exception:
+        base = os.environ.get("RAG_PUBLIC_BASE_URL", "").strip().rstrip("/")
+        if base:
+            return f"{base}/judge/ack-form"
+    return ""
 
 
 def load_judge_report(path: str) -> Dict[str, Any]:
@@ -132,6 +197,29 @@ def build_slack_payload(report: Dict[str, Any], *, source: str) -> Dict[str, Any
             "text": {"type": "mrkdwn", "text": f"*RAG judge soft-fail*\n{text}"},
         }
     ]
+    ack_url = judge_ack_public_url()
+    if ack_url:
+        blocks.append(
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Acknowledge"},
+                        "url": ack_url,
+                        "action_id": "judge_ack_open",
+                    }
+                ],
+            }
+        )
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": f"Ack form: <{ack_url}|open>"},
+                ],
+            }
+        )
     return {"text": text, "blocks": blocks}
 
 

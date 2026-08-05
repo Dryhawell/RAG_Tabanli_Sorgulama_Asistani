@@ -177,3 +177,58 @@ def test_rebuild_delta_stores_chunk_uids(tmp_path):
     doc = load_ingest_manifest(man)
     assert doc["sources"]["a.txt"].get("chunk_uids")
     assert isinstance(doc["sources"]["a.txt"]["chunk_uids"], list)
+
+
+def test_rebuild_delta_selective_reembed(tmp_path):
+    from rag.ingest import load_ingest_manifest, rebuild_delta_from_data_dir
+
+    data = tmp_path / "data"
+    data.mkdir()
+    meta = tmp_path / "meta"
+    meta.mkdir()
+    path = data / "doc.txt"
+    # İki ayrı paragraf → en az iki chunk
+    path.write_text(
+        ("alpha " * 80) + "\n\n" + ("beta " * 80),
+        encoding="utf-8",
+    )
+    emb = MagicMock()
+    emb.dim = 3
+    emb.model_name = "mock-emb"
+    emb.encode.side_effect = lambda texts: __import__("numpy").zeros(
+        (len(texts), 3), dtype="float32"
+    )
+    index = FaissIndex(dim=3, embedding_model="mock-emb")
+    man = str(meta / "ingest_manifest.json")
+    kwargs = dict(
+        manifest_path=man,
+        meta_path=str(meta / "sources.json"),
+        chunk_size_words=40,
+        overlap_ratio=0.05,
+    )
+    index, _, s1 = rebuild_delta_from_data_dir(str(data), emb, index, **kwargs)
+    assert s1["updated"] == 1
+    first_calls = emb.encode.call_count
+    first_size = index.size
+    uids = load_ingest_manifest(man)["sources"]["doc.txt"]["chunk_uids"]
+    assert len(uids) >= 2
+
+    # Sadece ikinci paragrafı değiştir → seçici encode (tamamı değil)
+    path.write_text(
+        ("alpha " * 80) + "\n\n" + ("gamma " * 80),
+        encoding="utf-8",
+    )
+    emb.encode.reset_mock()
+    emb.encode.side_effect = lambda texts: __import__("numpy").zeros(
+        (len(texts), 3), dtype="float32"
+    )
+    index, reports, s2 = rebuild_delta_from_data_dir(str(data), emb, index, **kwargs)
+    assert s2["updated"] == 1
+    sel = next(r for r in reports if r.get("source_file") == "doc.txt")
+    assert sel.get("selective") is True
+    assert emb.encode.call_count >= 1
+    # Seçici: encode edilen chunk sayısı tümünden küçük olmalı
+    encoded_n = emb.encode.call_args.args[0]
+    assert len(encoded_n) < first_calls or len(encoded_n) < len(uids)
+    assert index.size >= 1
+    assert index.size == first_size or abs(index.size - first_size) <= len(uids)

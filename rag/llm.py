@@ -1,9 +1,60 @@
 import os
-from typing import Generator, Literal, Optional
+from typing import Any, Dict, Generator, Literal, Optional, Tuple
 
 from app.config import OLLAMA_HOST, OPENAI_API_KEY
 
 LLMProvider = Literal["ollama", "openai"]
+
+
+def _empty_usage() -> Dict[str, Any]:
+    return {
+        "prompt_tokens": None,
+        "completion_tokens": None,
+        "total_tokens": None,
+    }
+
+
+def _usage_from_openai(resp: Any) -> Dict[str, Any]:
+    usage = _empty_usage()
+    raw = getattr(resp, "usage", None)
+    if raw is None:
+        return usage
+    try:
+        prompt = getattr(raw, "prompt_tokens", None)
+        completion = getattr(raw, "completion_tokens", None)
+        total = getattr(raw, "total_tokens", None)
+        if prompt is None and hasattr(raw, "model_dump"):
+            d = raw.model_dump()
+            prompt = d.get("prompt_tokens")
+            completion = d.get("completion_tokens")
+            total = d.get("total_tokens")
+        usage["prompt_tokens"] = int(prompt) if prompt is not None else None
+        usage["completion_tokens"] = int(completion) if completion is not None else None
+        if total is not None:
+            usage["total_tokens"] = int(total)
+        elif usage["prompt_tokens"] is not None and usage["completion_tokens"] is not None:
+            usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
+    except Exception:
+        pass
+    return usage
+
+
+def _usage_from_ollama(data: Dict[str, Any]) -> Dict[str, Any]:
+    usage = _empty_usage()
+    try:
+        prompt = data.get("prompt_eval_count")
+        completion = data.get("eval_count")
+        if prompt is not None:
+            usage["prompt_tokens"] = int(prompt)
+        if completion is not None:
+            usage["completion_tokens"] = int(completion)
+        if usage["prompt_tokens"] is not None or usage["completion_tokens"] is not None:
+            usage["total_tokens"] = int(usage["prompt_tokens"] or 0) + int(
+                usage["completion_tokens"] or 0
+            )
+    except Exception:
+        pass
+    return usage
 
 
 def call_ollama(
@@ -12,6 +63,16 @@ def call_ollama(
     host: Optional[str] = None,
     stream: bool = False,
 ) -> str:
+    text, _ = call_ollama_with_usage(model=model, prompt=prompt, host=host, stream=stream)
+    return text
+
+
+def call_ollama_with_usage(
+    model: str,
+    prompt: str,
+    host: Optional[str] = None,
+    stream: bool = False,
+) -> Tuple[str, Dict[str, Any]]:
     import requests
 
     base = host or OLLAMA_HOST
@@ -23,7 +84,7 @@ def call_ollama(
     )
     resp.raise_for_status()
     data = resp.json()
-    return data.get("response", "")
+    return data.get("response", ""), _usage_from_ollama(data if isinstance(data, dict) else {})
 
 
 def stream_ollama(
@@ -58,6 +119,13 @@ def stream_ollama(
 
 
 def call_openai(model: str, prompt: str, stream: bool = False) -> str:
+    text, _ = call_openai_with_usage(model=model, prompt=prompt, stream=stream)
+    return text
+
+
+def call_openai_with_usage(
+    model: str, prompt: str, stream: bool = False
+) -> Tuple[str, Dict[str, Any]]:
     try:
         from openai import OpenAI
     except Exception as exc:
@@ -71,7 +139,6 @@ def call_openai(model: str, prompt: str, stream: bool = False) -> str:
 
     client = OpenAI(api_key=api_key)
     if stream:
-        # Non-streaming convenience path still returns full text.
         parts = []
         with client.chat.completions.create(
             model=model,
@@ -86,7 +153,7 @@ def call_openai(model: str, prompt: str, stream: bool = False) -> str:
                 delta = event.choices[0].delta.content or ""
                 if delta:
                     parts.append(delta)
-        return "".join(parts)
+        return "".join(parts), _empty_usage()
 
     resp = client.chat.completions.create(
         model=model,
@@ -96,7 +163,7 @@ def call_openai(model: str, prompt: str, stream: bool = False) -> str:
         ],
         temperature=0,
     )
-    return resp.choices[0].message.content or ""
+    return resp.choices[0].message.content or "", _usage_from_openai(resp)
 
 
 def stream_openai(model: str, prompt: str) -> Generator[str, None, None]:
@@ -127,6 +194,27 @@ def stream_openai(model: str, prompt: str) -> Generator[str, None, None]:
                 yield delta
 
 
+def _record_llm_usage(
+    *,
+    provider: str,
+    model_name: str,
+    usage: Dict[str, Any],
+) -> None:
+    try:
+        from rag.metrics import record_metric
+
+        vals = {
+            "provider": provider,
+            "model": model_name,
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+        }
+        record_metric("llm_usage", values=vals)
+    except Exception:
+        pass
+
+
 def generate_answer(provider: LLMProvider, model_name: str, prompt: str) -> str:
     from rag.otel import set_span_attrs, start_span
 
@@ -141,10 +229,18 @@ def generate_answer(provider: LLMProvider, model_name: str, prompt: str) -> str:
     ) as span:
         try:
             if provider == "ollama":
-                out = call_ollama(model=model_name, prompt=prompt)
+                out, usage = call_ollama_with_usage(model=model_name, prompt=prompt)
             else:
-                out = call_openai(model=model_name, prompt=prompt)
-            set_span_attrs(span, {"rag.llm.ok": True, "rag.llm.out_chars": len(out or "")})
+                out, usage = call_openai_with_usage(model=model_name, prompt=prompt)
+            attrs: Dict[str, Any] = {
+                "rag.llm.ok": True,
+                "rag.llm.out_chars": len(out or ""),
+            }
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                if usage.get(key) is not None:
+                    attrs[f"rag.llm.{key}"] = usage[key]
+            set_span_attrs(span, attrs)
+            _record_llm_usage(provider=provider, model_name=model_name, usage=usage)
             return out
         except Exception as exc:
             set_span_attrs(span, {"rag.llm.ok": False, "rag.llm.error": type(exc).__name__})

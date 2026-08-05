@@ -153,9 +153,115 @@ def ingest_path(
             "skipped": False,
             "reason": None,
             "chunk_uids": uids,
+            "selective": False,
         }
         set_span_attrs(span, {"rag.chunks_added": len(chunk_texts)})
         return result
+
+
+def _source_has_chunk_uids(index: FaissIndex, source_file: str) -> bool:
+    ids = index.ids_for_source(source_file)
+    if not ids:
+        return True
+    for cid in ids:
+        meta = getattr(index, "_id_to_meta", {}).get(cid)
+        if meta is None or not getattr(meta, "chunk_uid", None):
+            return False
+    return True
+
+
+def apply_selective_chunk_update(
+    index: FaissIndex,
+    embedder: Embedder,
+    *,
+    source_file: str,
+    chunk_texts: List[str],
+    metas: List,
+    previous_uids: Sequence[str],
+    folder: str = "",
+    tags: Optional[Sequence[str]] = None,
+    meta_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Sadece eklenen/silinen chunk UID'lerini encode/remove eder."""
+    from rag.otel import set_span_attrs, start_span
+
+    with start_span(
+        "rag.ingest_selective",
+        attributes={"rag.source_file": source_file},
+    ) as span:
+        cur_uids = chunk_fingerprints(chunk_texts, source_file=source_file)
+        for m, uid in zip(metas, cur_uids):
+            if getattr(m, "chunk_uid", None) != uid:
+                try:
+                    m.chunk_uid = uid
+                except Exception:
+                    pass
+        cdiff = diff_chunk_fingerprints(previous_uids, cur_uids)
+        prev_set = set(previous_uids or [])
+        cur_set = set(cur_uids)
+        removed_uids = prev_set - cur_set
+        added_uids = cur_set - prev_set
+
+        if not _source_has_chunk_uids(index, source_file):
+            # Legacy kaynak → full replace
+            vecs = embedder.encode(chunk_texts) if chunk_texts else __import__("numpy").zeros((0, embedder.dim), dtype="float32")
+            removed = index.replace_source(source_file, vecs, chunk_texts, metas)
+            upsert_source_meta(source_file, folder=folder, tags=list(tags or []), path=meta_path)
+            out = {
+                "source_file": source_file,
+                "chunks_added": len(chunk_texts),
+                "chunks_removed": removed,
+                "skipped": False,
+                "selective": False,
+                "reason": "legacy_full_replace",
+                "chunk_uids": cur_uids,
+                "chunk_diff": cdiff,
+            }
+            set_span_attrs(span, {"rag.chunks_added": len(chunk_texts), "rag.selective": False})
+            return out
+
+        removed_ids = index.ids_for_chunk_uids(source_file, removed_uids) if removed_uids else []
+        # Orphan UID'ler (manifest dışı ama indekste)
+        for cid in list(index.ids_for_source(source_file)):
+            meta = getattr(index, "_id_to_meta", {}).get(cid)
+            uid = getattr(meta, "chunk_uid", None) if meta else None
+            if uid and uid not in cur_set and cid not in removed_ids:
+                removed_ids.append(cid)
+        removed_n = index.remove_ids(removed_ids) if removed_ids else 0
+
+        uid_to_i = {u: i for i, u in enumerate(cur_uids)}
+        add_texts: List[str] = []
+        add_metas: List = []
+        for uid in sorted(added_uids, key=lambda u: uid_to_i.get(u, 0)):
+            i = uid_to_i[uid]
+            add_texts.append(chunk_texts[i])
+            add_metas.append(metas[i])
+        if add_texts:
+            vecs = embedder.encode(add_texts)
+            index.add(vecs, add_texts, add_metas)
+        index.embedding_model = embedder.model_name
+        upsert_source_meta(source_file, folder=folder, tags=list(tags or []), path=meta_path)
+        out = {
+            "source_file": source_file,
+            "folder": folder,
+            "tags": list(tags or []),
+            "chunks_added": len(add_texts),
+            "chunks_removed": removed_n,
+            "skipped": False,
+            "selective": True,
+            "reason": None,
+            "chunk_uids": cur_uids,
+            "chunk_diff": cdiff,
+        }
+        set_span_attrs(
+            span,
+            {
+                "rag.chunks_added": len(add_texts),
+                "rag.chunks_removed": removed_n,
+                "rag.selective": True,
+            },
+        )
+        return out
 
 
 def delete_source(
@@ -422,7 +528,7 @@ def rebuild_delta_from_data_dir(
                 prev_chunks = list(prev_fp.get("chunk_uids") or [])
             try:
                 _, pages = read_document(path)
-                chunk_texts, _metas = chunk_pages(
+                chunk_texts, metas = chunk_pages(
                     source_file=src,
                     pages=pages,
                     chunk_size_words=chunk_size_words,
@@ -449,24 +555,46 @@ def rebuild_delta_from_data_dir(
                         }
                     )
                     continue
-                report = ingest_path(
-                    path,
-                    index,
-                    embedder,
-                    replace_existing=True,
-                    chunk_size_words=chunk_size_words,
-                    overlap_ratio=overlap_ratio,
-                    data_dir=data_dir,
-                    meta_path=meta_path,
+                # Dosya değişti ve chunk seti farklı → seçici re-embed
+                _sf, folder_n, tag_list = resolve_source_identity(
+                    path, data_dir, meta_path=meta_path
                 )
+                for m in metas:
+                    m.folder = folder_n
+                    m.tags = list(tag_list)
+                if prev_chunks and _source_has_chunk_uids(index, src):
+                    report = apply_selective_chunk_update(
+                        index,
+                        embedder,
+                        source_file=src,
+                        chunk_texts=chunk_texts,
+                        metas=metas,
+                        previous_uids=prev_chunks,
+                        folder=folder_n,
+                        tags=tag_list,
+                        meta_path=meta_path,
+                    )
+                else:
+                    report = ingest_path(
+                        path,
+                        index,
+                        embedder,
+                        replace_existing=True,
+                        chunk_size_words=chunk_size_words,
+                        overlap_ratio=overlap_ratio,
+                        data_dir=data_dir,
+                        meta_path=meta_path,
+                    )
+                    report = dict(report)
+                    report["chunk_diff"] = cdiff
                 report = dict(report)
                 report["action"] = "updated" if prev_fp else "added"
-                report["chunk_diff"] = cdiff
+                report["chunk_diff"] = report.get("chunk_diff") or cdiff
                 reports.append(report)
                 if not report.get("skipped"):
                     sources_prev[src] = {
                         **cur_fp,
-                        "chunks": int(report.get("chunks_added") or 0),
+                        "chunks": len(list(report.get("chunk_uids") or cur_uids)),
                         "chunk_uids": list(report.get("chunk_uids") or cur_uids),
                     }
                     updated += 1

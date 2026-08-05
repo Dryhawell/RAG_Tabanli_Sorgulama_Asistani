@@ -14,6 +14,14 @@ def test_grafana_judge_soft_fail_alert_yaml():
     assert "rag-judge" in blob
 
 
+def test_grafana_judge_dashboard_has_llm_and_exemplars():
+    path = Path("grafana/dashboards/rag_judge.json")
+    text = path.read_text(encoding="utf-8")
+    assert "rag_llm_tokens_total" in text
+    assert "exemplar" in text
+    assert "Tempo" in text or "exemplars" in text.lower()
+
+
 def test_digest_alert_workflow_yaml():
     path = Path(".github/workflows/digest-alert.yml")
     text = path.read_text(encoding="utf-8")

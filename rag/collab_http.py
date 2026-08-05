@@ -55,6 +55,55 @@ def _json_error(code: int, error: str) -> Tuple[int, Dict[str, str], bytes]:
     )
 
 
+def handle_judge_ack_form() -> Tuple[int, Dict[str, str], bytes]:
+    """GET: Slack deep-link ack formu (token istemci tarafında girilir)."""
+    html = """<!DOCTYPE html>
+<html lang="tr"><head><meta charset="utf-8"/><title>Judge soft-fail ACK</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:480px;margin:2rem auto;padding:0 1rem;line-height:1.45}
+label{display:block;margin-top:12px;font-weight:600}
+input,textarea{width:100%;padding:8px;box-sizing:border-box}
+button{margin-top:14px;padding:8px 14px}
+#msg{margin-top:12px;color:#333;white-space:pre-wrap}
+</style></head><body>
+<h1>Judge soft-fail acknowledge</h1>
+<p>Token sunucu env <code>RAG_JUDGE_ACK_TOKEN</code> ile aynı olmalı.</p>
+<label>Actor <input id="actor" placeholder="oncall"/></label>
+<label>Token <input id="token" type="password" placeholder="ack token"/></label>
+<label>Note <textarea id="note" rows="3" placeholder="inceleme notu"></textarea></label>
+<button id="go" type="button">Acknowledge</button>
+<pre id="msg"></pre>
+<script>
+document.getElementById("go").onclick = async () => {
+  const msg = document.getElementById("msg");
+  try {
+    const body = {
+      actor: (document.getElementById("actor").value || "").trim(),
+      token: (document.getElementById("token").value || "").trim(),
+      note: (document.getElementById("note").value || "").trim(),
+      notify: "1"
+    };
+    const r = await fetch("/judge/ack", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    });
+    const data = await r.json();
+    msg.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    msg.textContent = String(e && e.message ? e.message : e);
+  }
+};
+</script>
+</body></html>
+"""
+    return (
+        200,
+        {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache"},
+        html.encode("utf-8"),
+    )
+
+
 def handle_judge_ack(body: bytes, *, headers: Optional[Dict[str, str]] = None) -> Tuple[int, Dict[str, str], bytes]:
     """POST JSON: {actor, note?, token?} — soft-fail manuel acknowledge."""
     expected = os.environ.get("RAG_JUDGE_ACK_TOKEN", "").strip()
@@ -322,6 +371,9 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
                 )
             )
             return
+        if path in {"/judge/ack-form", "/judge/ack-ui"}:
+            self._send(*handle_judge_ack_form())
+            return
         if path in {"/judge/alert", "/judge/alert-state"}:
             self._send(*handle_judge_alert_state())
             return
@@ -335,6 +387,7 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
                         "/webpush",
                         "/webpush/register",
                         "/judge/ack",
+                        "/judge/ack-form",
                         "/judge/alert",
                     ],
                 }

@@ -113,6 +113,19 @@ class QdrantIndex:
             if meta.source_file == source_file
         ]
 
+    def ids_for_chunk_uids(self, source_file: str, uids: Set[str] | List[str]) -> List[int]:
+        want = {str(u) for u in uids if u}
+        if not want:
+            return []
+        out: List[int] = []
+        for cid, meta in self._id_to_meta.items():
+            if meta.source_file != source_file:
+                continue
+            uid = getattr(meta, "chunk_uid", None)
+            if uid and str(uid) in want:
+                out.append(cid)
+        return out
+
     def list_sources(self) -> List[str]:
         sources: Set[str] = {meta.source_file for meta in self._id_to_meta.values()}
         return sorted(sources)

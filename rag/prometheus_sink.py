@@ -29,6 +29,8 @@ _push_prune_total = None
 _judge_accuracy = None
 _judge_soft_fail_total = None
 _judge_runs_total = None
+_llm_tokens_total = None
+_llm_calls_total = None
 
 
 def prometheus_available() -> bool:
@@ -48,6 +50,7 @@ def _ensure_metrics():
     global _ingest_total, _ingest_chunks, _rebuild_total, _delete_total, _events_total
     global _push_revoked_total, _push_prune_total
     global _judge_accuracy, _judge_soft_fail_total, _judge_runs_total
+    global _llm_tokens_total, _llm_calls_total
     if _events_total is not None:
         return
     if not prometheus_available():
@@ -103,6 +106,16 @@ def _ensure_metrics():
         "rag_judge_runs_total",
         "Judge koşu sayısı",
         ["mode", "ok"],
+    )
+    _llm_tokens_total = Counter(
+        "rag_llm_tokens_total",
+        "LLM token kullanımı",
+        ["provider", "model", "token_type"],
+    )
+    _llm_calls_total = Counter(
+        "rag_llm_calls_total",
+        "LLM çağrı sayısı",
+        ["provider", "model"],
     )
 
 
@@ -194,6 +207,28 @@ def observe_metric(
                     pass
             if vals.get("soft_fail"):
                 _judge_soft_fail_total.labels(mode=mode).inc()
+        elif kind == "llm_usage":
+            assert _llm_tokens_total is not None
+            assert _llm_calls_total is not None
+            provider = str(vals.get("provider") or "unknown")
+            model = str(vals.get("model") or "unknown")
+            _llm_calls_total.labels(provider=provider, model=model).inc()
+            for token_type, key in (
+                ("prompt", "prompt_tokens"),
+                ("completion", "completion_tokens"),
+                ("total", "total_tokens"),
+            ):
+                raw = vals.get(key)
+                if raw is None:
+                    continue
+                try:
+                    n = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if n > 0:
+                    _llm_tokens_total.labels(
+                        provider=provider, model=model, token_type=token_type
+                    ).inc(n)
 
 
 def render_prometheus() -> bytes:

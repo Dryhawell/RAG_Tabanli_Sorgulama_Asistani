@@ -160,12 +160,14 @@ python -m rag.cli prometheus --dump
 Grafana'da Prometheus datasource ekleyip `rag_queries_total`, `rag_query_latency_seconds` panelleri kurulabilir.
 Judge soft-fail paneli: `grafana/dashboards/rag_judge.json` (provisioning: `grafana/provisioning/dashboards/`).
 Judge Slack alert kuralı: `grafana/alerting/rag_judge_soft_fail.yaml` + CI `scripts/ci_judge_slack_alert.py` (`RAG_JUDGE_SLACK_WEBHOOK`, opsiyonel `RAG_JUDGE_PAGERDUTY_ROUTING_KEY` / `RAG_JUDGE_OPSGENIE_API_KEY`; soft-fail → OK geçişinde auto-resolve, state: `RAG_JUDGE_ALERT_STATE`; manuel ack: `POST /judge/ack` + `RAG_JUDGE_ACK_TOKEN` veya admin UI).
-CI judge state: artifact + `actions/cache` (`metadata/judge_alert_state.json`) ile run'lar arası kalıcılık.
+CI judge state: artifact + `actions/cache` (`metadata/judge_alert_state.json`) ile run'lar arası kalıcılık; opsiyonel harici store: `RAG_JUDGE_ALERT_STATE_URL`.
+Slack ack deep-link: `RAG_JUDGE_ACK_PUBLIC_URL` → `/judge/ack-form`.
 VAPID üretimi: `python -m rag.cli collab-notifications --generate-vapid`
 VAPID rotate/vault: `python -m rag.cli collab-notifications --rotate-vapid` (Actions: **VAPID Rotate**; secret sync: `GH_PAT` + `--update-github-secrets` + opsiyonel `--vapid-github-environment`)
 Digest alert: `python -m rag.cli collab-notifications --digest-alert-check --digest-alert-all` (cron: `.github/workflows/digest-alert.yml`; tenant webhook: `RAG_DIGEST_ALERT_WEBHOOKS_JSON` veya `metadata/digest_alert_webhooks.json`)
-OpenTelemetry (opsiyonel): `RAG_OTEL_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT` + `opentelemetry-*` paketleri; resource: `OTEL_SERVICE_NAME`, `RAG_ENVIRONMENT`, `OTEL_RESOURCE_ATTRIBUTES` (`rag/otel.py`; spans: retrieve/ingest/judge/llm).
-Delta rebuild: `python -m rag.cli rebuild --delta` (`metadata/ingest_manifest.json` fingerprint + `chunk_uid`).
+OpenTelemetry (opsiyonel): `RAG_OTEL_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT` + `opentelemetry-*` paketleri; resource: `OTEL_SERVICE_NAME`, `RAG_ENVIRONMENT`, `OTEL_RESOURCE_ATTRIBUTES` (`rag/otel.py`; spans: retrieve/ingest/judge/llm + token attrs).
+Prometheus: `rag_llm_tokens_total` / query latency exemplars (Grafana Tempo link).
+Delta rebuild: `python -m rag.cli rebuild --delta` (fingerprint + seçici `chunk_uid` re-embed).
 
 ### Qdrant (uzak / dağıtık vektör DB)
 ```bash
@@ -505,6 +507,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
 - Push: VAPID OIDC / Deploy-key based secret store sync
-- Judge: soft-fail ack deep-link from Slack + external state store
-- Ingest: selective chunk re-embed (changed UIDs only)
-- Observability: LLM token usage spans + Grafana exemplar links
+- Judge: Slack interactive ack (signed request verify)
+- Ingest: Qdrant payload-side selective upsert parity hardening
+- Observability: Tempo datasource provisioning + LLM cost panels

@@ -267,3 +267,53 @@ def test_acknowledge_holds_realert(tmp_path, monkeypatch):
     assert held["alerted"] is False
     assert not calls
 
+
+def test_slack_payload_includes_ack_deep_link(monkeypatch):
+    from rag.judge_alert import build_slack_payload
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_PUBLIC_URL", "https://rag.example/judge/ack-form")
+    payload = build_slack_payload({"summary": {"ok": False, "accuracy": 0.1}}, source="report")
+    assert payload["blocks"]
+    actions = [b for b in payload["blocks"] if b.get("type") == "actions"]
+    assert actions
+    assert actions[0]["elements"][0]["url"] == "https://rag.example/judge/ack-form"
+
+
+def test_remote_judge_state_roundtrip(tmp_path, monkeypatch):
+    from rag.judge_alert import load_judge_alert_state, save_judge_alert_state
+
+    remote = {"soft_fail": True, "source": "report", "acknowledged": False}
+    calls = []
+
+    class FakeResp:
+        def __init__(self, code=200, data=None):
+            self.status_code = code
+            self._data = data or {}
+
+        def json(self):
+            return self._data
+
+    def fake_request(method, url, json=None, timeout=10):
+        calls.append({"method": method, "url": url, "json": json})
+        if method == "get":
+            return FakeResp(200, remote)
+        return FakeResp(204)
+
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE_URL", "https://state.example/judge")
+    monkeypatch.setattr(
+        "requests.get",
+        lambda url, timeout=10: fake_request("get", url, timeout=timeout),
+    )
+    monkeypatch.setattr(
+        "requests.put",
+        lambda url, json=None, timeout=10: fake_request("put", url, json=json, timeout=timeout),
+    )
+    monkeypatch.setattr(
+        "requests.post",
+        lambda url, json=None, timeout=10: fake_request("post", url, json=json, timeout=timeout),
+    )
+    loaded = load_judge_alert_state()
+    assert loaded["soft_fail"] is True
+    save_judge_alert_state({"soft_fail": False, "last_action": "resolve"}, str(tmp_path / "local.json"))
+    assert any(c["method"] == "put" for c in calls)
+
