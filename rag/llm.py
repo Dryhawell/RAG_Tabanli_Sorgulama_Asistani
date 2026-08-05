@@ -128,15 +128,53 @@ def stream_openai(model: str, prompt: str) -> Generator[str, None, None]:
 
 
 def generate_answer(provider: LLMProvider, model_name: str, prompt: str) -> str:
-    if provider == "ollama":
-        return call_ollama(model=model_name, prompt=prompt)
-    return call_openai(model=model_name, prompt=prompt)
+    from rag.otel import set_span_attrs, start_span
+
+    with start_span(
+        "rag.llm.generate",
+        attributes={
+            "rag.llm.provider": provider,
+            "rag.llm.model": model_name,
+            "rag.llm.stream": False,
+            "rag.llm.prompt_chars": len(prompt or ""),
+        },
+    ) as span:
+        try:
+            if provider == "ollama":
+                out = call_ollama(model=model_name, prompt=prompt)
+            else:
+                out = call_openai(model=model_name, prompt=prompt)
+            set_span_attrs(span, {"rag.llm.ok": True, "rag.llm.out_chars": len(out or "")})
+            return out
+        except Exception as exc:
+            set_span_attrs(span, {"rag.llm.ok": False, "rag.llm.error": type(exc).__name__})
+            raise
 
 
 def stream_answer(
     provider: LLMProvider, model_name: str, prompt: str
 ) -> Generator[str, None, None]:
-    if provider == "ollama":
-        yield from stream_ollama(model=model_name, prompt=prompt)
-    else:
-        yield from stream_openai(model=model_name, prompt=prompt)
+    from rag.otel import set_span_attrs, start_span
+
+    with start_span(
+        "rag.llm.stream",
+        attributes={
+            "rag.llm.provider": provider,
+            "rag.llm.model": model_name,
+            "rag.llm.stream": True,
+            "rag.llm.prompt_chars": len(prompt or ""),
+        },
+    ) as span:
+        n = 0
+        try:
+            if provider == "ollama":
+                gen = stream_ollama(model=model_name, prompt=prompt)
+            else:
+                gen = stream_openai(model=model_name, prompt=prompt)
+            for chunk in gen:
+                n += len(chunk or "")
+                yield chunk
+            set_span_attrs(span, {"rag.llm.ok": True, "rag.llm.out_chars": n})
+        except Exception as exc:
+            set_span_attrs(span, {"rag.llm.ok": False, "rag.llm.error": type(exc).__name__})
+            raise

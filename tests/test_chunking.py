@@ -19,6 +19,7 @@ def test_chunking_basic():
         wc = len(t.split())
         assert wc == m.word_count
         assert wc >= 200 or wc == 300
+        assert m.chunk_uid and len(m.chunk_uid) == 24
 
 
 def test_chunking_respects_headings_and_paragraphs():

@@ -12,6 +12,7 @@ class ChunkMetadata(BaseModel):
     heading: Optional[str] = None
     folder: str = ""
     tags: List[str] = Field(default_factory=list)
+    chunk_uid: Optional[str] = None
 
 
 class RetrievedChunk(BaseModel):

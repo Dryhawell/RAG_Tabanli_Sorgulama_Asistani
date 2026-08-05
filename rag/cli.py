@@ -493,6 +493,7 @@ def cmd_collab_notifications(args: argparse.Namespace) -> int:
                 subject=str(result.get("subject") or "") or None,
                 dry_run=bool(getattr(args, "vapid_secrets_dry_run", False)),
                 include_private=bool(getattr(args, "vapid_secrets_include_private", False)),
+                environment=(getattr(args, "vapid_github_environment", None) or None),
             )
             print(json.dumps({"github_secrets": gh}, ensure_ascii=False, indent=2))
             if gh.get("failed") and not gh.get("dry_run"):
@@ -1320,6 +1321,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--vapid-secrets-include-private",
         action="store_true",
         help="PRIVATE secret'ı da güncelle (dikkat)",
+    )
+    p_cnot.add_argument(
+        "--vapid-github-environment",
+        "--github-environment",
+        dest="vapid_github_environment",
+        default=None,
+        help="GitHub Environment adı (Actions Environments secret sync)",
     )
     p_cnot.add_argument(
         "--vapid-subject",

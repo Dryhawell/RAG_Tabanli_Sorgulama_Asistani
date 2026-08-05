@@ -106,6 +106,26 @@ def _ensure_metrics():
     )
 
 
+def _observe_with_exemplar(metric, value: float) -> None:
+    """Histogram.observe; destekleniyorsa OTel trace exemplar ekler."""
+    exemplar = None
+    try:
+        from rag.otel import current_trace_exemplar
+
+        exemplar = current_trace_exemplar()
+    except Exception:
+        exemplar = None
+    if exemplar:
+        try:
+            metric.observe(value, exemplar=exemplar)
+            return
+        except TypeError:
+            pass
+        except Exception:
+            pass
+    metric.observe(value)
+
+
 def observe_metric(
     kind: str,
     *,
@@ -132,9 +152,11 @@ def observe_metric(
             no_ans = "1" if vals.get("no_answer") else "0"
             _query_total.labels(no_answer=no_ans, tenant=tenant).inc()
             if vals.get("latency_ms") is not None:
-                _query_latency.observe(float(vals["latency_ms"]) / 1000.0)
+                _observe_with_exemplar(
+                    _query_latency, float(vals["latency_ms"]) / 1000.0
+                )
             if vals.get("gate_score") is not None:
-                _query_gate.observe(float(vals["gate_score"]))
+                _observe_with_exemplar(_query_gate, float(vals["gate_score"]))
         elif kind == "ingest":
             _ingest_total.inc()
             chunks = int(vals.get("chunks_added") or 0)

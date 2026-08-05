@@ -15,7 +15,7 @@ from app.config import (
     METADATA_DIR,
     SUPPORTED_EXTENSIONS,
 )
-from rag.chunking import chunk_pages
+from rag.chunking import chunk_fingerprints, chunk_pages, diff_chunk_fingerprints
 from rag.embed import Embedder
 from rag.index import FaissIndex
 from rag.store import create_index
@@ -125,6 +125,7 @@ def ingest_path(
                 "chunks_removed": 0,
                 "skipped": True,
                 "reason": "Boş veya parçalanabilir metin yok",
+                "chunk_uids": [],
             }
 
         if index.embedding_model and index.embedding_model != embedder.model_name:
@@ -133,6 +134,7 @@ def ingest_path(
                 f"seçili={embedder.model_name}. Lütfen indeksi yeniden oluşturun."
             )
 
+        uids = chunk_fingerprints(chunk_texts, source_file=source_file)
         vecs = embedder.encode(chunk_texts)
         removed = 0
         if replace_existing:
@@ -150,6 +152,7 @@ def ingest_path(
             "chunks_removed": removed,
             "skipped": False,
             "reason": None,
+            "chunk_uids": uids,
         }
         set_span_attrs(span, {"rag.chunks_added": len(chunk_texts)})
         return result
@@ -391,6 +394,7 @@ def rebuild_delta_from_data_dir(
 
         unchanged = 0
         updated = 0
+        chunk_skipped = 0
         for src, path in sorted(current.items()):
             cur_fp = _source_fingerprint_entry(
                 path,
@@ -412,7 +416,39 @@ def rebuild_delta_from_data_dir(
                     }
                 )
                 continue
+            # Dosya değişti: chunk-level diff — aynı chunk seti ise encode atla
+            prev_chunks = []
+            if isinstance(prev_fp, dict):
+                prev_chunks = list(prev_fp.get("chunk_uids") or [])
             try:
+                _, pages = read_document(path)
+                chunk_texts, _metas = chunk_pages(
+                    source_file=src,
+                    pages=pages,
+                    chunk_size_words=chunk_size_words,
+                    overlap_ratio=overlap_ratio,
+                )
+                cur_uids = chunk_fingerprints(chunk_texts, source_file=src)
+                cdiff = diff_chunk_fingerprints(prev_chunks, cur_uids)
+                if prev_chunks and cdiff.get("identical"):
+                    sources_prev[src] = {
+                        **cur_fp,
+                        "chunks": len(cur_uids),
+                        "chunk_uids": cur_uids,
+                    }
+                    chunk_skipped += 1
+                    reports.append(
+                        {
+                            "source_file": src,
+                            "chunks_added": 0,
+                            "chunks_removed": 0,
+                            "skipped": True,
+                            "action": "chunk_unchanged",
+                            "reason": "chunk_fingerprints_match",
+                            "chunk_diff": cdiff,
+                        }
+                    )
+                    continue
                 report = ingest_path(
                     path,
                     index,
@@ -425,15 +461,21 @@ def rebuild_delta_from_data_dir(
                 )
                 report = dict(report)
                 report["action"] = "updated" if prev_fp else "added"
+                report["chunk_diff"] = cdiff
                 reports.append(report)
                 if not report.get("skipped"):
                     sources_prev[src] = {
                         **cur_fp,
                         "chunks": int(report.get("chunks_added") or 0),
+                        "chunk_uids": list(report.get("chunk_uids") or cur_uids),
                     }
                     updated += 1
                 elif prev_fp is None:
-                    sources_prev[src] = {**cur_fp, "chunks": 0}
+                    sources_prev[src] = {
+                        **cur_fp,
+                        "chunks": 0,
+                        "chunk_uids": cur_uids,
+                    }
             except Exception as exc:
                 reports.append(
                     {
@@ -453,6 +495,7 @@ def rebuild_delta_from_data_dir(
             "unchanged": unchanged,
             "updated": updated,
             "removed": len(removed_sources),
+            "chunk_skipped": chunk_skipped,
             "removed_sources": removed_sources,
             "total_files": len(current),
             "manifest_path": man_path,
@@ -464,6 +507,7 @@ def rebuild_delta_from_data_dir(
                 "rag.unchanged": unchanged,
                 "rag.updated": updated,
                 "rag.removed": len(removed_sources),
+                "rag.chunk_skipped": chunk_skipped,
             },
         )
         return index, reports, summary

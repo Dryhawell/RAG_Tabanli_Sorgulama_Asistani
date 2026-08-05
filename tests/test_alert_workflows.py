@@ -31,3 +31,13 @@ def test_vapid_rotate_workflow_yaml():
     assert "workflow_dispatch" in text
     assert "vapid_keys.json" in text
     assert "GH_PAT" in text
+    assert "github_environment" in text
+    assert "vapid-github-environment" in text
+
+
+def test_ci_judge_alert_state_persistence_yaml():
+    text = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "judge_alert_state.json" in text
+    assert "RAG_JUDGE_ALERT_STATE" in text
+    assert "judge-alert-state-" in text
+    assert "actions/cache@v4" in text

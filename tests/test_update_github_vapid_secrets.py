@@ -18,6 +18,18 @@ def test_update_vapid_github_secrets_dry_run(monkeypatch):
     assert result["failed"] == []
 
 
+def test_update_vapid_github_secrets_environment_dry_run(monkeypatch):
+    monkeypatch.setenv("GH_PAT", "token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "acme/rag")
+    result = update_vapid_github_secrets(
+        public="BNcPublicKeyExample",
+        dry_run=True,
+        environment="production",
+    )
+    assert result["environment"] == "production"
+    assert "RAG_NOTIFY_PUSH_VAPID_PUBLIC" in result["updated"]
+
+
 def test_update_vapid_github_secrets_requires_token(monkeypatch):
     monkeypatch.delenv("GH_PAT", raising=False)
     monkeypatch.delenv("VAPID_GH_PAT", raising=False)

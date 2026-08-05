@@ -134,3 +134,46 @@ def test_rebuild_delta_skips_unchanged_and_removes_deleted(tmp_path):
     actions = {r["source_file"]: r.get("action") for r in reports3}
     assert actions.get("a.txt") == "updated"
     assert actions.get("b.txt") == "removed"
+
+
+def test_stable_chunk_uid_and_diff():
+    from rag.chunking import diff_chunk_fingerprints, stable_chunk_uid
+
+    u1 = stable_chunk_uid("a.txt", "hello world")
+    u2 = stable_chunk_uid("a.txt", "hello world")
+    u3 = stable_chunk_uid("a.txt", "hello worlds")
+    assert u1 == u2 and u1 != u3
+    d = diff_chunk_fingerprints([u1], [u1, u3])
+    assert d["unchanged"] == 1
+    assert d["added"] == 1
+    assert d["identical"] is False
+
+
+def test_rebuild_delta_stores_chunk_uids(tmp_path):
+    from rag.ingest import load_ingest_manifest, rebuild_delta_from_data_dir
+
+    data = tmp_path / "data"
+    data.mkdir()
+    meta = tmp_path / "meta"
+    meta.mkdir()
+    (data / "a.txt").write_text("kelime " * 250, encoding="utf-8")
+    emb = MagicMock()
+    emb.dim = 3
+    emb.model_name = "mock-emb"
+    emb.encode.side_effect = lambda texts: __import__("numpy").zeros(
+        (len(texts), 3), dtype="float32"
+    )
+    index = FaissIndex(dim=3, embedding_model="mock-emb")
+    man = str(meta / "ingest_manifest.json")
+    rebuild_delta_from_data_dir(
+        str(data),
+        emb,
+        index,
+        manifest_path=man,
+        meta_path=str(meta / "sources.json"),
+        chunk_size_words=50,
+        overlap_ratio=0.1,
+    )
+    doc = load_ingest_manifest(man)
+    assert doc["sources"]["a.txt"].get("chunk_uids")
+    assert isinstance(doc["sources"]["a.txt"]["chunk_uids"], list)

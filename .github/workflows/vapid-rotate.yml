@@ -25,6 +25,11 @@ on:
         required: false
         default: false
         type: boolean
+      github_environment:
+        description: "GitHub Environment adı (boş = repo secrets)"
+        required: false
+        default: ""
+        type: string
 
 jobs:
   rotate:
@@ -54,6 +59,9 @@ jobs:
             fi
             if [ "${{ inputs.secrets_dry_run }}" = "true" ]; then
               EXTRA="$EXTRA --vapid-secrets-dry-run"
+            fi
+            if [ -n "${{ inputs.github_environment }}" ]; then
+              EXTRA="$EXTRA --vapid-github-environment ${{ inputs.github_environment }}"
             fi
           fi
           # shellcheck disable=SC2086

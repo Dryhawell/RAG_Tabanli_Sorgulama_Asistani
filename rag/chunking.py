@@ -1,3 +1,4 @@
+import hashlib
 import re
 from typing import List, Optional, Sequence, Tuple
 
@@ -11,6 +12,34 @@ _HEADING_RE = re.compile(
     r"|#{1,6}\s+.+"  # markdown
     r")$"
 )
+
+
+def stable_chunk_uid(source_file: str, text: str) -> str:
+    """Kaynak + metin içeriğine dayalı kararlı chunk kimliği (sha256 kısaltması)."""
+    raw = f"{source_file}\0{text}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:24]
+
+
+def chunk_fingerprints(texts: Sequence[str], *, source_file: str = "") -> List[str]:
+    return [stable_chunk_uid(source_file, t) for t in texts]
+
+
+def diff_chunk_fingerprints(
+    previous: Sequence[str],
+    current: Sequence[str],
+) -> dict:
+    """Önceki/yeni chunk fingerprint karşılaştırması."""
+    prev = list(previous or [])
+    cur = list(current or [])
+    prev_set = set(prev)
+    cur_set = set(cur)
+    return {
+        "unchanged": len(prev_set & cur_set),
+        "added": len(cur_set - prev_set),
+        "removed": len(prev_set - cur_set),
+        "order_match": prev == cur,
+        "identical": prev == cur,
+    }
 
 
 def _split_words(text: str) -> List[str]:
@@ -197,6 +226,7 @@ def chunk_pages(
                     heading=heading,
                     folder=folder or "",
                     tags=list(tag_list),
+                    chunk_uid=stable_chunk_uid(source_file, chunk_text),
                 )
             )
             chunk_id += 1

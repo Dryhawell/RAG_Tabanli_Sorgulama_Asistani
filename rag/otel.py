@@ -112,6 +112,22 @@ def _ensure_tracer():
         return None
 
 
+def current_trace_exemplar() -> Optional[Dict[str, str]]:
+    """Aktif OTel span varsa Prometheus exemplar dict döner."""
+    try:
+        from opentelemetry import trace
+
+        span = trace.get_current_span()
+        ctx = span.get_span_context() if span is not None else None
+        if ctx is None or not getattr(ctx, "is_valid", False):
+            return None
+        trace_id = format(int(ctx.trace_id), "032x")
+        span_id = format(int(ctx.span_id), "016x")
+        return {"trace_id": trace_id, "span_id": span_id}
+    except Exception:
+        return None
+
+
 def force_flush(timeout_millis: int = 5000) -> bool:
     provider = _provider
     if provider is None:

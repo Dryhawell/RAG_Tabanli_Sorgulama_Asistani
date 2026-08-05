@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 from typing import Any, Dict, Optional, Tuple
+from urllib.parse import quote
 
 
 def parse_repo_slug(repo: Optional[str] = None) -> Tuple[str, str]:
@@ -17,23 +18,24 @@ def parse_repo_slug(repo: Optional[str] = None) -> Tuple[str, str]:
     return owner.strip(), name.strip()
 
 
-def _gh_secret_set(name: str, value: str, *, repo: str, env_token: str) -> bool:
+def _gh_secret_set(
+    name: str,
+    value: str,
+    *,
+    repo: str,
+    env_token: str,
+    environment: Optional[str] = None,
+) -> bool:
     """gh secret set — GH_PAT veya GITHUB_TOKEN (PAT tercih)."""
     env = os.environ.copy()
     env["GH_TOKEN"] = env_token
     env["GITHUB_TOKEN"] = env_token
+    cmd = ["gh", "secret", "set", name, "--repo", repo, "--body", value]
+    if environment and str(environment).strip():
+        cmd.extend(["--env", str(environment).strip()])
     try:
         proc = subprocess.run(
-            [
-                "gh",
-                "secret",
-                "set",
-                name,
-                "--repo",
-                repo,
-                "--body",
-                value,
-            ],
+            cmd,
             capture_output=True,
             text=True,
             env=env,
@@ -66,7 +68,7 @@ def put_actions_secret(
     name: str,
     value: str,
 ) -> bool:
-    """REST: GET public-key → PUT encrypted secret."""
+    """REST: GET public-key → PUT encrypted secret (repo Actions secrets)."""
     try:
         import requests
     except ImportError:
@@ -98,6 +100,64 @@ def put_actions_secret(
         return False
 
 
+def put_environment_secret(
+    *,
+    token: str,
+    owner: str,
+    repo: str,
+    environment: str,
+    name: str,
+    value: str,
+) -> bool:
+    """REST: GitHub Environment secret (Actions Environments)."""
+    try:
+        import requests
+    except ImportError:
+        return False
+    env_name = (environment or "").strip()
+    if not env_name:
+        return False
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    # Need repository_id for environment secrets API
+    try:
+        rr = requests.get(
+            f"https://api.github.com/repos/{owner}/{repo}",
+            headers=headers,
+            timeout=20,
+        )
+        if rr.status_code >= 400:
+            return False
+        repo_id = rr.json().get("id")
+        if not repo_id:
+            return False
+        enc = quote(env_name, safe="")
+        base = (
+            f"https://api.github.com/repositories/{repo_id}/environments/{enc}/secrets"
+        )
+        kr = requests.get(f"{base}/public-key", headers=headers, timeout=20)
+        if kr.status_code >= 400:
+            return False
+        key_info = kr.json()
+        key_id = key_info.get("key_id")
+        key = key_info.get("key")
+        if not key_id or not key:
+            return False
+        encrypted = _encrypt_secret_sodium(str(key), value)
+        pr = requests.put(
+            f"{base}/{name}",
+            headers=headers,
+            json={"encrypted_value": encrypted, "key_id": key_id},
+            timeout=20,
+        )
+        return pr.status_code in {201, 204}
+    except Exception:
+        return False
+
+
 def update_vapid_github_secrets(
     *,
     public: str,
@@ -107,10 +167,12 @@ def update_vapid_github_secrets(
     token: Optional[str] = None,
     repo: Optional[str] = None,
     include_private: bool = False,
+    environment: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     RAG_NOTIFY_PUSH_VAPID_PUBLIC (+ opsiyonel PRIVATE/SUBJECT) secret güncelle.
     Token: GH_PAT / VAPID_GH_PAT (secrets:write). Default GITHUB_TOKEN yetmez.
+    environment: GitHub Environment adı (Actions Environments secret sync).
     """
     tok = (
         token
@@ -119,9 +181,14 @@ def update_vapid_github_secrets(
         or os.environ.get("GITHUB_TOKEN", "").strip()
     )
     slug = (repo or os.environ.get("GITHUB_REPOSITORY") or "").strip()
+    env_name = (
+        (environment if environment is not None else os.environ.get("VAPID_GITHUB_ENVIRONMENT", ""))
+        or ""
+    ).strip()
     result: Dict[str, Any] = {
         "dry_run": dry_run,
         "repo": slug or None,
+        "environment": env_name or None,
         "updated": [],
         "failed": [],
         "skipped": [],
@@ -153,7 +220,13 @@ def update_vapid_github_secrets(
     # 1) gh CLI
     all_ok = True
     for name, value in pairs:
-        if _gh_secret_set(name, value, repo=slug, env_token=tok):
+        if _gh_secret_set(
+            name,
+            value,
+            repo=slug,
+            env_token=tok,
+            environment=env_name or None,
+        ):
             result["updated"].append(name)
             result["method"] = "gh"
         else:
@@ -171,13 +244,23 @@ def update_vapid_github_secrets(
         result["failed"].append("bad_repo")
         return result
     for secret_name, value in pairs:
-        ok = put_actions_secret(
-            token=tok,
-            owner=owner,
-            repo=name,
-            name=secret_name,
-            value=value,
-        )
+        if env_name:
+            ok = put_environment_secret(
+                token=tok,
+                owner=owner,
+                repo=name,
+                environment=env_name,
+                name=secret_name,
+                value=value,
+            )
+        else:
+            ok = put_actions_secret(
+                token=tok,
+                owner=owner,
+                repo=name,
+                name=secret_name,
+                value=value,
+            )
         if ok:
             result["updated"].append(secret_name)
         else:
@@ -193,6 +276,13 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--private", default=os.environ.get("RAG_NOTIFY_PUSH_VAPID_PRIVATE", ""))
     p.add_argument("--subject", default=os.environ.get("RAG_NOTIFY_PUSH_VAPID_SUBJECT", ""))
     p.add_argument("--repo", default=None)
+    p.add_argument(
+        "--environment",
+        "--github-environment",
+        dest="environment",
+        default=os.environ.get("VAPID_GITHUB_ENVIRONMENT", ""),
+        help="GitHub Environment adı (Actions Environments)",
+    )
     p.add_argument("--include-private", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--from-rotate-json", default=None, help="rotate CLI JSON dosyası")
@@ -215,6 +305,7 @@ def main(argv: Optional[list] = None) -> int:
         dry_run=bool(args.dry_run),
         repo=args.repo,
         include_private=bool(args.include_private),
+        environment=(args.environment or "").strip() or None,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if result.get("failed"):

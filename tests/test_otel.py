@@ -12,6 +12,13 @@ from rag.otel import (
 )
 
 
+def test_current_trace_exemplar_none_without_span():
+    from rag.otel import current_trace_exemplar, reset_for_tests
+
+    reset_for_tests()
+    assert current_trace_exemplar() is None
+
+
 def test_otel_disabled_without_endpoint(monkeypatch):
     monkeypatch.delenv("RAG_OTEL_ENDPOINT", raising=False)
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)

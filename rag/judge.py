@@ -259,19 +259,39 @@ def run_judge_file(
     min_accuracy: float = 1.0,
     generate_fn: Optional[Callable[[str], str]] = None,
 ) -> Dict[str, Any]:
-    cases = load_judge_cases(cases_path)
-    results = evaluate_judge_cases(
-        cases,
-        mode=mode,
-        provider=provider,
-        model_name=model_name,
-        generate_fn=generate_fn,
-    )
-    summary = summarize_judge(results)
-    summary["min_accuracy"] = min_accuracy
-    summary["ok"] = summary["accuracy"] >= min_accuracy
-    summary["mode"] = mode
-    return {
-        "summary": summary,
-        "results": [asdict(r) for r in results],
-    }
+    from rag.otel import set_span_attrs, start_span
+
+    with start_span(
+        "rag.judge.run",
+        attributes={
+            "rag.judge.mode": mode,
+            "rag.judge.cases_path": cases_path,
+            "rag.judge.min_accuracy": float(min_accuracy),
+        },
+    ) as span:
+        cases = load_judge_cases(cases_path)
+        set_span_attrs(span, {"rag.judge.case_count": len(cases)})
+        results = evaluate_judge_cases(
+            cases,
+            mode=mode,
+            provider=provider,
+            model_name=model_name,
+            generate_fn=generate_fn,
+        )
+        summary = summarize_judge(results)
+        summary["min_accuracy"] = min_accuracy
+        summary["ok"] = summary["accuracy"] >= min_accuracy
+        summary["mode"] = mode
+        set_span_attrs(
+            span,
+            {
+                "rag.judge.accuracy": float(summary["accuracy"]),
+                "rag.judge.ok": bool(summary["ok"]),
+                "rag.judge.passed": int(summary["passed"]),
+                "rag.judge.failed": int(summary["failed"]),
+            },
+        )
+        return {
+            "summary": summary,
+            "results": [asdict(r) for r in results],
+        }

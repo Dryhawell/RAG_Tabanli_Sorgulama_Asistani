@@ -1186,6 +1186,52 @@ with st.sidebar:
                                 f"{row.get('username') or '-'} · {vals}"
                             )
 
+                st.subheader("Judge soft-fail ack")
+                try:
+                    from rag.judge_alert import (
+                        acknowledge_judge_alert,
+                        load_judge_alert_state,
+                    )
+
+                    jstate = load_judge_alert_state()
+                    if jstate.get("soft_fail"):
+                        if jstate.get("acknowledged"):
+                            st.info(
+                                f"Soft-fail ACK: {jstate.get('acknowledged_by')} · "
+                                f"{jstate.get('acknowledged_at')}"
+                            )
+                            if jstate.get("ack_note"):
+                                st.caption(jstate.get("ack_note"))
+                        else:
+                            st.warning(
+                                f"Aktif soft-fail (source={jstate.get('source')}, "
+                                f"last={jstate.get('last_action')})"
+                            )
+                            ack_note = st.text_input(
+                                "Ack notu",
+                                key="judge_ack_note",
+                                placeholder="inceleme notu",
+                            )
+                            if st.button("Soft-fail acknowledge", key="judge_ack_btn"):
+                                actor = (
+                                    (current_user.username if current_user else "")
+                                    or "admin"
+                                )
+                                res = acknowledge_judge_alert(
+                                    actor=actor,
+                                    note=ack_note or "",
+                                    notify=True,
+                                )
+                                if res.get("ok"):
+                                    st.success("Acknowledge kaydedildi.")
+                                    st.rerun()
+                                else:
+                                    st.error(res.get("error") or "ack başarısız")
+                    else:
+                        st.caption("Aktif soft-fail yok.")
+                except Exception as exc:
+                    st.caption(f"Judge ack paneli: {exc}")
+
     st.header(t("chats"))
     sessions = list_sessions(chat_dir=active_chat_dir)
     session_ids = [s["id"] for s in sessions]
