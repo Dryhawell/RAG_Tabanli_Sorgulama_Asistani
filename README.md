@@ -161,10 +161,12 @@ Grafana'da Prometheus datasource ekleyip `rag_queries_total`, `rag_query_latency
 Judge soft-fail paneli: `grafana/dashboards/rag_judge.json` (provisioning: `grafana/provisioning/dashboards/`).
 Judge Slack alert kuralı: `grafana/alerting/rag_judge_soft_fail.yaml` + CI `scripts/ci_judge_slack_alert.py` (`RAG_JUDGE_SLACK_WEBHOOK`, opsiyonel `RAG_JUDGE_PAGERDUTY_ROUTING_KEY` / `RAG_JUDGE_OPSGENIE_API_KEY`; soft-fail → OK geçişinde auto-resolve, state: `RAG_JUDGE_ALERT_STATE`; manuel ack: `POST /judge/ack` + `RAG_JUDGE_ACK_TOKEN` veya admin UI).
 CI judge state: artifact + `actions/cache` (`metadata/judge_alert_state.json`) ile run'lar arası kalıcılık; opsiyonel harici store: `RAG_JUDGE_ALERT_STATE_URL`.
-Slack ack deep-link: `RAG_JUDGE_ACK_PUBLIC_URL` → `/judge/ack-form`; interactive: `RAG_JUDGE_SLACK_SIGNING_SECRET` + `POST /judge/slack-interactive` (modal: `RAG_JUDGE_SLACK_BOT_TOKEN`).
+Slack ack deep-link: `RAG_JUDGE_ACK_PUBLIC_URL` → `/judge/ack-form`; interactive: `RAG_JUDGE_SLACK_SIGNING_SECRET` + `POST /judge/slack-interactive` (modal: `RAG_JUDGE_SLACK_BOT_TOKEN`; ack thread reply: `RAG_JUDGE_SLACK_CHANNEL` / `RAG_JUDGE_SLACK_THREAD_TS`).
 Observability stack: `docker compose --profile obs up -d` (Prometheus + Alertmanager + Tempo + Grafana).
+Alertmanager Slack: `RAG_ALERTMANAGER_SLACK_WEBHOOK` (+ opsiyonel `RAG_ALERTMANAGER_WEBHOOK_URL`) → `scripts/render_alertmanager_config.sh` (`grafana/alertmanager.yml.template`).
 LLM cost recording rules: `grafana/rules/rag_llm_cost.yml` → `rag:llm_cost_usd_per_hour`.
 Vektör migrasyon: `python -m rag.cli migrate-vector --source faiss --target qdrant` (dual-write: `RAG_VECTOR_DUAL_WRITE=qdrant`).
+Dual-write lag / cutover: `python -m rag.cli migrate-vector --lag-report` · `python -m rag.cli migrate-vector --cutover --target qdrant` (`--force` lag atlar; `--write-env` yolu).
 VAPID üretimi: `python -m rag.cli collab-notifications --generate-vapid`
 VAPID rotate/vault: `python -m rag.cli collab-notifications --rotate-vapid` (Actions: **VAPID Rotate**; secret sync: `GH_PAT` + `--update-github-secrets` + opsiyonel `--vapid-github-environment`)
 Digest alert: `python -m rag.cli collab-notifications --digest-alert-check --digest-alert-all` (cron: `.github/workflows/digest-alert.yml`; tenant webhook: `RAG_DIGEST_ALERT_WEBHOOKS_JSON` veya `metadata/digest_alert_webhooks.json`)
@@ -510,6 +512,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
 - Push: VAPID OIDC / Deploy-key based secret store sync
-- Judge: Slack Block Kit modal ack reply-in-thread
-- Ingest: dual-write lag metrics + cutover CLI
-- Observability: Alertmanager Slack receiver secrets via envsubst
+- Judge: Slack ack thread reply → channel lookup via conversations.history
+- Ingest: dual-write catch-up (missing sources replay) before cutover
+- Observability: Alertmanager config reload / Slack webhook rotation hook

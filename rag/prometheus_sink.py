@@ -31,6 +31,9 @@ _judge_soft_fail_total = None
 _judge_runs_total = None
 _llm_tokens_total = None
 _llm_calls_total = None
+_dual_write_lag = None
+_dual_write_error_last: dict = {}
+_dual_write_errors = None
 
 
 def prometheus_available() -> bool:
@@ -51,6 +54,7 @@ def _ensure_metrics():
     global _push_revoked_total, _push_prune_total
     global _judge_accuracy, _judge_soft_fail_total, _judge_runs_total
     global _llm_tokens_total, _llm_calls_total
+    global _dual_write_lag, _dual_write_errors
     if _events_total is not None:
         return
     if not prometheus_available():
@@ -116,6 +120,16 @@ def _ensure_metrics():
         "rag_llm_calls_total",
         "LLM çağrı sayısı",
         ["provider", "model"],
+    )
+    _dual_write_lag = Gauge(
+        "rag_vector_dual_write_lag",
+        "Primary-secondary chunk size farkı (dual-write)",
+        ["secondary_backend"],
+    )
+    _dual_write_errors = Counter(
+        "rag_vector_dual_write_errors_total",
+        "Dual-write secondary hata sayısı",
+        ["secondary_backend"],
     )
 
 
@@ -229,6 +243,24 @@ def observe_metric(
                     _llm_tokens_total.labels(
                         provider=provider, model=model, token_type=token_type
                     ).inc(n)
+        elif kind == "vector_dual_write_lag":
+            assert _dual_write_lag is not None
+            assert _dual_write_errors is not None
+            secondary = str(vals.get("secondary_backend") or "secondary")
+            try:
+                _dual_write_lag.labels(secondary_backend=secondary).set(
+                    float(vals.get("lag") or 0)
+                )
+            except (TypeError, ValueError):
+                pass
+            try:
+                err_n = int(vals.get("secondary_error_count") or 0)
+            except (TypeError, ValueError):
+                err_n = 0
+            last = int(_dual_write_error_last.get(secondary, 0) or 0)
+            if err_n > last:
+                _dual_write_errors.labels(secondary_backend=secondary).inc(err_n - last)
+            _dual_write_error_last[secondary] = err_n
 
 
 def render_prometheus() -> bytes:

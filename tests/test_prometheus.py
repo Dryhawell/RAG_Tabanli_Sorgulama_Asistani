@@ -36,6 +36,29 @@ def test_prometheus_observe_and_dump(monkeypatch):
         },
         enabled=True,
     )
+    observe_metric(
+        "vector_dual_write_lag",
+        values={
+            "lag": 2,
+            "primary_size": 10,
+            "secondary_size": 8,
+            "secondary_error_count": 1,
+            "secondary_backend": "qdrant",
+            "ok": False,
+        },
+        enabled=True,
+    )
+    # aynı error_count tekrar → counter artmamalı (delta)
+    observe_metric(
+        "vector_dual_write_lag",
+        values={
+            "lag": 0,
+            "secondary_error_count": 1,
+            "secondary_backend": "qdrant",
+            "ok": True,
+        },
+        enabled=True,
+    )
     body = render_prometheus().decode("utf-8")
     assert "rag_queries_total" in body
     assert "rag_ingest_total" in body
@@ -44,6 +67,8 @@ def test_prometheus_observe_and_dump(monkeypatch):
     assert "rag_judge_runs_total" in body
     assert "rag_llm_tokens_total" in body
     assert "rag_llm_calls_total" in body
+    assert "rag_vector_dual_write_lag" in body
+    assert "rag_vector_dual_write_errors_total" in body
 
 
 def test_record_metric_forwards_to_prometheus(tmp_path, monkeypatch):

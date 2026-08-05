@@ -13,6 +13,7 @@ __pycache__/
 .env
 *.vapid.env
 vapid_keys.json
+grafana/alertmanager.rendered.yml
 
 # Runtime data (not tracked)
 data/

@@ -411,6 +411,26 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             notify=False,
         )
         result["mode"] = "modal_submit"
+        if result.get("ok"):
+            thread = post_judge_ack_thread_reply(
+                actor=actor,
+                note=note,
+                already=bool(result.get("already")),
+                channel_id=str(
+                    ((payload.get("container") or {}).get("channel_id"))
+                    or ((payload.get("channel") or {}).get("id"))
+                    or ""
+                )
+                or None,
+                thread_ts=str(
+                    ((payload.get("container") or {}).get("thread_ts"))
+                    or ((payload.get("message") or {}).get("ts"))
+                    or ((payload.get("container") or {}).get("message_ts"))
+                    or ""
+                )
+                or None,
+            )
+            result["thread_reply"] = thread
         return result
 
     actions = payload.get("actions") or []
@@ -457,7 +477,87 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
         notify=False,
     )
     result["mode"] = "instant"
+    if result.get("ok"):
+        result["thread_reply"] = post_judge_ack_thread_reply(
+            actor=actor,
+            note=note,
+            already=bool(result.get("already")),
+            channel_id=str(((payload.get("channel") or {}).get("id")) or "") or None,
+            thread_ts=str(
+                ((payload.get("message") or {}).get("ts"))
+                or ((payload.get("container") or {}).get("message_ts"))
+                or ""
+            )
+            or None,
+        )
     return result
+
+
+def post_judge_ack_thread_reply(
+    *,
+    actor: str,
+    note: str = "",
+    already: bool = False,
+    channel_id: Optional[str] = None,
+    thread_ts: Optional[str] = None,
+    bot_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Modal/instant ack sonrası Slack thread reply (chat.postMessage)."""
+    token = (
+        bot_token
+        if bot_token is not None
+        else os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
+    )
+    channel = (
+        (channel_id or "").strip()
+        or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "").strip()
+    )
+    ts = (
+        (thread_ts or "").strip()
+        or os.environ.get("RAG_JUDGE_SLACK_THREAD_TS", "").strip()
+    )
+    if not token:
+        return {"ok": False, "error": "bot_token_missing", "skipped": True}
+    if not channel:
+        return {"ok": False, "error": "channel_missing", "skipped": True}
+    status = "already acknowledged" if already else "acknowledged"
+    text = f"Judge soft-fail {status} by *{actor}*"
+    if note:
+        text += f"\n> {note}"
+    body: Dict[str, Any] = {
+        "channel": channel,
+        "text": text,
+        "mrkdwn": True,
+    }
+    if ts:
+        body["thread_ts"] = ts
+    try:
+        import requests
+
+        r = requests.post(
+            "https://slack.com/api/chat.postMessage",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            json=body,
+            timeout=10,
+        )
+        data = r.json() if r.content else {}
+        if r.status_code >= 400 or not data.get("ok"):
+            return {
+                "ok": False,
+                "error": str(data.get("error") or f"http_{r.status_code}"),
+                "response": data,
+            }
+        return {
+            "ok": True,
+            "ts": data.get("ts"),
+            "channel": data.get("channel") or channel,
+            "thread_ts": ts or None,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__}
 
 
 def build_slack_resolve_payload(report: Dict[str, Any], *, source: str) -> Dict[str, Any]:

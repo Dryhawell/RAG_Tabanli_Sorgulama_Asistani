@@ -78,3 +78,82 @@ def test_migrate_faiss_to_qdrant(tmp_path, monkeypatch):
     assert report["verify"]["size_match"] is True
     assert report["ok"] is True
     assert vector_backend() in {"faiss", "qdrant"}
+
+
+def test_dual_write_lag_report_ok():
+    primary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    secondary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    dual = DualWriteIndex(primary, secondary, secondary_backend="faiss")
+    vecs = np.eye(1, 3, dtype=np.float32)
+    dual.add(vecs, ["hello world text"], [_meta("a.txt", 0, "u1")])
+    from rag.store import dual_write_lag_report
+
+    report = dual_write_lag_report(dual)
+    assert report["dual_write"] is True
+    assert report["lag"] == 0
+    assert report["ok"] is True
+    assert report["primary_size"] == 1
+    assert report["secondary_size"] == 1
+
+
+def test_dual_write_lag_when_secondary_behind():
+    primary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    secondary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    dual = DualWriteIndex(primary, secondary, secondary_backend="faiss")
+    vecs = np.eye(1, 3, dtype=np.float32)
+    dual.add(vecs, ["hello world text"], [_meta("a.txt", 0, "u1")])
+    # secondary'yi manuel olarak geride bırak
+    dual.secondary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    from rag.store import dual_write_lag_report
+
+    report = dual_write_lag_report(dual)
+    assert report["lag"] == 1
+    assert report["ok"] is False
+    assert "a.txt" in report["missing_sources"]
+
+
+def test_write_cutover_env(tmp_path):
+    from rag.store import write_cutover_env
+
+    path = write_cutover_env(
+        target_backend="qdrant",
+        path=str(tmp_path / "cutover.env"),
+        clear_dual_write=True,
+    )
+    text = open(path, encoding="utf-8").read()
+    assert "RAG_VECTOR_BACKEND=qdrant" in text
+    assert "RAG_VECTOR_DUAL_WRITE=" in text
+
+
+def test_migrate_vector_cutover_cli(tmp_path, monkeypatch):
+    from rag.cli import build_parser
+
+    monkeypatch.setattr("rag.cli.INDEX_PATH", str(tmp_path / "faiss.index"))
+    monkeypatch.setattr("rag.cli.DOCSTORE_PATH", str(tmp_path / "docstore.json"))
+    monkeypatch.setattr("rag.cli.METADATA_DIR", str(tmp_path))
+    # boş faiss index oluştur
+    idx = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    idx.save(str(tmp_path / "faiss.index"), str(tmp_path / "docstore.json"))
+    parser = build_parser()
+    out = str(tmp_path / "out.env")
+    args = parser.parse_args(
+        ["migrate-vector", "--cutover", "--target", "qdrant", "--write-env", out]
+    )
+    rc = args.func(args)
+    assert rc == 0
+    assert open(out, encoding="utf-8").read().count("RAG_VECTOR_BACKEND=qdrant") == 1
+
+
+def test_migrate_vector_lag_report_cli(tmp_path, monkeypatch, capsys):
+    from rag.cli import build_parser
+
+    monkeypatch.setattr("rag.cli.INDEX_PATH", str(tmp_path / "faiss.index"))
+    monkeypatch.setattr("rag.cli.DOCSTORE_PATH", str(tmp_path / "docstore.json"))
+    idx = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    idx.save(str(tmp_path / "faiss.index"), str(tmp_path / "docstore.json"))
+    parser = build_parser()
+    args = parser.parse_args(["migrate-vector", "--lag-report"])
+    rc = args.func(args)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "dual_write" in out

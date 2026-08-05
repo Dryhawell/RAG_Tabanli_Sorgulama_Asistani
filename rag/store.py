@@ -234,6 +234,99 @@ class DualWriteIndex:
             self.secondary.save(sec_idx, sec_doc)
         except Exception as exc:
             self._secondary_errors.append(f"save:{type(exc).__name__}")
+        try:
+            report_dual_write_lag(self)
+        except Exception:
+            pass
+
+    def lag_report(self) -> Dict[str, Any]:
+        return dual_write_lag_report(self)
+
+
+def dual_write_lag_report(index: Any) -> Dict[str, Any]:
+    """Primary vs secondary size/sources farkı + hata özeti."""
+    if not isinstance(index, DualWriteIndex):
+        return {
+            "dual_write": False,
+            "ok": True,
+            "reason": "not_dual_write",
+        }
+    primary_size = int(getattr(index.primary, "size", 0) or 0)
+    secondary_size = int(getattr(index.secondary, "size", 0) or 0)
+    try:
+        primary_sources = set(index.primary.list_sources())
+    except Exception:
+        primary_sources = set()
+    try:
+        secondary_sources = set(index.secondary.list_sources())
+    except Exception:
+        secondary_sources = set()
+    lag = primary_size - secondary_size
+    missing = sorted(primary_sources - secondary_sources)
+    extra = sorted(secondary_sources - primary_sources)
+    errors = list(getattr(index, "_secondary_errors", []) or [])
+    ok = lag == 0 and not missing and not extra and not errors
+    return {
+        "dual_write": True,
+        "ok": ok,
+        "primary_backend": type(index.primary).__name__,
+        "secondary_backend": index.secondary_backend or type(index.secondary).__name__,
+        "primary_size": primary_size,
+        "secondary_size": secondary_size,
+        "lag": lag,
+        "primary_sources": len(primary_sources),
+        "secondary_sources": len(secondary_sources),
+        "missing_sources": missing,
+        "extra_sources": extra,
+        "secondary_errors": errors[-20:],
+        "secondary_error_count": len(errors),
+    }
+
+
+def report_dual_write_lag(index: Any) -> Dict[str, Any]:
+    """Lag raporunu JSONL + Prometheus'a yazar."""
+    report = dual_write_lag_report(index)
+    if not report.get("dual_write"):
+        return report
+    try:
+        from rag.metrics import record_metric
+
+        record_metric(
+            "vector_dual_write_lag",
+            values={
+                "lag": report.get("lag"),
+                "primary_size": report.get("primary_size"),
+                "secondary_size": report.get("secondary_size"),
+                "secondary_error_count": report.get("secondary_error_count"),
+                "ok": report.get("ok"),
+                "secondary_backend": report.get("secondary_backend"),
+                "missing_sources": len(report.get("missing_sources") or []),
+            },
+        )
+    except Exception:
+        pass
+    return report
+
+
+def write_cutover_env(
+    *,
+    target_backend: str,
+    path: str,
+    clear_dual_write: bool = True,
+) -> str:
+    """Cutover için önerilen env satırlarını dosyaya yazar."""
+    target = (target_backend or "qdrant").strip().lower() or "qdrant"
+    lines = [
+        f"# RAG vector cutover — generated",
+        f"RAG_VECTOR_BACKEND={target}",
+    ]
+    if clear_dual_write:
+        lines.append("RAG_VECTOR_DUAL_WRITE=")
+        lines.append("RAG_VECTOR_MIGRATION_TARGET=")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return path
 
 
 def _reconstruct_vector(index: VectorIndex, cid: int) -> Optional[np.ndarray]:

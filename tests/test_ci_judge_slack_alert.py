@@ -317,6 +317,7 @@ def test_slack_modal_submission_ack(tmp_path, monkeypatch):
         state,
     )
     monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", state)
+    monkeypatch.delenv("RAG_JUDGE_SLACK_BOT_TOKEN", raising=False)
     payload = {
         "type": "view_submission",
         "user": {"username": "ops"},
@@ -335,6 +336,85 @@ def test_slack_modal_submission_ack(tmp_path, monkeypatch):
     assert result["ok"] is True
     assert result["mode"] == "modal_submit"
     assert result["state"]["ack_note"] == "looking into it"
+    assert result["thread_reply"]["skipped"] is True
+
+
+def test_post_judge_ack_thread_reply(monkeypatch):
+    from rag.judge_alert import post_judge_ack_thread_reply
+
+    calls = []
+
+    def fake_post(url, headers=None, json=None, timeout=10):
+        calls.append({"url": url, "headers": headers, "json": json})
+
+        class R:
+            status_code = 200
+            content = b'{"ok":true,"ts":"9.9"}'
+
+            def json(self):
+                return {"ok": True, "ts": "9.9"}
+
+        return R()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    out = post_judge_ack_thread_reply(
+        actor="ops",
+        note="looking",
+        channel_id="C123",
+        thread_ts="1.2",
+        bot_token="xoxb-test",
+    )
+    assert out["ok"] is True
+    assert calls[0]["url"].endswith("chat.postMessage")
+    assert calls[0]["json"]["channel"] == "C123"
+    assert calls[0]["json"]["thread_ts"] == "1.2"
+    assert "ops" in calls[0]["json"]["text"]
+
+
+def test_modal_submit_posts_thread_reply(tmp_path, monkeypatch):
+    from rag.judge_alert import handle_slack_interactive_ack, save_judge_alert_state
+
+    state = str(tmp_path / "state.json")
+    save_judge_alert_state(
+        {"soft_fail": True, "source": "report", "acknowledged": False},
+        state,
+    )
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", state)
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    calls = []
+
+    def fake_post(url, headers=None, json=None, timeout=10):
+        calls.append({"url": url, "json": json})
+
+        class R:
+            status_code = 200
+            content = b'{"ok":true}'
+
+            def json(self):
+                return {"ok": True}
+
+        return R()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    payload = {
+        "type": "view_submission",
+        "user": {"username": "ops"},
+        "channel": {"id": "C9"},
+        "container": {"channel_id": "C9", "message_ts": "7.7"},
+        "view": {
+            "callback_id": "judge_ack_modal",
+            "state": {
+                "values": {
+                    "ack_note_block": {"ack_note": {"value": "on it"}}
+                }
+            },
+        },
+    }
+    result = handle_slack_interactive_ack(payload)
+    assert result["ok"] is True
+    assert result["thread_reply"]["ok"] is True
+    assert calls and calls[0]["json"]["thread_ts"] == "7.7"
+    assert calls[0]["json"]["channel"] == "C9"
 
 
 def test_verify_slack_request_signature():

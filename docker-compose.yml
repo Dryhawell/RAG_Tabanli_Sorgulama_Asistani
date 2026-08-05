@@ -51,13 +51,26 @@ services:
     ports:
       - "9093:9093"
     volumes:
-      - ./grafana/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./grafana/alertmanager.yml.template:/etc/alertmanager/alertmanager.yml.template:ro
+      - ./scripts/render_alertmanager_config.sh:/render.sh:ro
+      - alertmanager_cfg:/etc/alertmanager
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - --config.file=/etc/alertmanager/alertmanager.yml
-      - --storage.path=/alertmanager
+      - |
+        apk add --no-cache gettext >/dev/null 2>&1 || true
+        TEMPLATE=/etc/alertmanager/alertmanager.yml.template \
+        OUTPUT=/etc/alertmanager/alertmanager.yml \
+        ALERTMANAGER_TEMPLATE=/etc/alertmanager/alertmanager.yml.template \
+        ALERTMANAGER_OUTPUT=/etc/alertmanager/alertmanager.yml \
+        /render.sh
+        exec /bin/alertmanager \
+          --config.file=/etc/alertmanager/alertmanager.yml \
+          --storage.path=/alertmanager
     environment:
       RAG_ALERTMANAGER_SLACK_WEBHOOK: ${RAG_ALERTMANAGER_SLACK_WEBHOOK:-}
-      RAG_ALERTMANAGER_WEBHOOK_URL: ${RAG_ALERTMANAGER_WEBHOOK_URL:-}
+      RAG_ALERTMANAGER_WEBHOOK_URL: ${RAG_ALERTMANAGER_WEBHOOK_URL:-http://host.docker.internal:9999/alertmanager-default}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   tempo:
     image: grafana/tempo:2.6.1
@@ -89,3 +102,4 @@ services:
 
 volumes:
   qdrant_data:
+  alertmanager_cfg:

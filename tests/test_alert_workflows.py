@@ -50,10 +50,41 @@ def test_alertmanager_and_llm_cost_rules():
     am = Path("grafana/alertmanager.yml").read_text(encoding="utf-8")
     assert "judge-webhook" in am
     assert "rag-webhook" in am
+    tmpl = Path("grafana/alertmanager.yml.template").read_text(encoding="utf-8")
+    assert "${RAG_ALERTMANAGER_SLACK_WEBHOOK}" in tmpl
+    assert "${RAG_ALERTMANAGER_WEBHOOK_URL}" in tmpl
+    assert "judge-slack" in tmpl
+    assert Path("scripts/render_alertmanager_config.sh").is_file()
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
     assert "alertmanager:" in compose
+    assert "alertmanager.yml.template" in compose
+    assert "render_alertmanager_config.sh" in compose
+    assert "RAG_ALERTMANAGER_SLACK_WEBHOOK" in compose
     dash = Path("grafana/dashboards/rag_judge.json").read_text(encoding="utf-8")
     assert "rag:llm_cost_usd_1h" in dash
+
+
+def test_render_alertmanager_config_script(tmp_path, monkeypatch):
+    import os
+    import subprocess
+
+    out = tmp_path / "am.yml"
+    env = os.environ.copy()
+    env["RAG_ALERTMANAGER_SLACK_WEBHOOK"] = "https://hooks.slack.test/T/B/xxx"
+    env["RAG_ALERTMANAGER_WEBHOOK_URL"] = "http://example.test/hook"
+    env["ALERTMANAGER_OUTPUT"] = str(out)
+    rc = subprocess.run(
+        ["sh", "scripts/render_alertmanager_config.sh"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rc.returncode == 0, rc.stderr
+    text = out.read_text(encoding="utf-8")
+    assert "https://hooks.slack.test/T/B/xxx" in text
+    assert "http://example.test/hook" in text
+    assert "${RAG_" not in text
 
 
 def test_digest_alert_workflow_yaml():

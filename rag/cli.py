@@ -176,7 +176,64 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
 
 
 def cmd_migrate_vector(args: argparse.Namespace) -> int:
-    from rag.store import migrate_vector_store
+    from rag.store import (
+        DualWriteIndex,
+        create_index,
+        dual_write_backend,
+        dual_write_lag_report,
+        load_index,
+        migrate_vector_store,
+        report_dual_write_lag,
+        write_cutover_env,
+    )
+
+    if getattr(args, "lag_report", False):
+        index = load_index(INDEX_PATH, DOCSTORE_PATH)
+        report = report_dual_write_lag(index)
+        if not report.get("dual_write"):
+            secondary = (getattr(args, "target", None) or dual_write_backend() or "qdrant")
+            try:
+                if not isinstance(index, DualWriteIndex) and secondary:
+                    sec = create_index(
+                        dim=getattr(index, "dim", 384),
+                        embedding_model=getattr(index, "embedding_model", None),
+                        backend=secondary,
+                        dual_write="",
+                    )
+                    wrapped = DualWriteIndex(index, sec, secondary_backend=secondary)
+                    report = dual_write_lag_report(wrapped)
+            except Exception as exc:
+                report = {"dual_write": False, "ok": False, "error": str(exc)}
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok", False) or report.get("reason") == "not_dual_write" else 1
+
+    if getattr(args, "cutover", False):
+        target = (args.target or "qdrant").strip().lower()
+        out = args.write_env or os.path.join(METADATA_DIR, f"vector_cutover_{target}.env")
+        index = load_index(INDEX_PATH, DOCSTORE_PATH)
+        lag = dual_write_lag_report(index)
+        if (
+            lag.get("dual_write")
+            and not lag.get("ok")
+            and not getattr(args, "force", False)
+        ):
+            print(
+                json.dumps(
+                    {"ok": False, "error": "lag_not_zero", "lag": lag},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 1
+        path = write_cutover_env(target_backend=target, path=out, clear_dual_write=True)
+        print(
+            json.dumps(
+                {"ok": True, "cutover_env": path, "target": target, "lag": lag},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
 
     report = migrate_vector_store(
         source_backend=args.source,
@@ -1136,6 +1193,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-verify",
         action="store_true",
         help="Kaynak/hedef size+sources doğrulamasını atla",
+    )
+    p_mig.add_argument(
+        "--lag-report",
+        action="store_true",
+        help="Dual-write lag raporu (primary vs secondary size/sources)",
+    )
+    p_mig.add_argument(
+        "--cutover",
+        action="store_true",
+        help="Hedef backend için cutover env dosyası yaz (lag=0 gerekir)",
+    )
+    p_mig.add_argument(
+        "--force",
+        action="store_true",
+        help="Cutover'da lag kontrolünü atla",
+    )
+    p_mig.add_argument(
+        "--write-env",
+        default=None,
+        help="Cutover env çıktı yolu (varsayılan metadata/vector_cutover_<target>.env)",
     )
     p_mig.set_defaults(func=cmd_migrate_vector)
 
