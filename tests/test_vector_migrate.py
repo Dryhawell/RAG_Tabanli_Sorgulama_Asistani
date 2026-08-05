@@ -112,6 +112,29 @@ def test_dual_write_lag_when_secondary_behind():
     assert "a.txt" in report["missing_sources"]
 
 
+def test_dual_write_catch_up_replays_missing_sources():
+    from rag.store import dual_write_catch_up, dual_write_lag_report
+
+    primary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    secondary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    dual = DualWriteIndex(primary, secondary, secondary_backend="faiss")
+    vecs = np.eye(2, 3, dtype=np.float32)
+    dual.add(
+        vecs,
+        ["hello world text", "another chunk here"],
+        [_meta("a.txt", 0, "u0"), _meta("b.txt", 0, "u1")],
+    )
+    dual.secondary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    assert dual_write_lag_report(dual)["ok"] is False
+    report = dual_write_catch_up(dual)
+    assert report["ok"] is True
+    assert set(report["fixed_sources"]) == {"a.txt", "b.txt"}
+    assert report["copied_chunks"] == 2
+    assert report["lag_after"]["ok"] is True
+    assert dual.secondary.size == 2
+    assert sorted(dual.secondary.list_sources()) == ["a.txt", "b.txt"]
+
+
 def test_write_cutover_env(tmp_path):
     from rag.store import write_cutover_env
 

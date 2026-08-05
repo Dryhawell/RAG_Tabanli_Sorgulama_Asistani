@@ -87,6 +87,48 @@ def test_render_alertmanager_config_script(tmp_path, monkeypatch):
     assert "${RAG_" not in text
 
 
+def test_rotate_alertmanager_slack_webhook(tmp_path, monkeypatch):
+    from rag.alertmanager_ops import rotate_alertmanager_slack_webhook
+
+    out = tmp_path / "am.yml"
+    env_path = tmp_path / "am.env"
+    reloads = []
+
+    def fake_reload(*, url=None, timeout=5.0):
+        reloads.append(url)
+        return {"ok": True, "status": 200, "url": url or "http://127.0.0.1:9093/-/reload"}
+
+    monkeypatch.setattr("rag.alertmanager_ops.reload_alertmanager", fake_reload)
+    report = rotate_alertmanager_slack_webhook(
+        "https://hooks.slack.test/new/wh",
+        write_env=str(env_path),
+        output=str(out),
+        reload=True,
+        reload_url="http://am.test/-/reload",
+    )
+    assert report["ok"] is True
+    assert "https://hooks.slack.test/new/wh" in env_path.read_text(encoding="utf-8")
+    assert "https://hooks.slack.test/new/wh" in out.read_text(encoding="utf-8")
+    assert reloads == ["http://am.test/-/reload"]
+
+
+def test_cli_alertmanager_parser():
+    from rag.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "alertmanager",
+            "--rotate-slack-webhook",
+            "https://hooks.slack.test/x",
+            "--no-reload",
+        ]
+    )
+    assert args.command == "alertmanager"
+    assert args.rotate_slack_webhook.startswith("https://")
+    assert args.no_reload is True
+
+
 def test_digest_alert_workflow_yaml():
     path = Path(".github/workflows/digest-alert.yml")
     text = path.read_text(encoding="utf-8")

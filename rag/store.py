@@ -329,6 +329,99 @@ def write_cutover_env(
     return path
 
 
+def _sources_needing_catch_up(index: "DualWriteIndex") -> List[str]:
+    lag = dual_write_lag_report(index)
+    needed = list(lag.get("missing_sources") or [])
+    try:
+        primary_sources = list(index.primary.list_sources())
+    except Exception:
+        primary_sources = []
+    for src in primary_sources:
+        if src in needed:
+            continue
+        try:
+            p_n = len(index.primary.ids_for_source(src))
+        except Exception:
+            continue
+        try:
+            s_n = len(index.secondary.ids_for_source(src))
+        except Exception:
+            s_n = -1
+        if p_n != s_n:
+            needed.append(src)
+    return needed
+
+
+def dual_write_catch_up(
+    index: Any,
+    *,
+    sources: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """Primary'deki eksik/uyumsuz kaynakları secondary'ye yeniden yazar."""
+    if not isinstance(index, DualWriteIndex):
+        return {"ok": False, "error": "not_dual_write", "dual_write": False}
+    lag_before = dual_write_lag_report(index)
+    to_fix = (
+        [str(s) for s in sources if str(s).strip()]
+        if sources is not None
+        else _sources_needing_catch_up(index)
+    )
+    fixed: List[str] = []
+    failed: List[Dict[str, Any]] = []
+    copied_chunks = 0
+    text_map = getattr(index.primary, "_id_to_text", {}) or {}
+    meta_map = getattr(index.primary, "_id_to_meta", {}) or {}
+
+    for src in to_fix:
+        try:
+            ids = list(index.primary.ids_for_source(src))
+        except Exception as exc:
+            failed.append({"source": src, "error": f"ids:{type(exc).__name__}"})
+            continue
+        texts: List[str] = []
+        metas: List[Any] = []
+        rows: List[np.ndarray] = []
+        for cid in ids:
+            text = text_map.get(cid)
+            meta = meta_map.get(cid)
+            vec = _reconstruct_vector(index.primary, int(cid))
+            if text is None or meta is None or vec is None:
+                continue
+            arr = np.asarray(vec, dtype=np.float32)
+            if arr.ndim == 1:
+                arr = arr.reshape(1, -1)
+            texts.append(text)
+            metas.append(meta)
+            rows.append(arr)
+        if not texts:
+            failed.append({"source": src, "error": "empty_or_unreconstructable"})
+            continue
+        emb = np.vstack(rows)
+        try:
+            index.secondary.replace_source(src, emb, texts, metas)
+        except Exception:
+            try:
+                index.secondary.remove_source(src)
+                index.secondary.add(emb, texts, metas)
+            except Exception as exc:
+                failed.append({"source": src, "error": type(exc).__name__})
+                index._secondary_errors.append(f"catch_up:{type(exc).__name__}")
+                continue
+        fixed.append(src)
+        copied_chunks += len(texts)
+
+    lag_after = report_dual_write_lag(index)
+    return {
+        "ok": bool(lag_after.get("ok")) and not failed,
+        "dual_write": True,
+        "requested_sources": to_fix,
+        "fixed_sources": fixed,
+        "copied_chunks": copied_chunks,
+        "failed": failed,
+        "lag_before": lag_before,
+        "lag_after": lag_after,
+    }
+
 def _reconstruct_vector(index: VectorIndex, cid: int) -> Optional[np.ndarray]:
     try:
         if hasattr(index, "idmap"):

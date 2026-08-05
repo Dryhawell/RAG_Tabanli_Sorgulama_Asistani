@@ -247,15 +247,25 @@ def build_slack_payload(report: Dict[str, Any], *, source: str) -> Dict[str, Any
     return {"text": text, "blocks": blocks}
 
 
-def build_ack_modal_view(*, source: str = "report") -> Dict[str, Any]:
+def build_ack_modal_view(
+    *,
+    source: str = "report",
+    channel_id: Optional[str] = None,
+    message_ts: Optional[str] = None,
+) -> Dict[str, Any]:
     """Slack Block Kit modal: note alanı ile acknowledge."""
+    meta: Dict[str, Any] = {"source": source}
+    if channel_id:
+        meta["channel_id"] = str(channel_id)
+    if message_ts:
+        meta["message_ts"] = str(message_ts)
     return {
         "type": "modal",
         "callback_id": "judge_ack_modal",
         "title": {"type": "plain_text", "text": "Judge soft-fail ACK"},
         "submit": {"type": "plain_text", "text": "Acknowledge"},
         "close": {"type": "plain_text", "text": "Cancel"},
-        "private_metadata": json.dumps({"source": source}, ensure_ascii=False),
+        "private_metadata": json.dumps(meta, ensure_ascii=False),
         "blocks": [
             {
                 "type": "input",
@@ -274,6 +284,26 @@ def build_ack_modal_view(*, source: str = "report") -> Dict[str, Any]:
             }
         ],
     }
+
+
+def parse_ack_modal_private_metadata(payload: Dict[str, Any]) -> Dict[str, str]:
+    """view.private_metadata → channel_id / message_ts / source."""
+    view = payload.get("view") or {}
+    raw = str(view.get("private_metadata") or "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for key in ("source", "channel_id", "message_ts"):
+        val = str(data.get(key) or "").strip()
+        if val:
+            out[key] = val
+    return out
 
 
 def open_slack_modal(
@@ -412,18 +442,21 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
         result["mode"] = "modal_submit"
         if result.get("ok"):
+            meta = parse_ack_modal_private_metadata(payload)
             thread = post_judge_ack_thread_reply(
                 actor=actor,
                 note=note,
                 already=bool(result.get("already")),
                 channel_id=str(
-                    ((payload.get("container") or {}).get("channel_id"))
+                    meta.get("channel_id")
+                    or ((payload.get("container") or {}).get("channel_id"))
                     or ((payload.get("channel") or {}).get("id"))
                     or ""
                 )
                 or None,
                 thread_ts=str(
-                    ((payload.get("container") or {}).get("thread_ts"))
+                    meta.get("message_ts")
+                    or ((payload.get("container") or {}).get("thread_ts"))
                     or ((payload.get("message") or {}).get("ts"))
                     or ((payload.get("container") or {}).get("message_ts"))
                     or ""
@@ -444,22 +477,37 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
         trigger_id = str(payload.get("trigger_id") or "").strip()
         source = "report"
         try:
-            # private metadata yok; alert state kaynağını kullan
             st = load_judge_alert_state(
                 os.environ.get("RAG_JUDGE_ALERT_STATE", "").strip() or None
             )
             source = str(st.get("source") or "report")
         except Exception:
             pass
+        channel_id = str(
+            ((payload.get("channel") or {}).get("id"))
+            or ((payload.get("container") or {}).get("channel_id"))
+            or ""
+        ).strip() or None
+        message_ts = str(
+            ((payload.get("message") or {}).get("ts"))
+            or ((payload.get("container") or {}).get("message_ts"))
+            or ""
+        ).strip() or None
         opened = open_slack_modal(
             trigger_id=trigger_id,
-            view=build_ack_modal_view(source=source),
+            view=build_ack_modal_view(
+                source=source,
+                channel_id=channel_id,
+                message_ts=message_ts,
+            ),
         )
         return {
             "ok": bool(opened.get("ok")),
             "mode": "modal_open",
             "error": opened.get("error"),
             "opened": opened,
+            "channel_id": channel_id,
+            "message_ts": message_ts,
         }
 
     if "judge_ack_interactive" not in action_ids and ptype == "block_actions":
@@ -493,6 +541,122 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def slack_api(
+    method: str,
+    *,
+    bot_token: str,
+    json_body: Optional[Dict[str, Any]] = None,
+    params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Slack Web API (Bearer) ince sarmalayıcı."""
+    token = (bot_token or "").strip()
+    if not token:
+        return {"ok": False, "error": "bot_token_missing"}
+    name = (method or "").strip().lstrip("/")
+    if not name:
+        return {"ok": False, "error": "method_missing"}
+    try:
+        import requests
+
+        r = requests.post(
+            f"https://slack.com/api/{name}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            json=json_body or {},
+            params=params,
+            timeout=15,
+        )
+        data = r.json() if r.content else {}
+        if r.status_code >= 400:
+            return {
+                "ok": False,
+                "error": str(data.get("error") or f"http_{r.status_code}"),
+                "response": data,
+            }
+        if not isinstance(data, dict):
+            return {"ok": False, "error": "invalid_response"}
+        return data
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__}
+
+
+def lookup_slack_channel_for_ts(
+    *,
+    thread_ts: str,
+    bot_token: Optional[str] = None,
+    channel_hint: Optional[str] = None,
+    max_channels: int = 40,
+) -> Dict[str, Any]:
+    """conversations.history / list ile message_ts için kanal bul."""
+    token = (
+        bot_token
+        if bot_token is not None
+        else os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
+    )
+    ts = (thread_ts or "").strip()
+    if not token:
+        return {"ok": False, "error": "bot_token_missing"}
+    if not ts:
+        return {"ok": False, "error": "thread_ts_missing"}
+
+    def _history_has(channel: str) -> bool:
+        hist = slack_api(
+            "conversations.history",
+            bot_token=token,
+            json_body={
+                "channel": channel,
+                "latest": ts,
+                "oldest": ts,
+                "inclusive": True,
+                "limit": 1,
+            },
+        )
+        if not hist.get("ok"):
+            return False
+        messages = hist.get("messages") or []
+        return any(str((m or {}).get("ts") or "") == ts for m in messages if isinstance(m, dict))
+
+    hint = (channel_hint or "").strip()
+    if hint and _history_has(hint):
+        return {"ok": True, "channel": hint, "via": "hint"}
+
+    cursor = None
+    scanned = 0
+    while scanned < max(1, int(max_channels)):
+        body: Dict[str, Any] = {
+            "types": "public_channel,private_channel",
+            "exclude_archived": True,
+            "limit": min(100, max(1, int(max_channels) - scanned)),
+        }
+        if cursor:
+            body["cursor"] = cursor
+        listed = slack_api("conversations.list", bot_token=token, json_body=body)
+        if not listed.get("ok"):
+            return {
+                "ok": False,
+                "error": str(listed.get("error") or "conversations_list_failed"),
+                "response": listed,
+            }
+        channels = listed.get("channels") or []
+        for ch in channels:
+            if not isinstance(ch, dict):
+                continue
+            cid = str(ch.get("id") or "").strip()
+            if not cid:
+                continue
+            scanned += 1
+            if _history_has(cid):
+                return {"ok": True, "channel": cid, "via": "conversations.history"}
+            if scanned >= max_channels:
+                break
+        cursor = ((listed.get("response_metadata") or {}).get("next_cursor") or "").strip()
+        if not cursor:
+            break
+    return {"ok": False, "error": "channel_not_found", "scanned": scanned}
+
+
 def post_judge_ack_thread_reply(
     *,
     actor: str,
@@ -518,8 +682,16 @@ def post_judge_ack_thread_reply(
     )
     if not token:
         return {"ok": False, "error": "bot_token_missing", "skipped": True}
+    lookup: Optional[Dict[str, Any]] = None
+    if not channel and ts:
+        lookup = lookup_slack_channel_for_ts(thread_ts=ts, bot_token=token)
+        if lookup.get("ok"):
+            channel = str(lookup.get("channel") or "").strip()
     if not channel:
-        return {"ok": False, "error": "channel_missing", "skipped": True}
+        out = {"ok": False, "error": "channel_missing", "skipped": True}
+        if lookup is not None:
+            out["lookup"] = lookup
+        return out
     status = "already acknowledged" if already else "acknowledged"
     text = f"Judge soft-fail {status} by *{actor}*"
     if note:
@@ -532,32 +704,23 @@ def post_judge_ack_thread_reply(
     if ts:
         body["thread_ts"] = ts
     try:
-        import requests
-
-        r = requests.post(
-            "https://slack.com/api/chat.postMessage",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json; charset=utf-8",
-            },
-            json=body,
-            timeout=10,
-        )
-        data = r.json() if r.content else {}
-        if r.status_code >= 400 or not data.get("ok"):
+        data = slack_api("chat.postMessage", bot_token=token, json_body=body)
+        if not data.get("ok"):
             return {
                 "ok": False,
-                "error": str(data.get("error") or f"http_{r.status_code}"),
+                "error": str(data.get("error") or "post_failed"),
                 "response": data,
+                "lookup": lookup,
             }
         return {
             "ok": True,
             "ts": data.get("ts"),
             "channel": data.get("channel") or channel,
             "thread_ts": ts or None,
+            "lookup": lookup,
         }
     except Exception as exc:
-        return {"ok": False, "error": type(exc).__name__}
+        return {"ok": False, "error": type(exc).__name__, "lookup": lookup}
 
 
 def build_slack_resolve_payload(report: Dict[str, Any], *, source: str) -> Dict[str, Any]:

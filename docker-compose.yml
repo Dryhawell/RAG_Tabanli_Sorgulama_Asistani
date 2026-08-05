@@ -69,6 +69,7 @@ services:
     environment:
       RAG_ALERTMANAGER_SLACK_WEBHOOK: ${RAG_ALERTMANAGER_SLACK_WEBHOOK:-}
       RAG_ALERTMANAGER_WEBHOOK_URL: ${RAG_ALERTMANAGER_WEBHOOK_URL:-http://host.docker.internal:9999/alertmanager-default}
+      ALERTMANAGER_RELOAD_URL: ${ALERTMANAGER_RELOAD_URL:-http://127.0.0.1:9093/-/reload}
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

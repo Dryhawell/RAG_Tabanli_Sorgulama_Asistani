@@ -180,6 +180,7 @@ def cmd_migrate_vector(args: argparse.Namespace) -> int:
         DualWriteIndex,
         create_index,
         dual_write_backend,
+        dual_write_catch_up,
         dual_write_lag_report,
         load_index,
         migrate_vector_store,
@@ -207,10 +208,31 @@ def cmd_migrate_vector(args: argparse.Namespace) -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("ok", False) or report.get("reason") == "not_dual_write" else 1
 
+    if getattr(args, "catch_up", False) and not getattr(args, "cutover", False):
+        index = load_index(INDEX_PATH, DOCSTORE_PATH)
+        if not isinstance(index, DualWriteIndex):
+            print(
+                json.dumps(
+                    {"ok": False, "error": "not_dual_write"},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 1
+        report = dual_write_catch_up(index)
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("ok") else 1
+
     if getattr(args, "cutover", False):
         target = (args.target or "qdrant").strip().lower()
         out = args.write_env or os.path.join(METADATA_DIR, f"vector_cutover_{target}.env")
         index = load_index(INDEX_PATH, DOCSTORE_PATH)
+        catch_up_report = None
+        if (
+            getattr(args, "catch_up", False)
+            and isinstance(index, DualWriteIndex)
+        ):
+            catch_up_report = dual_write_catch_up(index)
         lag = dual_write_lag_report(index)
         if (
             lag.get("dual_write")
@@ -219,18 +241,31 @@ def cmd_migrate_vector(args: argparse.Namespace) -> int:
         ):
             print(
                 json.dumps(
-                    {"ok": False, "error": "lag_not_zero", "lag": lag},
+                    {
+                        "ok": False,
+                        "error": "lag_not_zero",
+                        "lag": lag,
+                        "catch_up": catch_up_report,
+                    },
                     ensure_ascii=False,
                     indent=2,
+                    default=str,
                 )
             )
             return 1
         path = write_cutover_env(target_backend=target, path=out, clear_dual_write=True)
         print(
             json.dumps(
-                {"ok": True, "cutover_env": path, "target": target, "lag": lag},
+                {
+                    "ok": True,
+                    "cutover_env": path,
+                    "target": target,
+                    "lag": lag,
+                    "catch_up": catch_up_report,
+                },
                 ensure_ascii=False,
                 indent=2,
+                default=str,
             )
         )
         return 0
@@ -1156,6 +1191,52 @@ def cmd_prometheus(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_alertmanager(args: argparse.Namespace) -> int:
+    from rag.alertmanager_ops import (
+        reload_alertmanager,
+        render_alertmanager_config,
+        rotate_alertmanager_slack_webhook,
+    )
+
+    if getattr(args, "rotate_slack_webhook", None):
+        report = rotate_alertmanager_slack_webhook(
+            args.rotate_slack_webhook,
+            write_env=args.write_env,
+            output=args.output,
+            reload=not bool(args.no_reload),
+            reload_url=args.reload_url,
+            webhook_url=args.webhook_url,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+
+    if getattr(args, "render", False):
+        report = render_alertmanager_config(
+            output=args.output,
+            slack_webhook=args.slack_webhook,
+            webhook_url=args.webhook_url,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        if not report.get("ok"):
+            return 1
+        if getattr(args, "reload", False):
+            reloaded = reload_alertmanager(url=args.reload_url)
+            print(json.dumps({"reload": reloaded}, ensure_ascii=False, indent=2))
+            return 0 if reloaded.get("ok") else 1
+        return 0
+
+    if getattr(args, "reload", False):
+        reloaded = reload_alertmanager(url=args.reload_url)
+        print(json.dumps(reloaded, ensure_ascii=False, indent=2))
+        return 0 if reloaded.get("ok") else 1
+
+    print(
+        "Kullanım: alertmanager --render | --reload | --rotate-slack-webhook URL",
+        file=sys.stderr,
+    )
+    return 2
+
+
 def _add_embedding_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--embedding",
@@ -1198,6 +1279,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--lag-report",
         action="store_true",
         help="Dual-write lag raporu (primary vs secondary size/sources)",
+    )
+    p_mig.add_argument(
+        "--catch-up",
+        action="store_true",
+        help="Dual-write: eksik kaynakları primary→secondary replay (cutover ile birlikte de çalışır)",
     )
     p_mig.add_argument(
         "--cutover",
@@ -1274,14 +1360,54 @@ def build_parser() -> argparse.ArgumentParser:
     p_stats.set_defaults(func=cmd_stats)
 
     p_prom = sub.add_parser("prometheus", help="Prometheus /metrics sunucusu veya dump")
-    p_prom.add_argument("--port", type=int, default=None, help=f"Port (varsayılan {PROMETHEUS_PORT})")
-    p_prom.add_argument("--addr", default=None, help=f"Bind adresi (varsayılan {PROMETHEUS_ADDR})")
-    p_prom.add_argument(
-        "--dump",
-        action="store_true",
-        help="Sunucu başlatmadan metrikleri stdout'a yaz",
-    )
+    p_prom.add_argument("--dump", action="store_true", help="Metrikleri stdout'a yaz")
+    p_prom.add_argument("--port", type=int, default=None, help="Dinleme portu")
+    p_prom.add_argument("--addr", default=None, help="Dinleme adresi")
     p_prom.set_defaults(func=cmd_prometheus)
+
+    p_am = sub.add_parser(
+        "alertmanager",
+        help="Alertmanager config render / reload / Slack webhook rotate",
+    )
+    p_am.add_argument("--render", action="store_true", help="Template → YAML render")
+    p_am.add_argument("--reload", action="store_true", help="POST /-/reload")
+    p_am.add_argument(
+        "--rotate-slack-webhook",
+        default=None,
+        metavar="URL",
+        help="Slack webhook yaz + render (+ reload)",
+    )
+    p_am.add_argument(
+        "--no-reload",
+        action="store_true",
+        help="Rotate sırasında reload atla",
+    )
+    p_am.add_argument(
+        "--reload-url",
+        default=None,
+        help="Alertmanager reload URL (varsayılan http://127.0.0.1:9093/-/reload)",
+    )
+    p_am.add_argument(
+        "--slack-webhook",
+        default=None,
+        help="Render için RAG_ALERTMANAGER_SLACK_WEBHOOK",
+    )
+    p_am.add_argument(
+        "--webhook-url",
+        default=None,
+        help="Render için RAG_ALERTMANAGER_WEBHOOK_URL",
+    )
+    p_am.add_argument(
+        "--output",
+        default=None,
+        help="Rendered YAML yolu",
+    )
+    p_am.add_argument(
+        "--write-env",
+        default=None,
+        help="Rotate env çıktı yolu (varsayılan metadata/alertmanager.slack.env)",
+    )
+    p_am.set_defaults(func=cmd_alertmanager)
 
     p_collab = sub.add_parser("collab-serve", help="İşbirlikçi not WebSocket sunucusu")
     p_collab.add_argument("--host", default=None, help=f"Bind host (varsayılan {COLLAB_WS_HOST})")

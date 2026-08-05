@@ -344,7 +344,7 @@ def test_post_judge_ack_thread_reply(monkeypatch):
 
     calls = []
 
-    def fake_post(url, headers=None, json=None, timeout=10):
+    def fake_post(url, headers=None, json=None, params=None, timeout=10):
         calls.append({"url": url, "headers": headers, "json": json})
 
         class R:
@@ -371,6 +371,138 @@ def test_post_judge_ack_thread_reply(monkeypatch):
     assert "ops" in calls[0]["json"]["text"]
 
 
+def test_lookup_slack_channel_for_ts(monkeypatch):
+    from rag.judge_alert import lookup_slack_channel_for_ts, post_judge_ack_thread_reply
+
+    def fake_post(url, headers=None, json=None, params=None, timeout=15):
+        class R:
+            status_code = 200
+            content = b"{}"
+
+            def json(self):
+                if url.endswith("conversations.list"):
+                    return {
+                        "ok": True,
+                        "channels": [{"id": "C1"}, {"id": "C2"}],
+                        "response_metadata": {},
+                    }
+                if url.endswith("conversations.history"):
+                    ch = (json or {}).get("channel")
+                    if ch == "C2":
+                        return {"ok": True, "messages": [{"ts": "5.5"}]}
+                    return {"ok": True, "messages": []}
+                if url.endswith("chat.postMessage"):
+                    return {"ok": True, "ts": "5.6", "channel": "C2"}
+                return {"ok": False, "error": "unknown"}
+
+        return R()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    found = lookup_slack_channel_for_ts(thread_ts="5.5", bot_token="xoxb-t")
+    assert found["ok"] is True
+    assert found["channel"] == "C2"
+    monkeypatch.delenv("RAG_JUDGE_SLACK_CHANNEL", raising=False)
+    out = post_judge_ack_thread_reply(
+        actor="ops",
+        note="n",
+        thread_ts="5.5",
+        bot_token="xoxb-t",
+    )
+    assert out["ok"] is True
+    assert out["channel"] == "C2"
+    assert out["lookup"]["via"] == "conversations.history"
+
+
+def test_modal_open_stores_channel_in_private_metadata(tmp_path, monkeypatch):
+    from rag.judge_alert import handle_slack_interactive_ack, save_judge_alert_state
+
+    state = str(tmp_path / "state.json")
+    save_judge_alert_state(
+        {"soft_fail": True, "source": "report", "acknowledged": False},
+        state,
+    )
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", state)
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    opened_views = []
+
+    def fake_post(url, headers=None, json=None, params=None, timeout=10):
+        opened_views.append(json)
+
+        class R:
+            status_code = 200
+            content = b'{"ok":true}'
+
+            def json(self):
+                return {"ok": True}
+
+        return R()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    payload = {
+        "type": "block_actions",
+        "trigger_id": "trig",
+        "user": {"username": "ops"},
+        "channel": {"id": "C42"},
+        "message": {"ts": "3.3"},
+        "actions": [{"action_id": "judge_ack_modal", "value": "ack"}],
+    }
+    result = handle_slack_interactive_ack(payload)
+    assert result["mode"] == "modal_open"
+    assert result["channel_id"] == "C42"
+    view = opened_views[0]["view"]
+    import json as _json
+
+    meta = _json.loads(view["private_metadata"])
+    assert meta["channel_id"] == "C42"
+    assert meta["message_ts"] == "3.3"
+
+
+def test_modal_submit_uses_private_metadata_channel(tmp_path, monkeypatch):
+    from rag.judge_alert import handle_slack_interactive_ack, save_judge_alert_state
+
+    state = str(tmp_path / "state.json")
+    save_judge_alert_state(
+        {"soft_fail": True, "source": "report", "acknowledged": False},
+        state,
+    )
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", state)
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.delenv("RAG_JUDGE_SLACK_CHANNEL", raising=False)
+    calls = []
+
+    def fake_post(url, headers=None, json=None, params=None, timeout=10):
+        calls.append({"url": url, "json": json})
+
+        class R:
+            status_code = 200
+            content = b'{"ok":true}'
+
+            def json(self):
+                return {"ok": True, "ts": "9.9"}
+
+        return R()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    payload = {
+        "type": "view_submission",
+        "user": {"username": "ops"},
+        "view": {
+            "callback_id": "judge_ack_modal",
+            "private_metadata": '{"source":"report","channel_id":"Cmeta","message_ts":"8.8"}',
+            "state": {
+                "values": {
+                    "ack_note_block": {"ack_note": {"value": "from meta"}}
+                }
+            },
+        },
+    }
+    result = handle_slack_interactive_ack(payload)
+    assert result["ok"] is True
+    assert result["thread_reply"]["ok"] is True
+    assert calls[0]["json"]["channel"] == "Cmeta"
+    assert calls[0]["json"]["thread_ts"] == "8.8"
+
+
 def test_modal_submit_posts_thread_reply(tmp_path, monkeypatch):
     from rag.judge_alert import handle_slack_interactive_ack, save_judge_alert_state
 
@@ -383,7 +515,7 @@ def test_modal_submit_posts_thread_reply(tmp_path, monkeypatch):
     monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
     calls = []
 
-    def fake_post(url, headers=None, json=None, timeout=10):
+    def fake_post(url, headers=None, json=None, params=None, timeout=10):
         calls.append({"url": url, "json": json})
 
         class R:
