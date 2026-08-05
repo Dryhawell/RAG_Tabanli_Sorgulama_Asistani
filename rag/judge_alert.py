@@ -657,6 +657,52 @@ def lookup_slack_channel_for_ts(
     return {"ok": False, "error": "channel_not_found", "scanned": scanned}
 
 
+def resolve_slack_thread_parent_ts(
+    *,
+    channel_id: str,
+    thread_ts: str,
+    bot_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """conversations.replies ile reply ts → root parent thread_ts."""
+    token = (
+        bot_token
+        if bot_token is not None
+        else os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
+    )
+    channel = (channel_id or "").strip()
+    ts = (thread_ts or "").strip()
+    if not token:
+        return {"ok": False, "error": "bot_token_missing"}
+    if not channel:
+        return {"ok": False, "error": "channel_missing"}
+    if not ts:
+        return {"ok": False, "error": "thread_ts_missing"}
+    data = slack_api(
+        "conversations.replies",
+        bot_token=token,
+        json_body={"channel": channel, "ts": ts, "limit": 1, "inclusive": True},
+    )
+    if not data.get("ok"):
+        return {
+            "ok": False,
+            "error": str(data.get("error") or "conversations_replies_failed"),
+            "response": data,
+            "input_ts": ts,
+        }
+    messages = data.get("messages") or []
+    if not messages or not isinstance(messages[0], dict):
+        return {"ok": False, "error": "empty_replies", "input_ts": ts}
+    msg = messages[0]
+    parent = str(msg.get("thread_ts") or msg.get("ts") or ts).strip() or ts
+    return {
+        "ok": True,
+        "parent_ts": parent,
+        "input_ts": ts,
+        "changed": parent != ts,
+        "via": "conversations.replies",
+    }
+
+
 def post_judge_ack_thread_reply(
     *,
     actor: str,
@@ -683,6 +729,7 @@ def post_judge_ack_thread_reply(
     if not token:
         return {"ok": False, "error": "bot_token_missing", "skipped": True}
     lookup: Optional[Dict[str, Any]] = None
+    resolve: Optional[Dict[str, Any]] = None
     if not channel and ts:
         lookup = lookup_slack_channel_for_ts(thread_ts=ts, bot_token=token)
         if lookup.get("ok"):
@@ -692,6 +739,12 @@ def post_judge_ack_thread_reply(
         if lookup is not None:
             out["lookup"] = lookup
         return out
+    if ts:
+        resolve = resolve_slack_thread_parent_ts(
+            channel_id=channel, thread_ts=ts, bot_token=token
+        )
+        if resolve.get("ok"):
+            ts = str(resolve.get("parent_ts") or ts).strip() or ts
     status = "already acknowledged" if already else "acknowledged"
     text = f"Judge soft-fail {status} by *{actor}*"
     if note:
@@ -711,6 +764,7 @@ def post_judge_ack_thread_reply(
                 "error": str(data.get("error") or "post_failed"),
                 "response": data,
                 "lookup": lookup,
+                "resolve": resolve,
             }
         return {
             "ok": True,
@@ -718,9 +772,15 @@ def post_judge_ack_thread_reply(
             "channel": data.get("channel") or channel,
             "thread_ts": ts or None,
             "lookup": lookup,
+            "resolve": resolve,
         }
     except Exception as exc:
-        return {"ok": False, "error": type(exc).__name__, "lookup": lookup}
+        return {
+            "ok": False,
+            "error": type(exc).__name__,
+            "lookup": lookup,
+            "resolve": resolve,
+        }
 
 
 def build_slack_resolve_payload(report: Dict[str, Any], *, source: str) -> Dict[str, Any]:

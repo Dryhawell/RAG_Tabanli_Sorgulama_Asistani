@@ -1207,6 +1207,21 @@ def cmd_alertmanager(args: argparse.Namespace) -> int:
             reload_url=args.reload_url,
             webhook_url=args.webhook_url,
         )
+        if getattr(args, "update_github_secrets", False):
+            from scripts.update_github_alertmanager_secrets import (
+                update_alertmanager_github_secrets,
+            )
+
+            report["github_secrets"] = update_alertmanager_github_secrets(
+                slack_webhook=args.rotate_slack_webhook,
+                webhook_url=args.webhook_url,
+                dry_run=bool(getattr(args, "secrets_dry_run", False)),
+                environment=getattr(args, "github_environment", None) or None,
+            )
+            if report["github_secrets"].get("failed") and not report["github_secrets"].get(
+                "dry_run"
+            ):
+                report["ok"] = False
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("ok") else 1
 
@@ -1406,6 +1421,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--write-env",
         default=None,
         help="Rotate env çıktı yolu (varsayılan metadata/alertmanager.slack.env)",
+    )
+    p_am.add_argument(
+        "--update-github-secrets",
+        action="store_true",
+        help="Rotate sonrası GitHub Actions secrets güncelle (GH_PAT)",
+    )
+    p_am.add_argument(
+        "--secrets-dry-run",
+        action="store_true",
+        help="GitHub secret güncellemeyi dry-run yap",
+    )
+    p_am.add_argument(
+        "--github-environment",
+        default=None,
+        help="GitHub Environment adı (boş = repo secrets)",
     )
     p_am.set_defaults(func=cmd_alertmanager)
 

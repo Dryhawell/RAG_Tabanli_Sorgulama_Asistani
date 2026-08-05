@@ -112,9 +112,15 @@ def test_dual_write_lag_when_secondary_behind():
     assert "a.txt" in report["missing_sources"]
 
 
-def test_dual_write_catch_up_replays_missing_sources():
+def test_dual_write_catch_up_replays_missing_sources(monkeypatch, tmp_path):
     from rag.store import dual_write_catch_up, dual_write_lag_report
 
+    metrics = []
+
+    def fake_record(kind, values=None, **kwargs):
+        metrics.append({"kind": kind, "values": values or {}})
+
+    monkeypatch.setattr("rag.metrics.record_metric", fake_record)
     primary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
     secondary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
     dual = DualWriteIndex(primary, secondary, secondary_backend="faiss")
@@ -133,6 +139,10 @@ def test_dual_write_catch_up_replays_missing_sources():
     assert report["lag_after"]["ok"] is True
     assert dual.secondary.size == 2
     assert sorted(dual.secondary.list_sources()) == ["a.txt", "b.txt"]
+    kinds = [m["kind"] for m in metrics]
+    assert "vector_dual_write_catch_up" in kinds
+    assert any(m["values"].get("result") == "fixed" for m in metrics)
+    assert any(m["values"].get("result") == "done" for m in metrics)
 
 
 def test_write_cutover_env(tmp_path):

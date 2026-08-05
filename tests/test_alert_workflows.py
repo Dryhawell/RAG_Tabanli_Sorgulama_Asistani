@@ -122,11 +122,32 @@ def test_cli_alertmanager_parser():
             "--rotate-slack-webhook",
             "https://hooks.slack.test/x",
             "--no-reload",
+            "--update-github-secrets",
+            "--secrets-dry-run",
         ]
     )
     assert args.command == "alertmanager"
     assert args.rotate_slack_webhook.startswith("https://")
     assert args.no_reload is True
+    assert args.update_github_secrets is True
+    assert args.secrets_dry_run is True
+
+
+def test_dual_write_catch_up_workflow_yaml():
+    path = Path(".github/workflows/dual-write-catch-up.yml")
+    text = path.read_text(encoding="utf-8")
+    assert "migrate-vector --catch-up" in text
+    assert "schedule:" in text
+    assert "RAG_VECTOR_DUAL_WRITE" in text
+
+
+def test_alertmanager_slack_rotate_workflow_yaml():
+    path = Path(".github/workflows/alertmanager-slack-rotate.yml")
+    text = path.read_text(encoding="utf-8")
+    assert "rotate-slack-webhook" in text
+    assert "update-github-secrets" in text
+    assert "GH_PAT" in text
+    assert "workflow_dispatch" in text
 
 
 def test_digest_alert_workflow_yaml():

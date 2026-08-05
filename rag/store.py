@@ -371,12 +371,39 @@ def dual_write_catch_up(
     copied_chunks = 0
     text_map = getattr(index.primary, "_id_to_text", {}) or {}
     meta_map = getattr(index.primary, "_id_to_meta", {}) or {}
+    secondary_backend = index.secondary_backend or type(index.secondary).__name__
+    total = len(to_fix)
+
+    def _progress(*, result: str, source: str = "", chunks: int = 0) -> None:
+        remaining = max(0, total - len(fixed) - len(failed))
+        try:
+            from rag.metrics import record_metric
+
+            record_metric(
+                "vector_dual_write_catch_up",
+                values={
+                    "result": result,
+                    "source": source,
+                    "copied_chunks": chunks,
+                    "fixed": len(fixed),
+                    "failed": len(failed),
+                    "remaining": remaining,
+                    "total": total,
+                    "lag": lag_before.get("lag"),
+                    "secondary_backend": secondary_backend,
+                },
+            )
+        except Exception:
+            pass
+
+    _progress(result="start")
 
     for src in to_fix:
         try:
             ids = list(index.primary.ids_for_source(src))
         except Exception as exc:
             failed.append({"source": src, "error": f"ids:{type(exc).__name__}"})
+            _progress(result="failed", source=src)
             continue
         texts: List[str] = []
         metas: List[Any] = []
@@ -395,6 +422,7 @@ def dual_write_catch_up(
             rows.append(arr)
         if not texts:
             failed.append({"source": src, "error": "empty_or_unreconstructable"})
+            _progress(result="failed", source=src)
             continue
         emb = np.vstack(rows)
         try:
@@ -406,13 +434,17 @@ def dual_write_catch_up(
             except Exception as exc:
                 failed.append({"source": src, "error": type(exc).__name__})
                 index._secondary_errors.append(f"catch_up:{type(exc).__name__}")
+                _progress(result="failed", source=src)
                 continue
         fixed.append(src)
         copied_chunks += len(texts)
+        _progress(result="fixed", source=src, chunks=len(texts))
 
     lag_after = report_dual_write_lag(index)
+    ok = bool(lag_after.get("ok")) and not failed
+    _progress(result="done" if ok else "incomplete", chunks=copied_chunks)
     return {
-        "ok": bool(lag_after.get("ok")) and not failed,
+        "ok": ok,
         "dual_write": True,
         "requested_sources": to_fix,
         "fixed_sources": fixed,

@@ -34,6 +34,9 @@ _llm_calls_total = None
 _dual_write_lag = None
 _dual_write_error_last: dict = {}
 _dual_write_errors = None
+_dual_write_catch_up_sources = None
+_dual_write_catch_up_chunks = None
+_dual_write_catch_up_remaining = None
 
 
 def prometheus_available() -> bool:
@@ -55,6 +58,8 @@ def _ensure_metrics():
     global _judge_accuracy, _judge_soft_fail_total, _judge_runs_total
     global _llm_tokens_total, _llm_calls_total
     global _dual_write_lag, _dual_write_errors
+    global _dual_write_catch_up_sources, _dual_write_catch_up_chunks
+    global _dual_write_catch_up_remaining
     if _events_total is not None:
         return
     if not prometheus_available():
@@ -129,6 +134,21 @@ def _ensure_metrics():
     _dual_write_errors = Counter(
         "rag_vector_dual_write_errors_total",
         "Dual-write secondary hata sayısı",
+        ["secondary_backend"],
+    )
+    _dual_write_catch_up_sources = Counter(
+        "rag_vector_dual_write_catch_up_sources_total",
+        "Dual-write catch-up kaynak sonuçları",
+        ["result", "secondary_backend"],
+    )
+    _dual_write_catch_up_chunks = Counter(
+        "rag_vector_dual_write_catch_up_chunks_total",
+        "Dual-write catch-up kopyalanan chunk",
+        ["secondary_backend"],
+    )
+    _dual_write_catch_up_remaining = Gauge(
+        "rag_vector_dual_write_catch_up_remaining",
+        "Catch-up bekleyen kaynak sayısı",
         ["secondary_backend"],
     )
 
@@ -261,6 +281,31 @@ def observe_metric(
             if err_n > last:
                 _dual_write_errors.labels(secondary_backend=secondary).inc(err_n - last)
             _dual_write_error_last[secondary] = err_n
+        elif kind == "vector_dual_write_catch_up":
+            assert _dual_write_catch_up_sources is not None
+            assert _dual_write_catch_up_chunks is not None
+            assert _dual_write_catch_up_remaining is not None
+            secondary = str(vals.get("secondary_backend") or "secondary")
+            result = str(vals.get("result") or "unknown")
+            if result in {"fixed", "failed"}:
+                _dual_write_catch_up_sources.labels(
+                    result=result, secondary_backend=secondary
+                ).inc()
+            try:
+                chunks = int(vals.get("copied_chunks") or 0)
+            except (TypeError, ValueError):
+                chunks = 0
+            if chunks > 0 and result == "fixed":
+                _dual_write_catch_up_chunks.labels(secondary_backend=secondary).inc(
+                    chunks
+                )
+            try:
+                remaining = float(vals.get("remaining") or 0)
+            except (TypeError, ValueError):
+                remaining = 0.0
+            _dual_write_catch_up_remaining.labels(secondary_backend=secondary).set(
+                remaining
+            )
 
 
 def render_prometheus() -> bytes:

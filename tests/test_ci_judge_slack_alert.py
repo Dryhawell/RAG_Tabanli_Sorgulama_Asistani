@@ -349,10 +349,16 @@ def test_post_judge_ack_thread_reply(monkeypatch):
 
         class R:
             status_code = 200
-            content = b'{"ok":true,"ts":"9.9"}'
+            content = b"{}"
 
             def json(self):
-                return {"ok": True, "ts": "9.9"}
+                if url.endswith("conversations.replies"):
+                    ts = (json or {}).get("ts")
+                    return {
+                        "ok": True,
+                        "messages": [{"ts": ts, "thread_ts": "1.0"}],
+                    }
+                return {"ok": True, "ts": "9.9", "channel": "C123"}
 
         return R()
 
@@ -365,10 +371,38 @@ def test_post_judge_ack_thread_reply(monkeypatch):
         bot_token="xoxb-test",
     )
     assert out["ok"] is True
-    assert calls[0]["url"].endswith("chat.postMessage")
-    assert calls[0]["json"]["channel"] == "C123"
-    assert calls[0]["json"]["thread_ts"] == "1.2"
-    assert "ops" in calls[0]["json"]["text"]
+    assert out["thread_ts"] == "1.0"
+    assert out["resolve"]["changed"] is True
+    post_calls = [c for c in calls if c["url"].endswith("chat.postMessage")]
+    assert post_calls
+    assert post_calls[0]["json"]["channel"] == "C123"
+    assert post_calls[0]["json"]["thread_ts"] == "1.0"
+    assert "ops" in post_calls[0]["json"]["text"]
+
+
+def test_resolve_slack_thread_parent_ts(monkeypatch):
+    from rag.judge_alert import resolve_slack_thread_parent_ts
+
+    def fake_post(url, headers=None, json=None, params=None, timeout=15):
+        class R:
+            status_code = 200
+            content = b"{}"
+
+            def json(self):
+                return {
+                    "ok": True,
+                    "messages": [{"ts": "9.9", "thread_ts": "1.1"}],
+                }
+
+        return R()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    out = resolve_slack_thread_parent_ts(
+        channel_id="C1", thread_ts="9.9", bot_token="xoxb"
+    )
+    assert out["ok"] is True
+    assert out["parent_ts"] == "1.1"
+    assert out["changed"] is True
 
 
 def test_lookup_slack_channel_for_ts(monkeypatch):
@@ -391,6 +425,11 @@ def test_lookup_slack_channel_for_ts(monkeypatch):
                     if ch == "C2":
                         return {"ok": True, "messages": [{"ts": "5.5"}]}
                     return {"ok": True, "messages": []}
+                if url.endswith("conversations.replies"):
+                    return {
+                        "ok": True,
+                        "messages": [{"ts": "5.5"}],
+                    }
                 if url.endswith("chat.postMessage"):
                     return {"ok": True, "ts": "5.6", "channel": "C2"}
                 return {"ok": False, "error": "unknown"}
@@ -478,6 +517,9 @@ def test_modal_submit_uses_private_metadata_channel(tmp_path, monkeypatch):
             content = b'{"ok":true}'
 
             def json(self):
+                if url.endswith("conversations.replies"):
+                    ts = (json or {}).get("ts")
+                    return {"ok": True, "messages": [{"ts": ts}]}
                 return {"ok": True, "ts": "9.9"}
 
         return R()
@@ -499,8 +541,9 @@ def test_modal_submit_uses_private_metadata_channel(tmp_path, monkeypatch):
     result = handle_slack_interactive_ack(payload)
     assert result["ok"] is True
     assert result["thread_reply"]["ok"] is True
-    assert calls[0]["json"]["channel"] == "Cmeta"
-    assert calls[0]["json"]["thread_ts"] == "8.8"
+    post_calls = [c for c in calls if c["url"].endswith("chat.postMessage")]
+    assert post_calls[0]["json"]["channel"] == "Cmeta"
+    assert post_calls[0]["json"]["thread_ts"] == "8.8"
 
 
 def test_modal_submit_posts_thread_reply(tmp_path, monkeypatch):
@@ -523,6 +566,9 @@ def test_modal_submit_posts_thread_reply(tmp_path, monkeypatch):
             content = b'{"ok":true}'
 
             def json(self):
+                if url.endswith("conversations.replies"):
+                    ts = (json or {}).get("ts")
+                    return {"ok": True, "messages": [{"ts": ts}]}
                 return {"ok": True}
 
         return R()
@@ -545,8 +591,9 @@ def test_modal_submit_posts_thread_reply(tmp_path, monkeypatch):
     result = handle_slack_interactive_ack(payload)
     assert result["ok"] is True
     assert result["thread_reply"]["ok"] is True
-    assert calls and calls[0]["json"]["thread_ts"] == "7.7"
-    assert calls[0]["json"]["channel"] == "C9"
+    post_calls = [c for c in calls if c["url"].endswith("chat.postMessage")]
+    assert post_calls and post_calls[0]["json"]["thread_ts"] == "7.7"
+    assert post_calls[0]["json"]["channel"] == "C9"
 
 
 def test_verify_slack_request_signature():
