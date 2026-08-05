@@ -12,6 +12,11 @@ on:
         required: false
         default: true
         type: boolean
+      auto_cutover:
+        description: "lag=0 ise cutover env yaz (--auto-cutover)"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   catch-up:
@@ -37,8 +42,13 @@ jobs:
           RAG_QDRANT_COLLECTION: ${{ vars.RAG_QDRANT_COLLECTION || 'rag_chunks' }}
         run: |
           mkdir -p metadata indexes
+          EXTRA=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.auto_cutover }}" = "true" ]; then
+            EXTRA="--auto-cutover"
+          fi
           set +e
-          python -m rag.cli migrate-vector --catch-up | tee metadata/dual_write_catch_up.json
+          # shellcheck disable=SC2086
+          python -m rag.cli migrate-vector --catch-up $EXTRA | tee metadata/dual_write_catch_up.json
           RC=${PIPESTATUS[0]}
           set -e
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force_cutover_check }}" = "true" ]; then
@@ -54,4 +64,5 @@ jobs:
             metadata/dual_write_catch_up.json
             metadata/dual_write_lag.json
             metadata/metrics.jsonl
+            metadata/vector_cutover_*.env
           if-no-files-found: ignore

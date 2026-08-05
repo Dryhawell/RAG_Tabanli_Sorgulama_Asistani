@@ -190,6 +190,24 @@ def handle_judge_slack_interactive(
     status = 409 if err == "no_active_soft_fail" else 400
     if err == "unknown_action":
         status = 400
+    if err == "rate_limited":
+        status = 429
+        retry = result.get("retry_after_sec")
+        text = f"Ack rate limited; retry after {retry}s" if retry is not None else "Ack rate limited"
+        return (
+            status,
+            {"Content-Type": "application/json", "Retry-After": str(int(float(retry or 1)))},
+            json.dumps(
+                {
+                    "response_type": "ephemeral",
+                    "text": text,
+                    "ok": False,
+                    "error": err,
+                    "retry_after_sec": retry,
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        )
     return (
         status,
         {"Content-Type": "application/json"},

@@ -220,6 +220,26 @@ def cmd_migrate_vector(args: argparse.Namespace) -> int:
             )
             return 1
         report = dual_write_catch_up(index)
+        if getattr(args, "auto_cutover", False):
+            lag = report.get("lag_after") or {}
+            if (
+                report.get("ok")
+                and lag.get("ok")
+                and int(lag.get("lag") or 0) == 0
+            ):
+                target = (args.target or "qdrant").strip().lower()
+                out = args.write_env or os.path.join(
+                    METADATA_DIR, f"vector_cutover_{target}.env"
+                )
+                path = write_cutover_env(
+                    target_backend=target, path=out, clear_dual_write=True
+                )
+                report["auto_cutover"] = True
+                report["cutover_env"] = path
+                report["target"] = target
+            else:
+                report["auto_cutover"] = False
+                report["auto_cutover_reason"] = "lag_not_zero_or_catch_up_failed"
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0 if report.get("ok") else 1
 
@@ -1193,10 +1213,59 @@ def cmd_prometheus(args: argparse.Namespace) -> int:
 
 def cmd_alertmanager(args: argparse.Namespace) -> int:
     from rag.alertmanager_ops import (
+        create_silence,
+        delete_silence,
+        list_silences,
+        parse_duration_sec,
+        parse_silence_matcher,
         reload_alertmanager,
         render_alertmanager_config,
         rotate_alertmanager_slack_webhook,
     )
+
+    if getattr(args, "silence", False):
+        matchers = []
+        for raw in getattr(args, "matcher", None) or []:
+            try:
+                matchers.append(parse_silence_matcher(raw))
+            except ValueError as exc:
+                print(
+                    json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False),
+                    file=sys.stderr,
+                )
+                return 2
+        duration = None
+        if getattr(args, "duration", None):
+            try:
+                duration = parse_duration_sec(args.duration)
+            except ValueError as exc:
+                print(
+                    json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False),
+                    file=sys.stderr,
+                )
+                return 2
+        report = create_silence(
+            matchers=matchers,
+            duration_sec=duration,
+            ends_at=getattr(args, "ends_at", None),
+            created_by=getattr(args, "created_by", None) or "rag-cli",
+            comment=getattr(args, "comment", None) or "",
+            base_url=getattr(args, "api_url", None),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+
+    if getattr(args, "list_silences", False):
+        report = list_silences(base_url=getattr(args, "api_url", None))
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+
+    if getattr(args, "delete_silence", None):
+        report = delete_silence(
+            args.delete_silence, base_url=getattr(args, "api_url", None)
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
 
     if getattr(args, "rotate_slack_webhook", None):
         report = rotate_alertmanager_slack_webhook(
@@ -1246,7 +1315,7 @@ def cmd_alertmanager(args: argparse.Namespace) -> int:
         return 0 if reloaded.get("ok") else 1
 
     print(
-        "Kullanım: alertmanager --render | --reload | --rotate-slack-webhook URL",
+        "Kullanım: alertmanager --render | --reload | --rotate-slack-webhook URL | --silence",
         file=sys.stderr,
     )
     return 2
@@ -1299,6 +1368,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--catch-up",
         action="store_true",
         help="Dual-write: eksik kaynakları primary→secondary replay (cutover ile birlikte de çalışır)",
+    )
+    p_mig.add_argument(
+        "--auto-cutover",
+        action="store_true",
+        help="Catch-up sonrası lag=0 ise cutover env yaz",
     )
     p_mig.add_argument(
         "--cutover",
@@ -1386,6 +1460,53 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_am.add_argument("--render", action="store_true", help="Template → YAML render")
     p_am.add_argument("--reload", action="store_true", help="POST /-/reload")
+    p_am.add_argument(
+        "--silence",
+        action="store_true",
+        help="Alertmanager silence oluştur (POST /api/v2/silences)",
+    )
+    p_am.add_argument(
+        "--matcher",
+        action="append",
+        default=[],
+        help="Silence matcher: name=value veya name=~regex (tekrarlanabilir)",
+    )
+    p_am.add_argument(
+        "--duration",
+        default=None,
+        help="Silence süresi (ör. 2h, 30m, 900)",
+    )
+    p_am.add_argument(
+        "--ends-at",
+        default=None,
+        help="Silence bitiş zamanı (RFC3339; --duration yerine)",
+    )
+    p_am.add_argument(
+        "--comment",
+        default="",
+        help="Silence açıklaması",
+    )
+    p_am.add_argument(
+        "--created-by",
+        default="rag-cli",
+        help="Silence createdBy",
+    )
+    p_am.add_argument(
+        "--list-silences",
+        action="store_true",
+        help="Aktif silences listele",
+    )
+    p_am.add_argument(
+        "--delete-silence",
+        default=None,
+        metavar="ID",
+        help="Silence sil",
+    )
+    p_am.add_argument(
+        "--api-url",
+        default=None,
+        help="Alertmanager base URL (varsayılan http://127.0.0.1:9093)",
+    )
     p_am.add_argument(
         "--rotate-slack-webhook",
         default=None,

@@ -190,3 +190,52 @@ def test_migrate_vector_lag_report_cli(tmp_path, monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "dual_write" in out
+
+
+def test_migrate_vector_catch_up_auto_cutover_cli(tmp_path, monkeypatch, capsys):
+    from rag.cli import build_parser
+    from rag.store import DualWriteIndex, load_index as real_load
+
+    primary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    secondary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    dual = DualWriteIndex(primary, secondary, secondary_backend="faiss")
+    vecs = np.eye(1, 3, dtype=np.float32)
+    dual.add(vecs, ["hello world text"], [_meta("a.txt", 0, "u1")])
+    idx_path = str(tmp_path / "faiss.index")
+    doc_path = str(tmp_path / "docstore.json")
+    dual.primary.save(idx_path, doc_path)
+
+    def fake_load(index_path, docstore_path, **kwargs):
+        prim = real_load(index_path, docstore_path, dual_write="")
+        sec = create_index(
+            dim=getattr(prim, "dim", 3),
+            embedding_model=getattr(prim, "embedding_model", "m"),
+            backend="faiss",
+            dual_write="",
+        )
+        return DualWriteIndex(prim, sec, secondary_backend="faiss")
+
+    monkeypatch.setattr("rag.cli.INDEX_PATH", idx_path)
+    monkeypatch.setattr("rag.cli.DOCSTORE_PATH", doc_path)
+    monkeypatch.setattr("rag.cli.METADATA_DIR", str(tmp_path))
+    import rag.store as store_mod
+
+    monkeypatch.setattr(store_mod, "load_index", fake_load)
+    out = str(tmp_path / "auto.env")
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "migrate-vector",
+            "--catch-up",
+            "--auto-cutover",
+            "--target",
+            "qdrant",
+            "--write-env",
+            out,
+        ]
+    )
+    rc = args.func(args)
+    assert rc == 0
+    printed = capsys.readouterr().out
+    assert '"auto_cutover": true' in printed or '"auto_cutover": true'.replace(" ", "") in printed.replace(" ", "")
+    assert open(out, encoding="utf-8").read().count("RAG_VECTOR_BACKEND=qdrant") == 1

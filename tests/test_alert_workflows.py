@@ -131,6 +131,66 @@ def test_cli_alertmanager_parser():
     assert args.no_reload is True
     assert args.update_github_secrets is True
     assert args.secrets_dry_run is True
+    silence_args = parser.parse_args(
+        [
+            "alertmanager",
+            "--silence",
+            "--matcher",
+            "service=rag-judge",
+            "--matcher",
+            "alertname=~Rag.*",
+            "--duration",
+            "2h",
+            "--comment",
+            "maint",
+        ]
+    )
+    assert silence_args.silence is True
+    assert silence_args.matcher == ["service=rag-judge", "alertname=~Rag.*"]
+    assert silence_args.duration == "2h"
+
+
+def test_create_silence_posts_api(monkeypatch):
+    from rag.alertmanager_ops import create_silence, parse_duration_sec, parse_silence_matcher
+
+    assert parse_duration_sec("2h") == 7200.0
+    assert parse_silence_matcher("service=rag-judge")["isRegex"] is False
+    assert parse_silence_matcher("alertname=~Rag.*")["isRegex"] is True
+
+    captured = {}
+
+    class FakeResp:
+        status = 200
+
+        def read(self):
+            return b'{"silenceID":"abc-123"}'
+
+        def getcode(self):
+            return 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(req, timeout=5.0):
+        captured["url"] = req.full_url
+        captured["method"] = req.get_method()
+        captured["body"] = req.data
+        return FakeResp()
+
+    monkeypatch.setattr("rag.alertmanager_ops.request.urlopen", fake_urlopen)
+    out = create_silence(
+        matchers=[parse_silence_matcher("service=rag-judge")],
+        duration_sec=3600,
+        comment="test",
+        base_url="http://am.test:9093",
+    )
+    assert out["ok"] is True
+    assert out["silenceID"] == "abc-123"
+    assert captured["url"].endswith("/api/v2/silences")
+    assert captured["method"] == "POST"
 
 
 def test_dual_write_catch_up_workflow_yaml():
@@ -139,6 +199,8 @@ def test_dual_write_catch_up_workflow_yaml():
     assert "migrate-vector --catch-up" in text
     assert "schedule:" in text
     assert "RAG_VECTOR_DUAL_WRITE" in text
+    assert "auto_cutover" in text
+    assert "--auto-cutover" in text
 
 
 def test_alertmanager_slack_rotate_workflow_yaml():

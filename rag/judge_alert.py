@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+
+_ACK_RATE: Dict[str, float] = {}
 
 
 def _utcnow_iso() -> str:
@@ -423,6 +427,78 @@ def slack_interactive_actor(payload: Dict[str, Any]) -> str:
     return ""
 
 
+def slack_interactive_user_id(payload: Dict[str, Any]) -> str:
+    user = payload.get("user") or {}
+    if isinstance(user, dict):
+        return str(user.get("id") or "").strip()
+    return ""
+
+
+def judge_ack_rate_limit_sec() -> float:
+    raw = os.environ.get("RAG_JUDGE_ACK_RATE_LIMIT_SEC", "").strip()
+    if not raw:
+        return 0.0
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def check_judge_ack_rate_limit(
+    actor: str,
+    *,
+    state_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Ack rate limit; limit=0 → kapalı."""
+    limit = judge_ack_rate_limit_sec()
+    who = (actor or "").strip() or "anonymous"
+    if limit <= 0:
+        return {"ok": True, "limited": False, "limit_sec": 0}
+    now = time.time()
+    last = _ACK_RATE.get(who)
+    if last is None:
+        try:
+            st = load_judge_alert_state(state_path)
+            by = st.get("ack_rate_by_actor") or {}
+            if isinstance(by, dict) and who in by:
+                last = float(by[who])
+        except Exception:
+            last = None
+    if last is not None and (now - float(last)) < limit:
+        retry = max(0.0, limit - (now - float(last)))
+        return {
+            "ok": False,
+            "limited": True,
+            "error": "rate_limited",
+            "retry_after_sec": round(retry, 2),
+            "limit_sec": limit,
+            "actor": who,
+        }
+    return {"ok": True, "limited": False, "limit_sec": limit, "actor": who}
+
+
+def record_judge_ack_rate(
+    actor: str,
+    *,
+    state_path: Optional[str] = None,
+) -> None:
+    who = (actor or "").strip() or "anonymous"
+    now = time.time()
+    _ACK_RATE[who] = now
+    try:
+        st = load_judge_alert_state(state_path)
+        by = dict(st.get("ack_rate_by_actor") or {})
+        by[who] = now
+        # son 50 aktör
+        if len(by) > 50:
+            keep = sorted(by.items(), key=lambda x: float(x[1]), reverse=True)[:50]
+            by = dict(keep)
+        st["ack_rate_by_actor"] = by
+        save_judge_alert_state(st, state_path)
+    except Exception:
+        pass
+
+
 def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
     """block_actions / view_submission → modal open veya acknowledge_judge_alert."""
     ptype = str(payload.get("type") or "")
@@ -434,6 +510,14 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
         actor = slack_interactive_actor(payload) or "slack"
         note = extract_modal_ack_note(payload) or "slack modal ack"
         state_path = os.environ.get("RAG_JUDGE_ALERT_STATE", "").strip() or None
+        rate = check_judge_ack_rate_limit(actor, state_path=state_path)
+        if rate.get("limited"):
+            return {
+                "ok": False,
+                "error": "rate_limited",
+                "mode": "modal_submit",
+                "retry_after_sec": rate.get("retry_after_sec"),
+            }
         result = acknowledge_judge_alert(
             actor=actor,
             note=note,
@@ -442,18 +526,19 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
         result["mode"] = "modal_submit"
         if result.get("ok"):
+            record_judge_ack_rate(actor, state_path=state_path)
             meta = parse_ack_modal_private_metadata(payload)
+            channel_id = str(
+                meta.get("channel_id")
+                or ((payload.get("container") or {}).get("channel_id"))
+                or ((payload.get("channel") or {}).get("id"))
+                or ""
+            ) or None
             thread = post_judge_ack_thread_reply(
                 actor=actor,
                 note=note,
                 already=bool(result.get("already")),
-                channel_id=str(
-                    meta.get("channel_id")
-                    or ((payload.get("container") or {}).get("channel_id"))
-                    or ((payload.get("channel") or {}).get("id"))
-                    or ""
-                )
-                or None,
+                channel_id=channel_id,
                 thread_ts=str(
                     meta.get("message_ts")
                     or ((payload.get("container") or {}).get("thread_ts"))
@@ -464,6 +549,13 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
                 or None,
             )
             result["thread_reply"] = thread
+            result["ephemeral"] = post_judge_ack_ephemeral(
+                user_id=slack_interactive_user_id(payload),
+                actor=actor,
+                note=note,
+                already=bool(result.get("already")),
+                channel_id=channel_id,
+            )
         return result
 
     actions = payload.get("actions") or []
@@ -518,6 +610,14 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
     actor = slack_interactive_actor(payload) or "slack"
     note = "slack interactive ack"
     state_path = os.environ.get("RAG_JUDGE_ALERT_STATE", "").strip() or None
+    rate = check_judge_ack_rate_limit(actor, state_path=state_path)
+    if rate.get("limited"):
+        return {
+            "ok": False,
+            "error": "rate_limited",
+            "mode": "instant",
+            "retry_after_sec": rate.get("retry_after_sec"),
+        }
     result = acknowledge_judge_alert(
         actor=actor,
         note=note,
@@ -526,17 +626,26 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
     )
     result["mode"] = "instant"
     if result.get("ok"):
+        record_judge_ack_rate(actor, state_path=state_path)
+        channel_id = str(((payload.get("channel") or {}).get("id")) or "") or None
         result["thread_reply"] = post_judge_ack_thread_reply(
             actor=actor,
             note=note,
             already=bool(result.get("already")),
-            channel_id=str(((payload.get("channel") or {}).get("id")) or "") or None,
+            channel_id=channel_id,
             thread_ts=str(
                 ((payload.get("message") or {}).get("ts"))
                 or ((payload.get("container") or {}).get("message_ts"))
                 or ""
             )
             or None,
+        )
+        result["ephemeral"] = post_judge_ack_ephemeral(
+            user_id=slack_interactive_user_id(payload),
+            actor=actor,
+            note=note,
+            already=bool(result.get("already")),
+            channel_id=channel_id,
         )
     return result
 
@@ -781,6 +890,60 @@ def post_judge_ack_thread_reply(
             "lookup": lookup,
             "resolve": resolve,
         }
+
+
+def post_judge_ack_ephemeral(
+    *,
+    user_id: str,
+    actor: str,
+    note: str = "",
+    already: bool = False,
+    channel_id: Optional[str] = None,
+    bot_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Ack sonrası kullanıcıya chat.postEphemeral onayı."""
+    token = (
+        bot_token
+        if bot_token is not None
+        else os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
+    )
+    channel = (
+        (channel_id or "").strip()
+        or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "").strip()
+    )
+    uid = (user_id or "").strip()
+    if not token:
+        return {"ok": False, "error": "bot_token_missing", "skipped": True}
+    if not channel:
+        return {"ok": False, "error": "channel_missing", "skipped": True}
+    if not uid:
+        return {"ok": False, "error": "user_id_missing", "skipped": True}
+    status = "already acknowledged" if already else "acknowledged"
+    text = f"Judge soft-fail {status} (by *{actor}*)"
+    if note:
+        text += f"\n> {note}"
+    data = slack_api(
+        "chat.postEphemeral",
+        bot_token=token,
+        json_body={
+            "channel": channel,
+            "user": uid,
+            "text": text,
+            "mrkdwn": True,
+        },
+    )
+    if not data.get("ok"):
+        return {
+            "ok": False,
+            "error": str(data.get("error") or "ephemeral_failed"),
+            "response": data,
+        }
+    return {
+        "ok": True,
+        "channel": channel,
+        "user": uid,
+        "message_ts": data.get("message_ts"),
+    }
 
 
 def build_slack_resolve_payload(report: Dict[str, Any], *, source: str) -> Dict[str, Any]:

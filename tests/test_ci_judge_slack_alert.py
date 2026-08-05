@@ -339,6 +339,70 @@ def test_slack_modal_submission_ack(tmp_path, monkeypatch):
     assert result["thread_reply"]["skipped"] is True
 
 
+def test_post_judge_ack_ephemeral(monkeypatch):
+    from rag.judge_alert import post_judge_ack_ephemeral
+
+    calls = []
+
+    def fake_post(url, headers=None, json=None, params=None, timeout=15):
+        calls.append({"url": url, "json": json})
+
+        class R:
+            status_code = 200
+            content = b'{"ok":true}'
+
+            def json(self):
+                return {"ok": True, "message_ts": "1.1"}
+
+        return R()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    out = post_judge_ack_ephemeral(
+        user_id="U1",
+        actor="ops",
+        note="ok",
+        channel_id="C1",
+        bot_token="xoxb-t",
+    )
+    assert out["ok"] is True
+    assert calls[0]["url"].endswith("chat.postEphemeral")
+    assert calls[0]["json"]["user"] == "U1"
+    assert calls[0]["json"]["channel"] == "C1"
+
+
+def test_judge_ack_rate_limit(tmp_path, monkeypatch):
+    import rag.judge_alert as ja
+
+    ja._ACK_RATE.clear()
+    state = str(tmp_path / "state.json")
+    ja.save_judge_alert_state(
+        {"soft_fail": True, "source": "report", "acknowledged": False},
+        state,
+    )
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", state)
+    monkeypatch.setenv("RAG_JUDGE_ACK_RATE_LIMIT_SEC", "60")
+    monkeypatch.delenv("RAG_JUDGE_SLACK_BOT_TOKEN", raising=False)
+
+    payload = {
+        "type": "block_actions",
+        "user": {"username": "ops", "id": "U9"},
+        "channel": {"id": "C9"},
+        "message": {"ts": "1.1"},
+        "actions": [{"action_id": "judge_ack_interactive", "value": "ack"}],
+    }
+    first = ja.handle_slack_interactive_ack(payload)
+    assert first["ok"] is True
+    # soft-fail zaten ack; yeniden soft_fail aç
+    ja.save_judge_alert_state(
+        {"soft_fail": True, "source": "report", "acknowledged": False},
+        state,
+    )
+    second = ja.handle_slack_interactive_ack(payload)
+    assert second["ok"] is False
+    assert second["error"] == "rate_limited"
+    assert second["retry_after_sec"] > 0
+
+
 def test_post_judge_ack_thread_reply(monkeypatch):
     from rag.judge_alert import post_judge_ack_thread_reply
 
