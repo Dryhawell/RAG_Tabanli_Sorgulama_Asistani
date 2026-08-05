@@ -104,6 +104,81 @@ document.getElementById("go").onclick = async () => {
     )
 
 
+def handle_judge_slack_interactive(
+    body: bytes,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+) -> Tuple[int, Dict[str, str], bytes]:
+    """POST Slack interactivity (signed) → soft-fail ack."""
+    from rag.judge_alert import (
+        handle_slack_interactive_ack,
+        parse_slack_interactive_payload,
+        verify_slack_request_signature,
+    )
+
+    secret = os.environ.get("RAG_JUDGE_SLACK_SIGNING_SECRET", "").strip()
+    if not secret:
+        return _json_error(403, "slack_signing_secret_not_configured")
+    hdrs = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+    if not verify_slack_request_signature(
+        body,
+        timestamp=hdrs.get("x-slack-request-timestamp", ""),
+        signature=hdrs.get("x-slack-signature", ""),
+        signing_secret=secret,
+    ):
+        return _json_error(401, "invalid_slack_signature")
+
+    payload = parse_slack_interactive_payload(body)
+    if not payload:
+        return _json_error(400, "invalid_payload")
+
+    # Slack URL verification (Events API) — opsiyonel
+    if payload.get("type") == "url_verification":
+        challenge = str(payload.get("challenge") or "")
+        return (
+            200,
+            {"Content-Type": "application/json"},
+            json.dumps({"challenge": challenge}).encode("utf-8"),
+        )
+
+    result = handle_slack_interactive_ack(payload)
+    if result.get("ok"):
+        text = (
+            f"Soft-fail acknowledged by {result.get('state', {}).get('acknowledged_by')}"
+            if isinstance(result.get("state"), dict)
+            else "Soft-fail acknowledged"
+        )
+        if result.get("already"):
+            text = "Already acknowledged"
+        resp = {
+            "response_type": "ephemeral",
+            "replace_original": False,
+            "text": text,
+        }
+        return (
+            200,
+            {"Content-Type": "application/json"},
+            json.dumps(resp, ensure_ascii=False).encode("utf-8"),
+        )
+    err = str(result.get("error") or "ack_failed")
+    status = 409 if err == "no_active_soft_fail" else 400
+    if err == "unknown_action":
+        status = 400
+    return (
+        status,
+        {"Content-Type": "application/json"},
+        json.dumps(
+            {
+                "response_type": "ephemeral",
+                "text": f"Ack failed: {err}",
+                "ok": False,
+                "error": err,
+            },
+            ensure_ascii=False,
+        ).encode("utf-8"),
+    )
+
+
 def handle_judge_ack(body: bytes, *, headers: Optional[Dict[str, str]] = None) -> Tuple[int, Dict[str, str], bytes]:
     """POST JSON: {actor, note?, token?} — soft-fail manuel acknowledge."""
     expected = os.environ.get("RAG_JUDGE_ACK_TOKEN", "").strip()
@@ -388,6 +463,7 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
                         "/webpush/register",
                         "/judge/ack",
                         "/judge/ack-form",
+                        "/judge/slack-interactive",
                         "/judge/alert",
                     ],
                 }
@@ -407,6 +483,10 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
         if path == "/judge/ack":
             hdrs = {k: v for k, v in self.headers.items()}
             self._send(*handle_judge_ack(raw, headers=hdrs))
+            return
+        if path in {"/judge/slack-interactive", "/slack/interactive"}:
+            hdrs = {k: v for k, v in self.headers.items()}
+            self._send(*handle_judge_slack_interactive(raw, headers=hdrs))
             return
         self._send(404, {"Content-Type": "text/plain"}, b"not found\n")
 

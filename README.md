@@ -161,7 +161,8 @@ Grafana'da Prometheus datasource ekleyip `rag_queries_total`, `rag_query_latency
 Judge soft-fail paneli: `grafana/dashboards/rag_judge.json` (provisioning: `grafana/provisioning/dashboards/`).
 Judge Slack alert kuralı: `grafana/alerting/rag_judge_soft_fail.yaml` + CI `scripts/ci_judge_slack_alert.py` (`RAG_JUDGE_SLACK_WEBHOOK`, opsiyonel `RAG_JUDGE_PAGERDUTY_ROUTING_KEY` / `RAG_JUDGE_OPSGENIE_API_KEY`; soft-fail → OK geçişinde auto-resolve, state: `RAG_JUDGE_ALERT_STATE`; manuel ack: `POST /judge/ack` + `RAG_JUDGE_ACK_TOKEN` veya admin UI).
 CI judge state: artifact + `actions/cache` (`metadata/judge_alert_state.json`) ile run'lar arası kalıcılık; opsiyonel harici store: `RAG_JUDGE_ALERT_STATE_URL`.
-Slack ack deep-link: `RAG_JUDGE_ACK_PUBLIC_URL` → `/judge/ack-form`.
+Slack ack deep-link: `RAG_JUDGE_ACK_PUBLIC_URL` → `/judge/ack-form`; interactive: `RAG_JUDGE_SLACK_SIGNING_SECRET` + `POST /judge/slack-interactive`.
+Observability stack: `docker compose --profile obs up -d` (Prometheus + Tempo + Grafana; datasources: `grafana/provisioning/datasources/`).
 VAPID üretimi: `python -m rag.cli collab-notifications --generate-vapid`
 VAPID rotate/vault: `python -m rag.cli collab-notifications --rotate-vapid` (Actions: **VAPID Rotate**; secret sync: `GH_PAT` + `--update-github-secrets` + opsiyonel `--vapid-github-environment`)
 Digest alert: `python -m rag.cli collab-notifications --digest-alert-check --digest-alert-all` (cron: `.github/workflows/digest-alert.yml`; tenant webhook: `RAG_DIGEST_ALERT_WEBHOOKS_JSON` veya `metadata/digest_alert_webhooks.json`)
@@ -507,6 +508,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
 - Push: VAPID OIDC / Deploy-key based secret store sync
-- Judge: Slack interactive ack (signed request verify)
-- Ingest: Qdrant payload-side selective upsert parity hardening
-- Observability: Tempo datasource provisioning + LLM cost panels
+- Judge: Slack Block Kit modal ack + note field
+- Ingest: hybrid FAISS/Qdrant dual-write migration helpers
+- Observability: Alertmanager routing + LLM cost recording rules

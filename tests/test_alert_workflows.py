@@ -20,6 +20,23 @@ def test_grafana_judge_dashboard_has_llm_and_exemplars():
     assert "rag_llm_tokens_total" in text
     assert "exemplar" in text
     assert "Tempo" in text or "exemplars" in text.lower()
+    assert "LLM cost" in text
+    assert '"uid": "prometheus"' in text
+
+
+def test_grafana_tempo_datasource_provisioning():
+    path = Path("grafana/provisioning/datasources/datasources.yml")
+    text = path.read_text(encoding="utf-8")
+    assert "uid: prometheus" in text
+    assert "uid: tempo" in text
+    assert "exemplarTraceIdDestinations" in text
+    assert "trace_id" in text
+    assert Path("grafana/tempo.yaml").is_file()
+    assert Path("grafana/prometheus.yml").is_file()
+    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+    assert 'profiles: ["obs"]' in compose
+    assert "tempo:" in compose
+    assert "grafana:" in compose
 
 
 def test_digest_alert_workflow_yaml():

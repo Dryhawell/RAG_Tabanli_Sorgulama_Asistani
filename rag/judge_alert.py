@@ -197,21 +197,34 @@ def build_slack_payload(report: Dict[str, Any], *, source: str) -> Dict[str, Any
             "text": {"type": "mrkdwn", "text": f"*RAG judge soft-fail*\n{text}"},
         }
     ]
-    ack_url = judge_ack_public_url()
-    if ack_url:
-        blocks.append(
+    elements: List[Dict[str, Any]] = []
+    interactive = os.environ.get("RAG_JUDGE_SLACK_SIGNING_SECRET", "").strip() or (
+        os.environ.get("RAG_JUDGE_SLACK_INTERACTIVE", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    if interactive:
+        elements.append(
             {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Acknowledge"},
-                        "url": ack_url,
-                        "action_id": "judge_ack_open",
-                    }
-                ],
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Ack now"},
+                "action_id": "judge_ack_interactive",
+                "value": "ack",
+                "style": "primary",
             }
         )
+    ack_url = judge_ack_public_url()
+    if ack_url:
+        elements.append(
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Ack form"},
+                "url": ack_url,
+                "action_id": "judge_ack_open",
+            }
+        )
+    if elements:
+        blocks.append({"type": "actions", "elements": elements})
+    if ack_url:
         blocks.append(
             {
                 "type": "context",
@@ -221,6 +234,99 @@ def build_slack_payload(report: Dict[str, Any], *, source: str) -> Dict[str, Any
             }
         )
     return {"text": text, "blocks": blocks}
+
+
+def verify_slack_request_signature(
+    body: bytes,
+    *,
+    timestamp: str,
+    signature: str,
+    signing_secret: Optional[str] = None,
+    max_age_sec: int = 60 * 5,
+) -> bool:
+    """Slack Signing Secret doğrulama (v0 HMAC-SHA256)."""
+    import hashlib
+    import hmac
+    import time
+
+    secret = (
+        signing_secret
+        if signing_secret is not None
+        else os.environ.get("RAG_JUDGE_SLACK_SIGNING_SECRET", "").strip()
+    )
+    if not secret or not timestamp or not signature:
+        return False
+    try:
+        ts = int(timestamp)
+    except (TypeError, ValueError):
+        return False
+    if abs(int(time.time()) - ts) > int(max_age_sec):
+        return False
+    try:
+        raw = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    base = f"v0:{timestamp}:{raw}"
+    digest = (
+        "v0="
+        + hmac.new(secret.encode("utf-8"), base.encode("utf-8"), hashlib.sha256).hexdigest()
+    )
+    return hmac.compare_digest(digest, signature.strip())
+
+
+def parse_slack_interactive_payload(body: bytes) -> Dict[str, Any]:
+    """application/x-www-form-urlencoded `payload=` veya JSON body."""
+    from urllib.parse import parse_qs, unquote_plus
+
+    text = body.decode("utf-8", errors="replace")
+    if text.lstrip().startswith("{"):
+        try:
+            data = json.loads(text)
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    qs = parse_qs(text, keep_blank_values=True)
+    raw = (qs.get("payload") or [""])[0]
+    if not raw:
+        return {}
+    try:
+        data = json.loads(unquote_plus(raw))
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def slack_interactive_actor(payload: Dict[str, Any]) -> str:
+    user = payload.get("user") or {}
+    if isinstance(user, dict):
+        for key in ("username", "name", "id"):
+            val = str(user.get(key) or "").strip()
+            if val:
+                return val
+    return ""
+
+
+def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """block_actions → acknowledge_judge_alert."""
+    actions = payload.get("actions") or []
+    action_ids = {
+        str((a or {}).get("action_id") or "")
+        for a in actions
+        if isinstance(a, dict)
+    }
+    if "judge_ack_interactive" not in action_ids and payload.get("type") == "block_actions":
+        # yine de ack dene (tek buton senaryosu)
+        if not any(str((a or {}).get("value") or "") == "ack" for a in actions if isinstance(a, dict)):
+            return {"ok": False, "error": "unknown_action"}
+    actor = slack_interactive_actor(payload) or "slack"
+    note = "slack interactive ack"
+    state_path = os.environ.get("RAG_JUDGE_ALERT_STATE", "").strip() or None
+    return acknowledge_judge_alert(
+        actor=actor,
+        note=note,
+        state_path=state_path,
+        notify=False,
+    )
 
 
 def build_slack_resolve_payload(report: Dict[str, Any], *, source: str) -> Dict[str, Any]:

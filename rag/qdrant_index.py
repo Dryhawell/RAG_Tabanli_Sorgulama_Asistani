@@ -93,6 +93,7 @@ class QdrantIndex:
                 "source_file": meta.source_file,
                 "folder": meta.folder or "",
                 "tags": list(meta.tags or []),
+                "chunk_uid": str(getattr(meta, "chunk_uid", None) or ""),
             }
             points.append(
                 self._rest.PointStruct(
@@ -106,25 +107,87 @@ class QdrantIndex:
         self.client.upsert(collection_name=self.collection, points=points)
         self._next_id += embeddings.shape[0]
 
-    def ids_for_source(self, source_file: str) -> List[int]:
-        return [
+    def _scroll_point_ids(self, query_filter) -> List[int]:
+        """Qdrant payload filter ile point id listesi."""
+        out: List[int] = []
+        offset = None
+        while True:
+            records, offset = self.client.scroll(
+                collection_name=self.collection,
+                scroll_filter=query_filter,
+                limit=256,
+                offset=offset,
+                with_payload=False,
+                with_vectors=False,
+            )
+            for rec in records:
+                out.append(int(rec.id))
+            if offset is None:
+                break
+        return out
+
+    def ids_for_source(self, source_file: str, *, use_payload: bool = True) -> List[int]:
+        mem = [
             cid
             for cid, meta in self._id_to_meta.items()
             if meta.source_file == source_file
         ]
+        if not use_payload:
+            return mem
+        try:
+            flt = self._rest.Filter(
+                must=[
+                    self._rest.FieldCondition(
+                        key="source_file",
+                        match=self._rest.MatchValue(value=str(source_file)),
+                    )
+                ]
+            )
+            remote = self._scroll_point_ids(flt)
+            if remote:
+                return sorted(set(remote))
+        except Exception:
+            pass
+        return mem
 
-    def ids_for_chunk_uids(self, source_file: str, uids: Set[str] | List[str]) -> List[int]:
+    def ids_for_chunk_uids(
+        self,
+        source_file: str,
+        uids: Set[str] | List[str],
+        *,
+        use_payload: bool = True,
+    ) -> List[int]:
         want = {str(u) for u in uids if u}
         if not want:
             return []
-        out: List[int] = []
+        mem: List[int] = []
         for cid, meta in self._id_to_meta.items():
             if meta.source_file != source_file:
                 continue
             uid = getattr(meta, "chunk_uid", None)
             if uid and str(uid) in want:
-                out.append(cid)
-        return out
+                mem.append(cid)
+        if not use_payload:
+            return mem
+        try:
+            flt = self._rest.Filter(
+                must=[
+                    self._rest.FieldCondition(
+                        key="source_file",
+                        match=self._rest.MatchValue(value=str(source_file)),
+                    ),
+                    self._rest.FieldCondition(
+                        key="chunk_uid",
+                        match=self._rest.MatchAny(any=sorted(want)),
+                    ),
+                ]
+            )
+            remote = self._scroll_point_ids(flt)
+            if remote:
+                return sorted(set(remote))
+        except Exception:
+            pass
+        return mem
 
     def list_sources(self) -> List[str]:
         sources: Set[str] = {meta.source_file for meta in self._id_to_meta.values()}
@@ -231,6 +294,8 @@ class QdrantIndex:
                 meta_raw = payload.get("meta") or {}
                 if isinstance(meta_raw, dict) and meta_raw.get("source_file"):
                     meta = ChunkMetadata(**meta_raw)
+                    if not getattr(meta, "chunk_uid", None) and payload.get("chunk_uid"):
+                        meta.chunk_uid = str(payload.get("chunk_uid") or "") or None
                 else:
                     meta = ChunkMetadata(
                         source_file=str(payload.get("source_file") or "unknown"),
@@ -240,6 +305,7 @@ class QdrantIndex:
                         word_count=len(text.split()),
                         folder=str(payload.get("folder") or ""),
                         tags=list(payload.get("tags") or []),
+                        chunk_uid=str(payload.get("chunk_uid") or "") or None,
                     )
                 self._id_to_meta[cid] = meta
                 self._id_to_text[cid] = text

@@ -62,6 +62,32 @@ def test_qdrant_memory_index(tmp_path, monkeypatch):
     assert idx.list_sources() == ["b.txt"]
 
 
+def test_qdrant_payload_chunk_uid_lookup(monkeypatch):
+    pytest.importorskip("qdrant_client")
+    monkeypatch.setattr("rag.store.VECTOR_BACKEND", "qdrant")
+    monkeypatch.setattr("rag.store.QDRANT_URL", "")
+    monkeypatch.setattr("rag.store.QDRANT_PATH", "")
+    monkeypatch.setattr("rag.store.QDRANT_COLLECTION", "test_rag_uid")
+
+    idx = create_index(dim=4, embedding_model="fake", backend="qdrant")
+    m1 = _meta("doc.txt", 0)
+    m1.chunk_uid = "uid-keep"
+    m2 = _meta("doc.txt", 1)
+    m2.chunk_uid = "uid-drop"
+    vecs = np.eye(2, 4, dtype=np.float32)
+    idx.add(vecs, ["keep text here now", "drop text here now"], [m1, m2])
+
+    # memory map temizlenmiş gibi payload üzerinden bul
+    idx._id_to_meta.clear()
+    found = idx.ids_for_chunk_uids("doc.txt", ["uid-keep", "uid-drop"], use_payload=True)
+    assert len(found) == 2
+    removed = idx.remove_ids(idx.ids_for_chunk_uids("doc.txt", ["uid-drop"], use_payload=True))
+    assert removed == 1
+    left = idx.ids_for_chunk_uids("doc.txt", ["uid-keep"], use_payload=True)
+    assert len(left) == 1
+    assert idx.ids_for_source("doc.txt", use_payload=True) == left
+
+
 def test_i18n_tr_en():
     set_language("tr")
     assert get_language() == "tr"

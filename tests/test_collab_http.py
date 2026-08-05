@@ -67,6 +67,44 @@ def test_handle_judge_ack_form():
     assert b"Acknowledge" in body
 
 
+def test_handle_judge_slack_interactive(tmp_path, monkeypatch):
+    import hashlib
+    import hmac
+    import time
+    from urllib.parse import quote
+
+    from rag.collab_http import handle_judge_slack_interactive
+    from rag.judge_alert import save_judge_alert_state
+
+    state = str(tmp_path / "state.json")
+    save_judge_alert_state(
+        {"soft_fail": True, "source": "report", "acknowledged": False},
+        state,
+    )
+    secret = "slack-secret"
+    monkeypatch.setenv("RAG_JUDGE_SLACK_SIGNING_SECRET", secret)
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", state)
+    payload = {
+        "type": "block_actions",
+        "user": {"username": "ops"},
+        "actions": [{"action_id": "judge_ack_interactive", "value": "ack"}],
+    }
+    form = f"payload={quote(json.dumps(payload))}".encode("utf-8")
+    ts = str(int(time.time()))
+    base = f"v0:{ts}:{form.decode()}"
+    sig = "v0=" + hmac.new(secret.encode(), base.encode(), hashlib.sha256).hexdigest()
+    code, _, body = handle_judge_slack_interactive(
+        form,
+        headers={
+            "X-Slack-Request-Timestamp": ts,
+            "X-Slack-Signature": sig,
+        },
+    )
+    assert code == 200
+    data = json.loads(body.decode("utf-8"))
+    assert "acknowledged" in data.get("text", "").lower() or data.get("text")
+
+
 def test_handle_webpush_register(tmp_path, monkeypatch):
     monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
     sub = {

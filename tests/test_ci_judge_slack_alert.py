@@ -271,12 +271,46 @@ def test_acknowledge_holds_realert(tmp_path, monkeypatch):
 def test_slack_payload_includes_ack_deep_link(monkeypatch):
     from rag.judge_alert import build_slack_payload
 
+    monkeypatch.delenv("RAG_JUDGE_SLACK_SIGNING_SECRET", raising=False)
+    monkeypatch.delenv("RAG_JUDGE_SLACK_INTERACTIVE", raising=False)
     monkeypatch.setenv("RAG_JUDGE_ACK_PUBLIC_URL", "https://rag.example/judge/ack-form")
     payload = build_slack_payload({"summary": {"ok": False, "accuracy": 0.1}}, source="report")
     assert payload["blocks"]
     actions = [b for b in payload["blocks"] if b.get("type") == "actions"]
     assert actions
-    assert actions[0]["elements"][0]["url"] == "https://rag.example/judge/ack-form"
+    urls = [e.get("url") for e in actions[0]["elements"] if e.get("url")]
+    assert "https://rag.example/judge/ack-form" in urls
+
+
+def test_slack_payload_interactive_button(monkeypatch):
+    from rag.judge_alert import build_slack_payload
+
+    monkeypatch.setenv("RAG_JUDGE_SLACK_SIGNING_SECRET", "sigsec")
+    monkeypatch.delenv("RAG_JUDGE_ACK_PUBLIC_URL", raising=False)
+    payload = build_slack_payload({"summary": {"ok": False}}, source="report")
+    actions = [b for b in payload["blocks"] if b.get("type") == "actions"]
+    assert actions
+    assert any(e.get("action_id") == "judge_ack_interactive" for e in actions[0]["elements"])
+
+
+def test_verify_slack_request_signature():
+    import hashlib
+    import hmac
+    import time
+
+    from rag.judge_alert import verify_slack_request_signature
+
+    secret = "test_signing_secret"
+    body = b'payload=%7B%22type%22%3A%22block_actions%22%7D'
+    ts = str(int(time.time()))
+    base = f"v0:{ts}:{body.decode()}"
+    sig = "v0=" + hmac.new(secret.encode(), base.encode(), hashlib.sha256).hexdigest()
+    assert verify_slack_request_signature(
+        body, timestamp=ts, signature=sig, signing_secret=secret
+    )
+    assert not verify_slack_request_signature(
+        body, timestamp=ts, signature="v0=deadbeef", signing_secret=secret
+    )
 
 
 def test_remote_judge_state_roundtrip(tmp_path, monkeypatch):
