@@ -51,6 +51,59 @@ def test_dispatch_judge_ack_digest_dry_run(tmp_path: Path) -> None:
     assert result["ok"] is True
     assert result["dry_run"] is True
     assert "Total events" in result["payload"]["text"]
+    assert result["block_kit"] is True
+    assert isinstance(result["payload"].get("blocks"), list)
+    assert result["payload"]["blocks"][0]["type"] == "header"
+
+
+def test_dispatch_no_block_kit(tmp_path: Path) -> None:
+    path = str(tmp_path / "ack.jsonl")
+    append_judge_ack_audit("ack", path=path)
+    summary = summarize_judge_ack_audit(path=path, since_hours=24 * 365)
+    result = dispatch_judge_ack_digest(summary, dry_run=True, block_kit=False)
+    assert "blocks" not in result["payload"]
+    assert result["block_kit"] is False
+
+
+def test_tenant_quiet_hours_override_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("RAG_JUDGE_ACK_DIGEST_WEBHOOKS_JSON", raising=False)
+    monkeypatch.delenv("RAG_JUDGE_ACK_DIGEST_QUIET_HOURS_JSON", raising=False)
+    (tmp_path / "judge_ack_digest_webhooks.json").write_text(
+        '{"acme": "https://hooks.slack.test/acme", "beta": "https://hooks.slack.test/beta"}',
+        encoding="utf-8",
+    )
+    (tmp_path / "judge_ack_digest_quiet_hours.json").write_text(
+        '{"acme": "22:00-07:00", "beta": "off"}',
+        encoding="utf-8",
+    )
+    from rag.judge_alert import (
+        parse_judge_ack_digest_quiet_hours,
+        resolve_judge_ack_digest_quiet_hours,
+    )
+
+    qmap = parse_judge_ack_digest_quiet_hours(base=str(tmp_path))
+    assert qmap["acme"] == "22:00-07:00"
+    assert resolve_judge_ack_digest_quiet_hours("acme", base=str(tmp_path)) == "22:00-07:00"
+    assert resolve_judge_ack_digest_quiet_hours("beta", base=str(tmp_path)) == "off"
+
+    path = str(tmp_path / "ack.jsonl")
+    append_judge_ack_audit("ack", path=path, extra={"tenant_id": "acme"})
+
+    def fake_quiet(*, quiet_spec=None, tenant_id=None, **kwargs):
+        return quiet_spec == "22:00-07:00"
+
+    with patch("rag.collab_notify_digest.is_quiet_hours", side_effect=fake_quiet):
+        report = dispatch_judge_ack_digest_fanout(
+            path=path,
+            since_hours=24 * 365,
+            dry_run=True,
+            base=str(tmp_path),
+        )
+    by_tid = {r["tenant_id"]: r for r in report["results"]}
+    assert by_tid["acme"]["reason"] == "quiet_hours"
+    assert by_tid["beta"].get("reason") != "quiet_hours"
+    assert by_tid["beta"]["dry_run"] is True
+    assert report["quiet_overrides"] == 2
 
 
 def test_dispatch_skips_quiet_hours(tmp_path: Path) -> None:

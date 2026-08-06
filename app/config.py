@@ -397,6 +397,12 @@ JUDGE_ACK_DIGEST_QUIET_HOURS = os.getenv(
 JUDGE_ACK_DIGEST_TIMEZONE = os.getenv(
     "RAG_JUDGE_ACK_DIGEST_TIMEZONE", ""
 ).strip()
+JUDGE_ACK_DIGEST_QUIET_HOURS_JSON = os.getenv(
+    "RAG_JUDGE_ACK_DIGEST_QUIET_HOURS_JSON", ""
+).strip()
+JUDGE_ACK_DIGEST_BLOCK_KIT = os.getenv(
+    "RAG_JUDGE_ACK_DIGEST_BLOCK_KIT", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
 # Presence snapshot TTL (saniye)
 COLLAB_PRESENCE_TTL_SEC = int(os.getenv("RAG_COLLAB_PRESENCE_TTL_SEC", "90"))
 LORA_DP_EVAL_AUTO_ROLLBACK = os.getenv("RAG_LORA_DP_EVAL_AUTO_ROLLBACK", "0") not in {

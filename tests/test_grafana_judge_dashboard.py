@@ -23,3 +23,5 @@ def test_rag_judge_grafana_dashboard_json():
     assert "rag_judge_runs_total" in joined
     assert "rag_judge_ack_audit_total" in joined
     assert "rag_vector_dual_write_shadow_overlap" in joined
+    assert "rag:dual_write_lag:avg1h" in joined
+    assert "rag:dual_write_shadow_burn:1h" in joined

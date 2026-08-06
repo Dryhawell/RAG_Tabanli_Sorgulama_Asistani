@@ -368,6 +368,7 @@ def test_judge_ack_digest_workflow_yaml():
     assert "RAG_JUDGE_SLACK_WEBHOOK" in text
     assert "RAG_JUDGE_ACK_DIGEST_WEBHOOKS_JSON" in text
     assert "RAG_JUDGE_ACK_DIGEST_QUIET_HOURS" in text
+    assert "RAG_JUDGE_ACK_DIGEST_QUIET_HOURS_JSON" in text
     assert "schedule:" in text
     assert "0 9 * * 1" in text
     assert "workflow_dispatch" in text
@@ -385,16 +386,94 @@ def test_ci_alertmanager_check_config_step():
 def test_dual_write_shadow_alert_artifacts():
     rules = Path("grafana/rules/rag_dual_write.yml").read_text(encoding="utf-8")
     assert "RagDualWriteShadowOverlapLow" in rules
+    assert "RagDualWriteLagHigh" in rules
+    assert "RagDualWriteLagShadowBurn" in rules
     assert "rag_vector_dual_write_shadow_overlap" in rules
     assert "rag:dual_write_shadow_overlap:avg1h" in rules
+    assert "rag:dual_write_lag:avg1h" in rules
+    assert "rag:dual_write_shadow_burn:1h" in rules
     alerting = Path("grafana/alerting/rag_dual_write_shadow.yaml").read_text(
         encoding="utf-8"
     )
     assert "rag-dual-write-shadow-overlap-low" in alerting
+    assert "rag-dual-write-lag-shadow-burn" in alerting
     assert "0.95" in alerting
     dash = Path("grafana/dashboards/rag_judge.json").read_text(encoding="utf-8")
     assert "rag_vector_dual_write_shadow_overlap" in dash
     assert "rag:dual_write_shadow_overlap:avg1h" in dash
+    assert "rag:dual_write_lag:avg1h" in dash
+    assert "rag:dual_write_shadow_burn:1h" in dash
+
+
+def test_suggest_equal_labels_and_from_live(tmp_path, monkeypatch):
+    from unittest.mock import patch
+
+    from rag.alertmanager_ops import (
+        suggest_equal_labels,
+        tune_inhibit_equal_from_live,
+        write_inhibit_rules,
+    )
+
+    equal = suggest_equal_labels(
+        [
+            {"labels": {"alertname": "A", "service": "rag-ingest", "secondary_backend": "qdrant"}},
+            {"labels": {"alertname": "B", "service": "rag-ingest", "secondary_backend": "qdrant"}},
+            {"labels": {"alertname": "C", "service": "rag-judge", "tenant": "acme"}},
+        ],
+        min_count=2,
+    )
+    assert "alertname" in equal
+    assert "service" in equal
+    assert "secondary_backend" in equal
+
+    fake_alerts = {
+        "ok": True,
+        "alerts": [
+            {
+                "labels": {
+                    "alertname": "RagDualWriteLagShadowBurn",
+                    "service": "rag-ingest",
+                    "secondary_backend": "qdrant",
+                    "severity": "critical",
+                }
+            },
+            {
+                "labels": {
+                    "alertname": "RagDualWriteLagHigh",
+                    "service": "rag-ingest",
+                    "secondary_backend": "qdrant",
+                    "severity": "warning",
+                }
+            },
+        ],
+    }
+    with patch("rag.alertmanager_ops.list_alerts", return_value=fake_alerts):
+        tune = tune_inhibit_equal_from_live(include_static=False, min_count=2)
+        assert tune["ok"] is True
+        assert "secondary_backend" in tune["equal"]
+        out = tmp_path / "inhibit.yml"
+        report = write_inhibit_rules(
+            output=str(out),
+            from_live=True,
+            paths=["grafana/rules/rag_dual_write.yml"],
+        )
+    assert report["ok"] is True
+    assert report["from_live"] is True
+    assert "secondary_backend" in report["equal"] or "service" in report["equal"]
+    text = out.read_text(encoding="utf-8")
+    assert "equal:" in text
+
+
+def test_cli_alertmanager_from_live_parser():
+    from rag.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        ["alertmanager", "--generate-inhibit", "--from-live", "--tune-equal"]
+    )
+    assert args.from_live is True
+    assert args.tune_equal is True
+
 
 
 

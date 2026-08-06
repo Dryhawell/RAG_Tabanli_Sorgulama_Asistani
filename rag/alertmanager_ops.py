@@ -176,6 +176,151 @@ def list_silences(*, base_url: Optional[str] = None, timeout: float = 5.0) -> Di
     }
 
 
+def list_alerts(
+    *,
+    base_url: Optional[str] = None,
+    active: bool = True,
+    silenced: bool = False,
+    inhibited: bool = False,
+    timeout: float = 5.0,
+) -> Dict[str, Any]:
+    """GET /api/v2/alerts — canlı firing alert listesi."""
+    from urllib.parse import urlencode
+
+    qs = urlencode(
+        {
+            "active": str(bool(active)).lower(),
+            "silenced": str(bool(silenced)).lower(),
+            "inhibited": str(bool(inhibited)).lower(),
+        }
+    )
+    resp = _am_request(
+        "GET", f"/api/v2/alerts?{qs}", base_url=base_url, timeout=timeout
+    )
+    data = resp.get("data")
+    return {
+        "ok": bool(resp.get("ok")),
+        "alerts": data if isinstance(data, list) else [],
+        "count": len(data) if isinstance(data, list) else 0,
+        "status": resp.get("status"),
+        "error": resp.get("error"),
+        "url": resp.get("url"),
+    }
+
+
+def extract_live_alert_labels(
+    alerts: Sequence[Any],
+) -> List[Dict[str, Any]]:
+    """Alertmanager /api/v2/alerts satırlarından label setleri çıkar."""
+    found: List[Dict[str, Any]] = []
+    for item in alerts or []:
+        if not isinstance(item, dict):
+            continue
+        labels = item.get("labels")
+        if isinstance(labels, dict) and labels:
+            found.append({"labels": dict(labels), "source": "alertmanager"})
+    return found
+
+
+def suggest_equal_labels(
+    label_sets: Sequence[Dict[str, Any]],
+    *,
+    prefer: Sequence[str] = ("alertname", "service", "secondary_backend", "tenant"),
+    min_count: int = 2,
+    max_labels: int = 4,
+) -> List[str]:
+    """Canlı/statik label setlerinden inhibit `equal` öner."""
+    counts: Dict[str, int] = {}
+    for item in label_sets:
+        labels = item.get("labels") if isinstance(item, dict) else None
+        if not isinstance(labels, dict):
+            continue
+        for key in labels.keys():
+            k = str(key).strip()
+            if not k or k == "severity":
+                continue
+            counts[k] = counts.get(k, 0) + 1
+
+    chosen: List[str] = []
+    for key in prefer:
+        if counts.get(key, 0) >= min_count and key not in chosen:
+            chosen.append(key)
+    extras = sorted(
+        ((k, c) for k, c in counts.items() if k not in chosen and c >= min_count),
+        key=lambda kv: (-kv[1], kv[0]),
+    )
+    for k, _c in extras:
+        if len(chosen) >= max_labels:
+            break
+        chosen.append(k)
+    if not chosen:
+        for key in ("alertname", "service"):
+            if key in counts and key not in chosen:
+                chosen.append(key)
+        if not chosen:
+            chosen = ["alertname", "service"]
+    return chosen[:max_labels]
+
+
+def tune_inhibit_equal_from_live(
+    *,
+    base_url: Optional[str] = None,
+    paths: Optional[Sequence[str]] = None,
+    prefer: Optional[Sequence[str]] = None,
+    fallback_equal: Sequence[str] = ("alertname", "service"),
+    min_count: int = 1,
+    include_static: bool = True,
+    timeout: float = 5.0,
+) -> Dict[str, Any]:
+    """Canlı Alertmanager alert'lerinden equal label öner (+ opsiyonel Grafana static)."""
+    live = list_alerts(base_url=base_url, timeout=timeout)
+    label_sets: List[Dict[str, Any]] = []
+    live_count = 0
+    if live.get("ok"):
+        live_sets = extract_live_alert_labels(live.get("alerts") or [])
+        live_count = len(live_sets)
+        label_sets.extend(live_sets)
+    static_count = 0
+    if include_static:
+        static_sets = extract_grafana_alert_labels(paths)
+        static_count = len(static_sets)
+        label_sets.extend(static_sets)
+
+    if not label_sets:
+        equal = list(fallback_equal)
+        return {
+            "ok": bool(live.get("ok")) or include_static,
+            "equal": equal,
+            "live_ok": bool(live.get("ok")),
+            "live_error": None if live.get("ok") else live.get("error"),
+            "live_alerts": live_count,
+            "static_label_sets": static_count,
+            "source": "fallback",
+        }
+
+    prefer_keys = list(prefer) if prefer is not None else [
+        "alertname",
+        "service",
+        "secondary_backend",
+        "tenant",
+    ]
+    equal = suggest_equal_labels(
+        label_sets, prefer=prefer_keys, min_count=min_count
+    )
+    return {
+        "ok": True,
+        "equal": equal,
+        "live_ok": bool(live.get("ok")),
+        "live_error": None if live.get("ok") else live.get("error"),
+        "live_alerts": live_count,
+        "static_label_sets": static_count,
+        "label_sets": len(label_sets),
+        "source": "live+static"
+        if live_count and static_count
+        else ("live" if live_count else "static"),
+    }
+
+
 def delete_silence(
     silence_id: str,
     *,
@@ -468,22 +613,52 @@ def write_inhibit_rules(
     output: Optional[str] = None,
     equal_labels: Sequence[str] = ("alertname", "service"),
     severity_order: Sequence[str] = ("critical", "warning", "info"),
+    from_live: bool = False,
+    api_url: Optional[str] = None,
+    tune_min_count: int = 1,
 ) -> Dict[str, Any]:
-    label_sets = extract_grafana_alert_labels(paths)
+    equal = list(equal_labels)
+    tune: Optional[Dict[str, Any]] = None
+    if from_live:
+        tune = tune_inhibit_equal_from_live(
+            base_url=api_url,
+            paths=paths,
+            fallback_equal=equal_labels,
+            min_count=tune_min_count,
+            include_static=True,
+        )
+        if tune.get("equal"):
+            equal = list(tune["equal"])
+    label_sets: List[Dict[str, Any]] = list(extract_grafana_alert_labels(paths))
+    if from_live:
+        live = list_alerts(base_url=api_url)
+        if live.get("ok"):
+            label_sets.extend(extract_live_alert_labels(live.get("alerts") or []))
     rules = generate_inhibit_rules(
-        label_sets, severity_order=severity_order, equal_labels=equal_labels
+        label_sets, severity_order=severity_order, equal_labels=equal
     )
     text = render_inhibit_rules_yaml(rules)
     out = output or str(ROOT / "grafana" / "inhibit_rules.generated.yml")
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_text(text, encoding="utf-8")
-    return {
+    result: Dict[str, Any] = {
         "ok": True,
         "output": out,
         "rules": len(rules),
         "label_sets": len(label_sets),
-        "sources": sorted({str(x.get("source_file")) for x in label_sets}),
+        "equal": equal,
+        "from_live": bool(from_live),
+        "sources": sorted(
+            {
+                str(x.get("source_file") or x.get("source") or "")
+                for x in label_sets
+                if x.get("source_file") or x.get("source")
+            }
+        ),
     }
+    if tune is not None:
+        result["equal_tune"] = tune
+    return result
 
 
 DEFAULT_INHIBIT = ROOT / "grafana" / "inhibit_rules.generated.yml"
