@@ -47,11 +47,32 @@ jobs:
             --inhibit metadata/inhibit_rules.ci.yml \
             --slack-webhook 'https://hooks.slack.com/services/T/B/CI' \
             --webhook-url 'http://127.0.0.1/hook'
+          # ingest webhook placeholder (same as default for structural check)
           python -m rag.cli alertmanager --check-config --output metadata/alertmanager.ci.yml
           # merged artifact must carry inhibit_rules when generator produced matchers
           if grep -q 'source_matchers:' metadata/inhibit_rules.ci.yml; then
             grep -q 'inhibit_rules:' metadata/alertmanager.ci.yml
           fi
+          # equal-tune dry-run (static Grafana labels; no live AM in CI)
+          python -m rag.cli alertmanager --tune-equal \
+            | tee metadata/inhibit_equal_tune.json
+      - name: Inhibit equal tune PR comment
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INHIBIT_EQUAL_PR_COMMENT_POST: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+        run: python scripts/ci_inhibit_equal_pr_comment.py || true
+      - name: Upload Alertmanager artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alertmanager-inhibit-${{ github.run_id }}
+          path: |
+            metadata/inhibit_equal_tune.json
+            metadata/inhibit_equal_pr_comment.md
+            metadata/inhibit_rules.ci.yml
+            metadata/alertmanager.ci.yml
+          if-no-files-found: ignore
       - name: Judge gate (heuristic)
         env:
           RAG_JUDGE_MODE: heuristic

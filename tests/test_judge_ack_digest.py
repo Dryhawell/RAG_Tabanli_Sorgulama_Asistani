@@ -43,7 +43,9 @@ def test_summarize_filters_by_tenant(tmp_path: Path) -> None:
     assert acme["by_event"] == {"ack": 1, "unack": 1}
 
 
-def test_dispatch_judge_ack_digest_dry_run(tmp_path: Path) -> None:
+def test_dispatch_judge_ack_digest_dry_run(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("RAG_JUDGE_SLACK_INTERACTIVE", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_PUBLIC_URL", "http://example.test/judge/ack-form")
     path = str(tmp_path / "ack.jsonl")
     append_judge_ack_audit("ack", actor="alice", path=path)
     summary = summarize_judge_ack_audit(path=path, since_hours=24 * 365)
@@ -54,6 +56,36 @@ def test_dispatch_judge_ack_digest_dry_run(tmp_path: Path) -> None:
     assert result["block_kit"] is True
     assert isinstance(result["payload"].get("blocks"), list)
     assert result["payload"]["blocks"][0]["type"] == "header"
+    actions = [
+        b for b in result["payload"]["blocks"] if b.get("type") == "actions"
+    ]
+    assert actions
+    ids = {e.get("action_id") for e in actions[0].get("elements") or []}
+    assert "judge_ack_digest_reexport" in ids
+    assert "judge_ack_digest_open" in ids
+    assert "judge_ack_interactive" in ids
+
+
+def test_digest_reexport_interactive_action(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
+    path = str(tmp_path / "ack.jsonl")
+    append_judge_ack_audit("ack", actor="alice", path=path)
+    from rag.judge_alert import handle_slack_interactive_ack
+
+    result = handle_slack_interactive_ack(
+        {
+            "type": "block_actions",
+            "actions": [
+                {"action_id": "judge_ack_digest_reexport", "value": "reexport"}
+            ],
+            "user": {"username": "ops"},
+        }
+    )
+    assert result["ok"] is True
+    assert result["mode"] == "digest_reexport"
+    assert result["summary"]["total"] >= 1
+    assert "Total events" in result["text"]
+
 
 
 def test_dispatch_no_block_kit(tmp_path: Path) -> None:

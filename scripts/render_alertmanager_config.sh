@@ -20,15 +20,18 @@ fi
 # Slack webhook yoksa güvenli placeholder (Alertmanager ayağa kalksın)
 export RAG_ALERTMANAGER_SLACK_WEBHOOK="${RAG_ALERTMANAGER_SLACK_WEBHOOK:-https://hooks.slack.com/services/REPLACE/ME/PLEASE}"
 export RAG_ALERTMANAGER_WEBHOOK_URL="${RAG_ALERTMANAGER_WEBHOOK_URL:-http://host.docker.internal:9999/alertmanager-default}"
+# Ingest burn-rate → dual-write catch-up hook (yoksa default webhook)
+export RAG_ALERTMANAGER_INGEST_WEBHOOK_URL="${RAG_ALERTMANAGER_INGEST_WEBHOOK_URL:-$RAG_ALERTMANAGER_WEBHOOK_URL}"
 
 if command -v envsubst >/dev/null 2>&1; then
-  envsubst '${RAG_ALERTMANAGER_SLACK_WEBHOOK} ${RAG_ALERTMANAGER_WEBHOOK_URL}' \
+  envsubst '${RAG_ALERTMANAGER_SLACK_WEBHOOK} ${RAG_ALERTMANAGER_WEBHOOK_URL} ${RAG_ALERTMANAGER_INGEST_WEBHOOK_URL}' \
     < "$TEMPLATE" > "$OUTPUT"
 else
   # Minimal fallback: sed (sadece bilinen placeholder'lar)
   sed \
     -e "s|\${RAG_ALERTMANAGER_SLACK_WEBHOOK}|${RAG_ALERTMANAGER_SLACK_WEBHOOK}|g" \
     -e "s|\${RAG_ALERTMANAGER_WEBHOOK_URL}|${RAG_ALERTMANAGER_WEBHOOK_URL}|g" \
+    -e "s|\${RAG_ALERTMANAGER_INGEST_WEBHOOK_URL}|${RAG_ALERTMANAGER_INGEST_WEBHOOK_URL}|g" \
     "$TEMPLATE" > "$OUTPUT"
 fi
 

@@ -512,7 +512,86 @@ def build_judge_ack_digest_slack_blocks(
                 ],
             }
         )
+
+    elements: List[Dict[str, Any]] = []
+    interactive = os.environ.get("RAG_JUDGE_SLACK_SIGNING_SECRET", "").strip() or (
+        os.environ.get("RAG_JUDGE_SLACK_INTERACTIVE", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    if interactive:
+        elements.append(
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Re-export audit"},
+                "action_id": "judge_ack_digest_reexport",
+                "value": "reexport",
+                "style": "primary",
+            }
+        )
+        elements.append(
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Ack soft-fail"},
+                "action_id": "judge_ack_interactive",
+                "value": "ack",
+            }
+        )
+    ack_url = judge_ack_public_url()
+    if ack_url:
+        elements.append(
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Ack form"},
+                "url": ack_url,
+                "action_id": "judge_ack_digest_open",
+            }
+        )
+    export_url = judge_ack_export_public_url()
+    if export_url:
+        elements.append(
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Download export"},
+                "url": export_url,
+                "action_id": "judge_ack_digest_export_link",
+            }
+        )
+    if elements:
+        blocks.append({"type": "actions", "block_id": "judge_ack_digest_actions", "elements": elements[:5]})
+    if ack_url:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": f"Ack form: <{ack_url}|open>"},
+                ],
+            }
+        )
     return blocks
+
+
+def judge_ack_export_public_url() -> str:
+    """Digest re-export deep-link (JSONL download)."""
+    explicit = os.environ.get("RAG_JUDGE_ACK_EXPORT_PUBLIC_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    base = judge_ack_public_url()
+    if base:
+        # /judge/ack-form → /judge/ack-export
+        if base.endswith("/judge/ack-form"):
+            return base[: -len("/judge/ack-form")] + "/judge/ack-export"
+        return base.rstrip("/") + "/judge/ack-export"
+    try:
+        from app.config import COLLAB_HTTP_PORT, COLLAB_WS_PUBLIC_HOST
+
+        host = (COLLAB_WS_PUBLIC_HOST or "localhost").strip() or "localhost"
+        port = int(COLLAB_HTTP_PORT or 8766)
+        return f"http://{host}:{port}/judge/ack-export"
+    except Exception:
+        pub = os.environ.get("RAG_PUBLIC_BASE_URL", "").strip().rstrip("/")
+        if pub:
+            return f"{pub}/judge/ack-export"
+    return ""
 
 
 def build_judge_ack_digest_text(
@@ -1295,6 +1374,31 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             "opened": opened,
             "channel_id": channel_id,
             "message_ts": message_ts,
+        }
+
+    if "judge_ack_digest_reexport" in action_ids:
+        hours = 168.0
+        try:
+            hours = float(os.environ.get("RAG_JUDGE_ACK_DIGEST_HOURS", "168") or 168)
+        except Exception:
+            hours = 168.0
+        summary = summarize_judge_ack_audit(since_hours=hours)
+        exported = export_judge_ack_audit(fmt="jsonl", limit=200)
+        text = build_judge_ack_digest_text(summary)
+        export_url = judge_ack_export_public_url()
+        if export_url:
+            text = f"{text}\nExport link: {export_url}"
+        return {
+            "ok": True,
+            "mode": "digest_reexport",
+            "summary": summary,
+            "export": {
+                "ok": exported.get("ok"),
+                "count": exported.get("count"),
+                "format": exported.get("format"),
+            },
+            "text": text,
+            "export_url": export_url or None,
         }
 
     if "judge_ack_interactive" not in action_ids and ptype == "block_actions":

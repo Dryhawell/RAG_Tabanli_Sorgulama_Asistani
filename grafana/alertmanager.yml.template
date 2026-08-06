@@ -13,6 +13,10 @@ route:
       receiver: judge-slack
       continue: true
     - matchers:
+        - service = rag-ingest
+      receiver: ingest-webhook
+      continue: true
+    - matchers:
         - service = rag
       receiver: rag-webhook
       continue: true
@@ -35,6 +39,11 @@ receivers:
           *{{ .Annotations.summary }}*
           {{ .Annotations.description }}
           {{ end }}
+
+  - name: ingest-webhook
+    webhook_configs:
+      - url: ${RAG_ALERTMANAGER_INGEST_WEBHOOK_URL}
+        send_resolved: true
 
   - name: rag-webhook
     webhook_configs:

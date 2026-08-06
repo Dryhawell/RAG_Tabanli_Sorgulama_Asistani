@@ -230,14 +230,30 @@ def suggest_equal_labels(
     max_labels: int = 4,
 ) -> List[str]:
     """Canlı/statik label setlerinden inhibit `equal` öner."""
+    blocklist = {
+        "annotations",
+        "summary",
+        "description",
+        "title",
+        "message",
+        "dashboard",
+        "runbook_url",
+        "value",
+    }
     counts: Dict[str, int] = {}
     for item in label_sets:
-        labels = item.get("labels") if isinstance(item, dict) else None
+        if not isinstance(item, dict):
+            continue
+        # Top-level alertname (Grafana extract)
+        top_name = str(item.get("alertname") or "").strip()
+        if top_name:
+            counts["alertname"] = counts.get("alertname", 0) + 1
+        labels = item.get("labels") if isinstance(item.get("labels"), dict) else {}
         if not isinstance(labels, dict):
             continue
         for key in labels.keys():
             k = str(key).strip()
-            if not k or k == "severity":
+            if not k or k == "severity" or k in blocklist:
                 continue
             counts[k] = counts.get(k, 0) + 1
 

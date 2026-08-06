@@ -53,6 +53,9 @@ def test_alertmanager_and_llm_cost_rules():
     tmpl = Path("grafana/alertmanager.yml.template").read_text(encoding="utf-8")
     assert "${RAG_ALERTMANAGER_SLACK_WEBHOOK}" in tmpl
     assert "${RAG_ALERTMANAGER_WEBHOOK_URL}" in tmpl
+    assert "${RAG_ALERTMANAGER_INGEST_WEBHOOK_URL}" in tmpl
+    assert "ingest-webhook" in tmpl
+    assert "service = rag-ingest" in tmpl
     assert "judge-slack" in tmpl
     assert Path("scripts/render_alertmanager_config.sh").is_file()
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
@@ -62,6 +65,10 @@ def test_alertmanager_and_llm_cost_rules():
     assert "RAG_ALERTMANAGER_SLACK_WEBHOOK" in compose
     dash = Path("grafana/dashboards/rag_judge.json").read_text(encoding="utf-8")
     assert "rag:llm_cost_usd_1h" in dash
+    am = Path("grafana/alertmanager.yml").read_text(encoding="utf-8")
+    assert "ingest-webhook" in am
+    assert "rag-ingest" in am
+    assert "dual-write-catch-up" in am
 
 
 def test_render_alertmanager_config_script(tmp_path, monkeypatch):
@@ -379,8 +386,12 @@ def test_ci_alertmanager_check_config_step():
     assert "--check-config" in text
     assert "--generate-inhibit" in text
     assert "--inhibit" in text
+    assert "--tune-equal" in text
+    assert "ci_inhibit_equal_pr_comment.py" in text
+    assert "alertmanager-inhibit-" in text
     assert "alertmanager --render" in text
     assert "Alertmanager check-config" in text
+    assert "inhibit_equal_tune.json" in text
 
 
 def test_dual_write_shadow_alert_artifacts():

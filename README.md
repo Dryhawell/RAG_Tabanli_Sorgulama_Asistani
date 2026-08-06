@@ -161,12 +161,12 @@ Grafana'da Prometheus datasource ekleyip `rag_queries_total`, `rag_query_latency
 Judge soft-fail paneli: `grafana/dashboards/rag_judge.json` (provisioning: `grafana/provisioning/dashboards/`).
 Judge Slack alert kuralı: `grafana/alerting/rag_judge_soft_fail.yaml` + CI `scripts/ci_judge_slack_alert.py` (`RAG_JUDGE_SLACK_WEBHOOK`, opsiyonel `RAG_JUDGE_PAGERDUTY_ROUTING_KEY` / `RAG_JUDGE_OPSGENIE_API_KEY`; soft-fail → OK geçişinde auto-resolve, state: `RAG_JUDGE_ALERT_STATE`; manuel ack: `POST /judge/ack` + `RAG_JUDGE_ACK_TOKEN` veya admin UI).
 CI judge state: artifact + `actions/cache` (`metadata/judge_alert_state.json`) ile run'lar arası kalıcılık; opsiyonel harici store: `RAG_JUDGE_ALERT_STATE_URL`.
-Slack ack deep-link: `RAG_JUDGE_ACK_PUBLIC_URL` → `/judge/ack-form`; interactive + ephemeral + rate limit; audit: `judge-ack-export` / `judge-ack-purge` / `judge-ack-digest` (`--fan-out` · `--quiet-hours` · `--force` · Block Kit; cron: `.github/workflows/judge-ack-digest.yml`; panel: `rag_judge_ack_audit_total`; tenant map: `RAG_JUDGE_ACK_DIGEST_WEBHOOKS_JSON`; quiet override: `RAG_JUDGE_ACK_DIGEST_QUIET_HOURS_JSON`).
+Slack ack deep-link: `RAG_JUDGE_ACK_PUBLIC_URL` → `/judge/ack-form`; interactive + ephemeral + rate limit; audit: `judge-ack-export` / `judge-ack-purge` / `judge-ack-digest` (`--fan-out` · Block Kit actions: re-export / ack form; cron: `.github/workflows/judge-ack-digest.yml`; quiet override: `RAG_JUDGE_ACK_DIGEST_QUIET_HOURS_JSON`).
 Observability stack: `docker compose --profile obs up -d` (Prometheus + Alertmanager + Tempo + Grafana).
-Alertmanager: rotate/reload/silence/inhibit + `python -m rag.cli alertmanager --check-config` (amtool veya yapısal fallback; CI: generate-inhibit → render `--inhibit` → check-config; equal tune: `--from-live` / `--tune-equal`).
+Alertmanager: rotate/reload/silence/inhibit + `python -m rag.cli alertmanager --check-config` (CI: generate-inhibit → render → check-config → `--tune-equal` artifact/PR comment; equal tune: `--from-live`).
 LLM cost recording rules: `grafana/rules/rag_llm_cost.yml` → `rag:llm_cost_usd_per_hour`.
 Vektör migrasyon: `python -m rag.cli migrate-vector --source faiss --target qdrant` (dual-write: `RAG_VECTOR_DUAL_WRITE=qdrant`).
-Dual-write: `--lag-report` · `--shadow-compare [--auto-catch-up-on-fail]` · `--catch-up` · `--auto-cutover` · `--cutover` (workflows: catch-up + shadow-compare; alerts: `RagDualWriteShadowOverlapLow` · `RagDualWriteLagHigh` · `RagDualWriteLagShadowBurn`).
+Dual-write: `--lag-report` · `--shadow-compare [--auto-catch-up-on-fail]` · `--catch-up` · burn-rate webhook `POST /hooks/dual-write-catch-up` (`RagDualWriteLagShadowBurn` → auto catch-up).
 VAPID üretimi: `python -m rag.cli collab-notifications --generate-vapid`
 VAPID rotate/vault: `python -m rag.cli collab-notifications --rotate-vapid` (Actions: **VAPID Rotate**; secret sync: `GH_PAT` + `--update-github-secrets` + opsiyonel `--vapid-github-environment`)
 Digest alert: `python -m rag.cli collab-notifications --digest-alert-check --digest-alert-all` (cron: `.github/workflows/digest-alert.yml`; tenant webhook: `RAG_DIGEST_ALERT_WEBHOOKS_JSON` veya `metadata/digest_alert_webhooks.json`)
@@ -512,6 +512,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
 - Push: VAPID OIDC / Deploy-key based secret store sync
-- Judge: ack digest interactive Block Kit actions (re-export / ack deep-link)
-- Ingest: dual-write catch-up auto-trigger from burn-rate alert webhook
-- Observability: inhibit equal tune CI dry-run artifact + PR comment
+- Judge: ack digest re-export attach file via Slack files.upload
+- Ingest: dual-write webhook GitHub workflow_dispatch fallback
+- Observability: inhibit equal auto-apply on main with amtool diff gate
