@@ -387,6 +387,16 @@ DIGEST_ALERT_FAIL_RATE = float(os.getenv("RAG_DIGEST_ALERT_FAIL_RATE", "0.2"))
 DIGEST_ALERT_MIN_SAMPLES = int(os.getenv("RAG_DIGEST_ALERT_MIN_SAMPLES", "5"))
 DIGEST_ALERT_WEBHOOK_URL = os.getenv("RAG_DIGEST_ALERT_WEBHOOK_URL", "").strip()
 DIGEST_ALERT_WEBHOOKS_JSON = os.getenv("RAG_DIGEST_ALERT_WEBHOOKS_JSON", "").strip()
+# Judge ack digest tenant fan-out + quiet hours
+JUDGE_ACK_DIGEST_WEBHOOKS_JSON = os.getenv(
+    "RAG_JUDGE_ACK_DIGEST_WEBHOOKS_JSON", ""
+).strip()
+JUDGE_ACK_DIGEST_QUIET_HOURS = os.getenv(
+    "RAG_JUDGE_ACK_DIGEST_QUIET_HOURS", ""
+).strip()
+JUDGE_ACK_DIGEST_TIMEZONE = os.getenv(
+    "RAG_JUDGE_ACK_DIGEST_TIMEZONE", ""
+).strip()
 # Presence snapshot TTL (saniye)
 COLLAB_PRESENCE_TTL_SEC = int(os.getenv("RAG_COLLAB_PRESENCE_TTL_SEC", "90"))
 LORA_DP_EVAL_AUTO_ROLLBACK = os.getenv("RAG_LORA_DP_EVAL_AUTO_ROLLBACK", "0") not in {

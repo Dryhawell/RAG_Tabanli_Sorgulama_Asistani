@@ -1299,16 +1299,45 @@ def cmd_judge_ack_purge(args: argparse.Namespace) -> int:
 
 
 def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
-    from rag.judge_alert import dispatch_judge_ack_digest, summarize_judge_ack_audit
+    from rag.judge_alert import (
+        dispatch_judge_ack_digest,
+        dispatch_judge_ack_digest_fanout,
+        summarize_judge_ack_audit,
+    )
+
+    hours = float(getattr(args, "hours", 168) or 168)
+    dry_run = bool(getattr(args, "dry_run", False))
+    quiet = getattr(args, "quiet_hours", None)
+    force = bool(getattr(args, "force", False))
+    tz = getattr(args, "timezone", None)
+    audit = getattr(args, "audit", None)
+
+    if getattr(args, "fan_out", False):
+        report = dispatch_judge_ack_digest_fanout(
+            path=audit,
+            since_hours=hours,
+            dry_run=dry_run,
+            quiet_hours=quiet,
+            ignore_quiet_hours=force,
+            timezone_name=tz,
+            webhook=getattr(args, "webhook", None),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
 
     summary = summarize_judge_ack_audit(
-        path=getattr(args, "audit", None),
-        since_hours=float(getattr(args, "hours", 168) or 168),
+        path=audit,
+        since_hours=hours,
+        tenant_id=getattr(args, "tenant", None),
     )
     dispatched = dispatch_judge_ack_digest(
         summary,
         webhook=getattr(args, "webhook", None),
-        dry_run=bool(getattr(args, "dry_run", False)),
+        dry_run=dry_run,
+        tenant_id=getattr(args, "tenant", None),
+        quiet_hours=quiet,
+        ignore_quiet_hours=force,
+        timezone_name=tz,
     )
     print(
         json.dumps(
@@ -1431,6 +1460,7 @@ def cmd_alertmanager(args: argparse.Namespace) -> int:
             output=args.output,
             slack_webhook=args.slack_webhook,
             webhook_url=args.webhook_url,
+            inhibit_path=getattr(args, "inhibit", None),
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         if not report.get("ok"):
@@ -1667,6 +1697,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Slack webhook (varsayılan RAG_JUDGE_SLACK_WEBHOOK)",
     )
     p_jdig.add_argument(
+        "--tenant",
+        default=None,
+        help="Tek tenant özeti / webhook çözümleme",
+    )
+    p_jdig.add_argument(
+        "--fan-out",
+        action="store_true",
+        help="RAG_JUDGE_ACK_DIGEST_WEBHOOKS_JSON tenant fan-out",
+    )
+    p_jdig.add_argument(
+        "--quiet-hours",
+        default=None,
+        help="Quiet hours HH:MM-HH:MM (varsayılan RAG_JUDGE_ACK_DIGEST_QUIET_HOURS)",
+    )
+    p_jdig.add_argument(
+        "--timezone",
+        default=None,
+        help="Quiet hours timezone (IANA)",
+    )
+    p_jdig.add_argument(
+        "--force",
+        action="store_true",
+        help="Quiet hours'ı yok say",
+    )
+    p_jdig.add_argument(
         "--dry-run",
         action="store_true",
         help="Webhook göndermeden özet yazdır",
@@ -1789,6 +1844,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         default=None,
         help="Rendered YAML yolu",
+    )
+    p_am.add_argument(
+        "--inhibit",
+        default=None,
+        help="Inhibit rules YAML (render merge; varsayılan ALERTMANAGER_INHIBIT)",
     )
     p_am.add_argument(
         "--write-env",

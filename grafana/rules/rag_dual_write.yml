@@ -1,0 +1,20 @@
+groups:
+  - name: rag_dual_write
+    interval: 30s
+    rules:
+      - record: rag:dual_write_shadow_overlap:avg1h
+        expr: avg_over_time(rag_vector_dual_write_shadow_overlap[1h])
+      - record: rag:dual_write_shadow_overlap:avg6h
+        expr: avg_over_time(rag_vector_dual_write_shadow_overlap[6h])
+      - alert: RagDualWriteShadowOverlapLow
+        expr: rag:dual_write_shadow_overlap:avg1h < 0.95
+        for: 30m
+        labels:
+          severity: warning
+          service: rag-ingest
+        annotations:
+          summary: "Dual-write shadow overlap trend low"
+          description: >
+            1h avg shadow overlap {{ $value | humanize }} < 0.95
+            (secondary={{ $labels.secondary_backend }}).
+            Run: python -m rag.cli migrate-vector --shadow-compare --auto-catch-up-on-fail
