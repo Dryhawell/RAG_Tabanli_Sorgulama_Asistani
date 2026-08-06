@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import time
@@ -14,6 +16,8 @@ CATCHUP_ALERTNAMES: Set[str] = {
     "RagDualWriteLagHigh",
     "RagDualWriteShadowOverlapLow",
 }
+
+WEBHOOK_SIG_VERSION = "v0"
 
 # alertname → actions
 _ALERT_ACTIONS = {
@@ -66,6 +70,216 @@ def webhook_cooldown_sec() -> float:
         return max(0.0, float(raw or 900))
     except Exception:
         return 900.0
+
+
+def webhook_signing_secret() -> str:
+    return os.environ.get("RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET", "").strip()
+
+
+def webhook_signature_max_age_sec() -> int:
+    raw = os.environ.get("RAG_ALERTMANAGER_WEBHOOK_MAX_AGE_SEC", "").strip()
+    try:
+        return max(30, int(raw or 300))
+    except Exception:
+        return 300
+
+
+def build_webhook_signature(
+    body: bytes,
+    *,
+    timestamp: str,
+    secret: str,
+) -> str:
+    """Slack-benzeri v0 HMAC-SHA256 imza."""
+    try:
+        raw = body.decode("utf-8")
+    except UnicodeDecodeError:
+        raw = body.decode("utf-8", errors="replace")
+    base = f"{WEBHOOK_SIG_VERSION}:{timestamp}:{raw}"
+    digest = hmac.new(
+        secret.encode("utf-8"), base.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return f"{WEBHOOK_SIG_VERSION}={digest}"
+
+
+def verify_webhook_signature(
+    body: bytes,
+    *,
+    timestamp: str,
+    signature: str,
+    signing_secret: Optional[str] = None,
+    max_age_sec: Optional[int] = None,
+    now: Optional[float] = None,
+) -> bool:
+    """X-Webhook-Timestamp + X-Webhook-Signature doğrulama."""
+    secret = (
+        signing_secret
+        if signing_secret is not None
+        else webhook_signing_secret()
+    )
+    if not secret or not timestamp or not signature:
+        return False
+    try:
+        ts = int(str(timestamp).strip())
+    except (TypeError, ValueError):
+        return False
+    age = abs(int(now if now is not None else time.time()) - ts)
+    limit = int(max_age_sec if max_age_sec is not None else webhook_signature_max_age_sec())
+    if age > limit:
+        return False
+    expected = build_webhook_signature(body, timestamp=str(ts), secret=secret)
+    return hmac.compare_digest(expected, str(signature).strip())
+
+
+def _normalize_headers(headers: Optional[Dict[str, str]]) -> Dict[str, str]:
+    return {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+
+
+def extract_webhook_auth_headers(
+    headers: Optional[Dict[str, str]],
+) -> Dict[str, str]:
+    hdrs = _normalize_headers(headers)
+    nonce = (
+        hdrs.get("x-webhook-nonce")
+        or hdrs.get("x-request-id")
+        or ""
+    ).strip()
+    return {
+        "timestamp": (
+            hdrs.get("x-webhook-timestamp") or hdrs.get("x-timestamp") or ""
+        ).strip(),
+        "signature": (
+            hdrs.get("x-webhook-signature") or hdrs.get("x-signature") or ""
+        ).strip(),
+        "nonce": nonce,
+        "token": (
+            hdrs.get("x-webhook-token")
+            or (
+                hdrs.get("authorization", "")[7:].strip()
+                if hdrs.get("authorization", "").lower().startswith("bearer ")
+                else ""
+            )
+        ).strip(),
+    }
+
+
+def purge_seen_nonces(
+    seen: Dict[str, Any],
+    *,
+    max_age_sec: int,
+    now: Optional[float] = None,
+) -> Dict[str, float]:
+    """Eski nonce kayıtlarını temizle; yalnızca geçerli float ts tut."""
+    cutoff = float(now if now is not None else time.time()) - max(float(max_age_sec), 1.0)
+    out: Dict[str, float] = {}
+    if not isinstance(seen, dict):
+        return out
+    for key, val in seen.items():
+        try:
+            ts = float(val)
+        except (TypeError, ValueError):
+            continue
+        if ts >= cutoff:
+            out[str(key)] = ts
+    return out
+
+
+def check_webhook_replay(
+    *,
+    nonce: str,
+    timestamp: str,
+    state: Optional[Dict[str, Any]] = None,
+    state_path: Optional[str] = None,
+    max_age_sec: Optional[int] = None,
+    now: Optional[float] = None,
+    persist: bool = True,
+) -> Dict[str, Any]:
+    """
+    Nonce + timestamp replay koruması.
+    Aynı nonce yeniden gelirse rejected; başarılı doğrulamada seen_nonces'a yazılır.
+    """
+    n = (nonce or "").strip()
+    if not n:
+        return {"ok": False, "error": "nonce_missing"}
+    try:
+        ts = int(str(timestamp).strip())
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "timestamp_invalid"}
+    limit = int(max_age_sec if max_age_sec is not None else webhook_signature_max_age_sec())
+    now_f = float(now if now is not None else time.time())
+    if abs(now_f - ts) > limit:
+        return {"ok": False, "error": "timestamp_expired", "max_age_sec": limit}
+
+    st_path = state_path or dual_write_webhook_state_path()
+    st = dict(state) if isinstance(state, dict) else load_dual_write_webhook_state(st_path)
+    # Keep nonces a bit longer than signature window to catch delayed replays
+    retain = max(limit * 2, limit + 60)
+    seen = purge_seen_nonces(st.get("seen_nonces") or {}, max_age_sec=retain, now=now_f)
+    if n in seen:
+        return {"ok": False, "error": "replay", "nonce": n}
+    seen[n] = now_f
+    st["seen_nonces"] = seen
+    st["last_nonce"] = n
+    st["last_nonce_at"] = _utcnow_iso()
+    if persist:
+        try:
+            save_dual_write_webhook_state(st, path=st_path)
+        except Exception:
+            pass
+    return {"ok": True, "nonce": n, "seen_count": len(seen), "state": st}
+
+
+def authorize_alertmanager_webhook(
+    body: bytes,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+    state_path: Optional[str] = None,
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Auth sırası:
+    1) Signing secret varsa → HMAC + nonce replay zorunlu
+    2) Shared token varsa → Bearer / X-Webhook-Token
+    3) Hiçbiri yoksa → açık (ok)
+    """
+    auth = extract_webhook_auth_headers(headers)
+    secret = webhook_signing_secret()
+    if secret:
+        if not verify_webhook_signature(
+            body,
+            timestamp=auth["timestamp"],
+            signature=auth["signature"],
+            signing_secret=secret,
+            now=now,
+        ):
+            return {
+                "ok": False,
+                "error": "invalid_signature",
+                "auth": "hmac",
+            }
+        replay = check_webhook_replay(
+            nonce=auth["nonce"],
+            timestamp=auth["timestamp"],
+            state_path=state_path,
+            now=now,
+            persist=True,
+        )
+        if not replay.get("ok"):
+            return {
+                "ok": False,
+                "error": str(replay.get("error") or "replay"),
+                "auth": "hmac",
+                "replay": replay,
+            }
+        return {"ok": True, "auth": "hmac", "replay": replay}
+
+    token = os.environ.get("RAG_ALERTMANAGER_WEBHOOK_TOKEN", "").strip()
+    if token:
+        if auth["token"] != token:
+            return {"ok": False, "error": "unauthorized", "auth": "token"}
+        return {"ok": True, "auth": "token"}
+
+    return {"ok": True, "auth": "none"}
 
 
 def extract_firing_dual_write_alerts(
@@ -466,6 +680,7 @@ def handle_alertmanager_webhook_http(
     body: bytes,
     *,
     headers: Optional[Dict[str, str]] = None,
+    state_path: Optional[str] = None,
 ) -> Tuple[int, Dict[str, str], bytes]:
     """HTTP adapter for collab_http POST /alertmanager."""
     try:
@@ -483,20 +698,24 @@ def handle_alertmanager_webhook_http(
             json.dumps({"ok": False, "error": "payload_not_object"}).encode("utf-8"),
         )
 
-    # Optional shared token
-    token = os.environ.get("RAG_ALERTMANAGER_WEBHOOK_TOKEN", "").strip()
-    if token:
-        hdrs = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
-        auth = hdrs.get("authorization", "")
-        provided = hdrs.get("x-webhook-token", "")
-        if auth.lower().startswith("bearer "):
-            provided = auth[7:].strip()
-        if provided != token:
-            return (
-                401,
-                {"Content-Type": "application/json"},
-                json.dumps({"ok": False, "error": "unauthorized"}).encode("utf-8"),
-            )
+    auth = authorize_alertmanager_webhook(
+        body, headers=headers, state_path=state_path
+    )
+    if not auth.get("ok"):
+        err = str(auth.get("error") or "unauthorized")
+        code = 401
+        if err == "replay":
+            code = 409
+        elif err in {"timestamp_expired", "timestamp_invalid", "nonce_missing"}:
+            code = 401
+        return (
+            code,
+            {"Content-Type": "application/json"},
+            json.dumps(
+                {"ok": False, "error": err, "auth": auth.get("auth")},
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        )
 
     dry = os.environ.get("RAG_DUAL_WRITE_WEBHOOK_DRY_RUN", "").strip().lower() in {
         "1",
@@ -504,7 +723,10 @@ def handle_alertmanager_webhook_http(
         "yes",
         "on",
     }
-    report = handle_dual_write_alertmanager_webhook(payload, dry_run=dry)
+    report = handle_dual_write_alertmanager_webhook(
+        payload, dry_run=dry, state_path=state_path
+    )
+    report["auth"] = auth.get("auth")
     status = 200 if report.get("ok") else 500
     if report.get("skipped") and report.get("reason") == "cooldown":
         status = 200

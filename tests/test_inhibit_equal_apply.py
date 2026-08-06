@@ -125,6 +125,46 @@ def test_ci_workflow_has_apply_job() -> None:
     assert "inhibit-equal-apply" in text
     assert "ci_inhibit_equal_apply.py" in text
     assert "INHIBIT_EQUAL_APPLY" in text
+    assert "INHIBIT_EQUAL_APPLY_PR_COMMENT_POST" in text
+    assert "inhibit-equal-apply-bot" in Path("scripts/ci_inhibit_equal_apply.py").read_text(
+        encoding="utf-8"
+    )
     assert "--diff-inhibit" in Path("rag/cli.py").read_text(encoding="utf-8") or (
         "--apply-equal" in Path("rag/cli.py").read_text(encoding="utf-8")
     )
+
+
+def test_build_inhibit_equal_apply_comment() -> None:
+    from scripts.ci_inhibit_equal_apply import (
+        INHIBIT_EQUAL_APPLY_PR_COMMENT_MARKER,
+        build_inhibit_equal_apply_comment,
+        write_apply_preview_artifacts,
+    )
+
+    report = {
+        "ok": True,
+        "dry_run": True,
+        "reason": "dry_run_changed",
+        "output": "grafana/inhibit_rules.generated.yml",
+        "generated": {"equal": ["alertname", "service"]},
+        "diff": {
+            "changed": True,
+            "unified_diff": "--- a\n+++ b\n+equal: [team]\n",
+        },
+    }
+    md = build_inhibit_equal_apply_comment(report)
+    assert INHIBIT_EQUAL_APPLY_PR_COMMENT_MARKER in md
+    assert "```diff" in md
+    assert "equal: [team]" in md
+    assert "dry-run preview" in md.lower()
+
+    unchanged = build_inhibit_equal_apply_comment(
+        {
+            "ok": True,
+            "dry_run": True,
+            "reason": "unchanged",
+            "generated": {"equal": ["alertname"]},
+            "diff": {"changed": False, "unified_diff": ""},
+        }
+    )
+    assert "No inhibit diff" in unchanged

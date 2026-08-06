@@ -62,6 +62,7 @@ def test_dispatch_judge_ack_digest_dry_run(tmp_path: Path, monkeypatch) -> None:
     assert actions
     ids = {e.get("action_id") for e in actions[0].get("elements") or []}
     assert "judge_ack_digest_reexport" in ids
+    assert "judge_ack_digest_reexport_csv" in ids
     assert "judge_ack_digest_open" in ids
     assert "judge_ack_interactive" in ids
 
@@ -89,20 +90,66 @@ def test_digest_reexport_interactive_action(tmp_path: Path, monkeypatch) -> None
             {
                 "type": "block_actions",
                 "actions": [
-                    {"action_id": "judge_ack_digest_reexport", "value": "reexport"}
+                    {"action_id": "judge_ack_digest_reexport", "value": "jsonl"}
                 ],
-                "user": {"username": "ops"},
+                "user": {"username": "ops", "id": "U1"},
                 "channel": {"id": "C123"},
             }
         )
     assert result["ok"] is True
     assert result["mode"] == "digest_reexport"
+    assert result["format"] == "jsonl"
     assert result["summary"]["total"] >= 1
     assert "Total events" in result["text"]
     assert result["upload"]["ok"] is True
     assert uploaded.get("channels") == "C123"
     assert "judge_ack_audit.jsonl" in (uploaded.get("filename") or "")
-    assert "Attached file" in result["text"]
+    assert "Attached `judge_ack_audit.jsonl`" in result["text"]
+
+
+def test_digest_reexport_csv_with_progress(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    path = str(tmp_path / "ack.jsonl")
+    append_judge_ack_audit("ack", actor="alice", path=path)
+    from rag.judge_alert import handle_slack_interactive_ack
+
+    progress_calls = []
+
+    def fake_api(method, **kwargs):
+        progress_calls.append({"method": method, **kwargs})
+        return {"ok": True, "message_ts": "1.2"}
+
+    def fake_upload(**kwargs):
+        return {
+            "ok": True,
+            "file_id": "F2",
+            "permalink": "https://slack.test/csv",
+            "filename": kwargs.get("filename"),
+        }
+
+    with patch("rag.judge_alert.slack_api", side_effect=fake_api):
+        with patch("rag.judge_alert.slack_files_upload", side_effect=fake_upload):
+            result = handle_slack_interactive_ack(
+                {
+                    "type": "block_actions",
+                    "actions": [
+                        {
+                            "action_id": "judge_ack_digest_reexport_csv",
+                            "value": "csv",
+                        }
+                    ],
+                    "user": {"id": "U9", "username": "ops"},
+                    "channel": {"id": "C9"},
+                }
+            )
+    assert result["ok"] is True
+    assert result["format"] == "csv"
+    assert result["export"]["format"] == "csv"
+    assert result["progress"]["ok"] is True
+    assert progress_calls and progress_calls[0]["method"] == "chat.postEphemeral"
+    assert "csv" in (progress_calls[0]["json_body"]["text"] or "")
+    assert "Attached `judge_ack_audit.csv`" in result["text"]
 
 
 def test_slack_files_upload_requires_token() -> None:

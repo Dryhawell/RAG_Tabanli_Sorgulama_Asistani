@@ -522,10 +522,18 @@ def build_judge_ack_digest_slack_blocks(
         elements.append(
             {
                 "type": "button",
-                "text": {"type": "plain_text", "text": "Re-export audit"},
+                "text": {"type": "plain_text", "text": "Export JSONL"},
                 "action_id": "judge_ack_digest_reexport",
-                "value": "reexport",
+                "value": "jsonl",
                 "style": "primary",
+            }
+        )
+        elements.append(
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Export CSV"},
+                "action_id": "judge_ack_digest_reexport_csv",
+                "value": "csv",
             }
         )
         elements.append(
@@ -546,25 +554,26 @@ def build_judge_ack_digest_slack_blocks(
                 "action_id": "judge_ack_digest_open",
             }
         )
+    # Download link stays as context (actions capped at 5)
     export_url = judge_ack_export_public_url()
-    if export_url:
-        elements.append(
+    if elements:
+        blocks.append(
             {
-                "type": "button",
-                "text": {"type": "plain_text", "text": "Download export"},
-                "url": export_url,
-                "action_id": "judge_ack_digest_export_link",
+                "type": "actions",
+                "block_id": "judge_ack_digest_actions",
+                "elements": elements[:5],
             }
         )
-    if elements:
-        blocks.append({"type": "actions", "block_id": "judge_ack_digest_actions", "elements": elements[:5]})
+    ctx_bits = []
     if ack_url:
+        ctx_bits.append(f"Ack form: <{ack_url}|open>")
+    if export_url:
+        ctx_bits.append(f"Download: <{export_url}|jsonl> · <{export_url}?format=csv|csv>")
+    if ctx_bits:
         blocks.append(
             {
                 "type": "context",
-                "elements": [
-                    {"type": "mrkdwn", "text": f"Ack form: <{ack_url}|open>"},
-                ],
+                "elements": [{"type": "mrkdwn", "text": " · ".join(ctx_bits)}],
             }
         )
     return blocks
@@ -1376,49 +1385,84 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             "message_ts": message_ts,
         }
 
-    if "judge_ack_digest_reexport" in action_ids:
+    if (
+        "judge_ack_digest_reexport" in action_ids
+        or "judge_ack_digest_reexport_csv" in action_ids
+    ):
         hours = 168.0
         try:
             hours = float(os.environ.get("RAG_JUDGE_ACK_DIGEST_HOURS", "168") or 168)
         except Exception:
             hours = 168.0
+        # Format from button value (jsonl|csv) or action_id
+        fmt = "jsonl"
+        for act in actions:
+            if not isinstance(act, dict):
+                continue
+            aid = str(act.get("action_id") or "")
+            val = str(act.get("value") or "").strip().lower()
+            if aid == "judge_ack_digest_reexport_csv" or val == "csv":
+                fmt = "csv"
+                break
+            if aid == "judge_ack_digest_reexport" and val in {"jsonl", "csv"}:
+                fmt = val
+                break
         summary = summarize_judge_ack_audit(since_hours=hours)
-        exported = export_judge_ack_audit(fmt="jsonl", limit=200)
+        exported = export_judge_ack_audit(fmt=fmt, limit=200)
         text = build_judge_ack_digest_text(summary)
         export_url = judge_ack_export_public_url()
         if export_url:
-            text = f"{text}\nExport link: {export_url}"
+            q = "" if fmt == "jsonl" else f"?format={fmt}"
+            text = f"{text}\nExport link: {export_url}{q}"
         channel_id = str(
             ((payload.get("channel") or {}).get("id"))
             or ((payload.get("container") or {}).get("channel_id"))
             or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "")
             or ""
         ).strip() or None
+        user_id = slack_interactive_user_id(payload)
         upload: Dict[str, Any] = {"ok": False, "skipped": True, "reason": "not_attempted"}
+        progress: Dict[str, Any] = {"ok": False, "skipped": True}
         content = exported.get("text") or ""
-        if content and os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip():
-            count = int(exported.get("count") or 0)
+        count = int(exported.get("count") or 0)
+        filename = f"judge_ack_audit.{fmt}"
+        bot_token = os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
+        if content and bot_token:
+            # Progress ephemeral before upload
+            if channel_id and user_id:
+                progress = slack_api(
+                    "chat.postEphemeral",
+                    bot_token=bot_token,
+                    json_body={
+                        "channel": channel_id,
+                        "user": user_id,
+                        "text": (
+                            f"Exporting *{count}* ack audit rows as `{fmt}`…"
+                        ),
+                    },
+                )
             upload = slack_files_upload(
                 content=content,
-                filename="judge_ack_audit.jsonl",
-                title=f"Judge ack audit ({count} rows)",
+                filename=filename,
+                title=f"Judge ack audit ({count} rows, {fmt})",
                 channels=channel_id,
                 initial_comment=(
-                    f"Ack audit re-export · {count} events · last {hours:g}h"
+                    f"Ack audit re-export · {count} events · {fmt} · last {hours:g}h"
                 ),
             )
             if upload.get("ok"):
                 text = (
-                    f"{text}\nAttached file: `{upload.get('filename')}`"
+                    f"{text}\nAttached `{filename}`"
                     + (
                         f" (<{upload.get('permalink')}|open>)"
                         if upload.get("permalink")
                         else ""
                     )
+                    + " · upload done"
                 )
             else:
                 text = f"{text}\nFile upload skipped: `{upload.get('error')}`"
-        elif not os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip():
+        elif not bot_token:
             upload = {"ok": False, "skipped": True, "reason": "bot_token_missing"}
         elif not content:
             upload = {"ok": False, "skipped": True, "reason": "empty_export"}
@@ -1429,12 +1473,18 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             "export": {
                 "ok": exported.get("ok"),
                 "count": exported.get("count"),
-                "format": exported.get("format"),
+                "format": exported.get("format") or fmt,
             },
             "upload": upload,
+            "progress": {
+                "ok": bool(progress.get("ok")),
+                "skipped": bool(progress.get("skipped")),
+                "error": progress.get("error"),
+            },
             "channel_id": channel_id,
             "text": text,
             "export_url": export_url or None,
+            "format": fmt,
         }
 
     if "judge_ack_interactive" not in action_ids and ptype == "block_actions":

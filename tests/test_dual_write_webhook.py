@@ -83,6 +83,7 @@ def test_webhook_dry_run_and_cooldown(tmp_path: Path, monkeypatch) -> None:
 def test_http_adapter_unauthorized(monkeypatch) -> None:
     from rag.dual_write_webhook import handle_alertmanager_webhook_http
 
+    monkeypatch.delenv("RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET", raising=False)
     monkeypatch.setenv("RAG_ALERTMANAGER_WEBHOOK_TOKEN", "secret")
     code, _hdrs, body = handle_alertmanager_webhook_http(
         b'{"alerts":[]}', headers={}
@@ -96,6 +97,79 @@ def test_http_adapter_unauthorized(monkeypatch) -> None:
     )
     assert code2 == 200
     assert json.loads(body2.decode())["skipped"] is True
+
+
+def test_webhook_hmac_and_replay(tmp_path: Path, monkeypatch) -> None:
+    import time
+
+    from rag.dual_write_webhook import (
+        build_webhook_signature,
+        check_webhook_replay,
+        handle_alertmanager_webhook_http,
+        verify_webhook_signature,
+    )
+
+    secret = "hmac-test-secret"
+    monkeypatch.setenv("RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET", secret)
+    monkeypatch.delenv("RAG_ALERTMANAGER_WEBHOOK_TOKEN", raising=False)
+    body = b'{"status":"firing","alerts":[]}'
+    ts = str(int(time.time()))
+    sig = build_webhook_signature(body, timestamp=ts, secret=secret)
+    assert verify_webhook_signature(
+        body, timestamp=ts, signature=sig, signing_secret=secret
+    )
+    assert not verify_webhook_signature(
+        body, timestamp=ts, signature="v0=deadbeef", signing_secret=secret
+    )
+
+    state = tmp_path / "wh.json"
+    code, _, raw = handle_alertmanager_webhook_http(
+        body,
+        headers={
+            "X-Webhook-Timestamp": ts,
+            "X-Webhook-Signature": sig,
+            "X-Webhook-Nonce": "n-1",
+        },
+        state_path=str(state),
+    )
+    assert code == 200
+    assert json.loads(raw.decode()).get("auth") == "hmac"
+
+    # Replay same nonce → 409
+    code2, _, raw2 = handle_alertmanager_webhook_http(
+        body,
+        headers={
+            "X-Webhook-Timestamp": ts,
+            "X-Webhook-Signature": sig,
+            "X-Webhook-Nonce": "n-1",
+        },
+        state_path=str(state),
+    )
+    assert code2 == 409
+    assert json.loads(raw2.decode())["error"] == "replay"
+
+    # Missing nonce
+    code3, _, raw3 = handle_alertmanager_webhook_http(
+        body,
+        headers={
+            "X-Webhook-Timestamp": ts,
+            "X-Webhook-Signature": sig,
+        },
+        state_path=str(state),
+    )
+    assert code3 == 401
+    assert json.loads(raw3.decode())["error"] == "nonce_missing"
+
+    replay = check_webhook_replay(
+        nonce="n-2",
+        timestamp=ts,
+        state_path=str(state),
+        persist=True,
+    )
+    assert replay["ok"] is True
+    assert check_webhook_replay(
+        nonce="n-2", timestamp=ts, state_path=str(state), persist=False
+    )["error"] == "replay"
 
 
 def test_github_dispatch_fallback_on_not_dual_write(monkeypatch, tmp_path: Path) -> None:

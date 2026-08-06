@@ -62,6 +62,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INHIBIT_EQUAL_PR_COMMENT_POST: ${{ github.event_name == 'pull_request' && '1' || '0' }}
         run: python scripts/ci_inhibit_equal_pr_comment.py || true
+      - name: Inhibit equal diff gate (dry-run + PR preview)
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INHIBIT_EQUAL_APPLY: "dry-run"
+          INHIBIT_EQUAL_GIT_COMMIT: "0"
+          INHIBIT_EQUAL_APPLY_PR_COMMENT_POST: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+        run: python scripts/ci_inhibit_equal_apply.py || true
       - name: Upload Alertmanager artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -72,15 +80,10 @@ jobs:
             metadata/inhibit_equal_pr_comment.md
             metadata/inhibit_equal_apply.json
             metadata/inhibit_equal.diff
+            metadata/inhibit_equal_apply_pr_comment.md
             metadata/inhibit_rules.ci.yml
             metadata/alertmanager.ci.yml
           if-no-files-found: ignore
-      - name: Inhibit equal diff gate (dry-run)
-        if: always()
-        env:
-          INHIBIT_EQUAL_APPLY: "dry-run"
-          INHIBIT_EQUAL_GIT_COMMIT: "0"
-        run: python scripts/ci_inhibit_equal_apply.py || true
       - name: Judge gate (heuristic)
         env:
           RAG_JUDGE_MODE: heuristic
