@@ -1,0 +1,32 @@
+[
+  {
+    "id": "izin-sure",
+    "question": "Çalışanların yıllık ücretli izin hakkı kaç gündür?",
+    "expected_source": "sirket_politikasi.txt",
+    "expect_no_answer": false
+  },
+  {
+    "id": "izin-talep",
+    "question": "İzin talebi ne kadar önceden sisteme girilmelidir?",
+    "expected_source": "sirket_politikasi.txt",
+    "expect_no_answer": false
+  },
+  {
+    "id": "urun-fiyat",
+    "question": "Atlas Not Defteri'nin önerilen satış fiyatı nedir?",
+    "expected_source": "urun_bilgi.txt",
+    "expect_no_answer": false
+  },
+  {
+    "id": "urun-stok",
+    "question": "Atlas Not Defteri stok kodu nedir?",
+    "expected_source": "urun_bilgi.txt",
+    "expect_no_answer": false
+  },
+  {
+    "id": "negatif-uzay",
+    "question": "Mars kolonisinde kuantum kahve makinesi nasıl kalibre edilir?",
+    "expected_source": null,
+    "expect_no_answer": true
+  }
+]
