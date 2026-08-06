@@ -1,0 +1,76 @@
+"""Judge ack audit weekly digest (Slack) — tenant fan-out + quiet hours."""
+
+name: Judge Ack Digest
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"  # Pazartesi 09:00 UTC
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: "Özet penceresi (saat)"
+        required: false
+        default: "168"
+        type: string
+      dry_run:
+        description: "Webhook göndermeden özet"
+        required: false
+        default: false
+        type: boolean
+      force:
+        description: "Quiet hours'ı yok say"
+        required: false
+        default: false
+        type: boolean
+      fan_out:
+        description: "Tenant webhook fan-out"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Judge ack digest
+        env:
+          RAG_JUDGE_SLACK_WEBHOOK: ${{ secrets.RAG_JUDGE_SLACK_WEBHOOK }}
+          RAG_JUDGE_ACK_DIGEST_WEBHOOKS_JSON: ${{ secrets.RAG_JUDGE_ACK_DIGEST_WEBHOOKS_JSON }}
+          RAG_JUDGE_ACK_DIGEST_QUIET_HOURS: ${{ vars.RAG_JUDGE_ACK_DIGEST_QUIET_HOURS }}
+          RAG_JUDGE_ACK_DIGEST_TIMEZONE: ${{ vars.RAG_JUDGE_ACK_DIGEST_TIMEZONE || 'UTC' }}
+          RAG_JUDGE_ACK_AUDIT: metadata/judge_ack_audit.jsonl
+        run: |
+          mkdir -p metadata
+          EXTRA=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            EXTRA="$EXTRA --dry-run"
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            EXTRA="$EXTRA --force"
+          fi
+          FANOUT="--fan-out"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.fan_out }}" = "false" ]; then
+            FANOUT=""
+          fi
+          HOURS="${{ inputs.hours || '168' }}"
+          # shellcheck disable=SC2086
+          python -m rag.cli judge-ack-digest --hours "$HOURS" $FANOUT $EXTRA \
+            | tee metadata/judge_ack_digest.json
+      - name: Upload digest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-ack-digest
+          path: |
+            metadata/judge_ack_digest.json
+            metadata/judge_ack_audit.jsonl
+          if-no-files-found: ignore
