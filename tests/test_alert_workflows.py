@@ -291,10 +291,29 @@ def test_dual_write_shadow_compare_workflow_yaml():
     text = path.read_text(encoding="utf-8")
     assert "migrate-vector" in text
     assert "--shadow-compare" in text
+    assert "--auto-catch-up-on-fail" in text
+    assert "auto_catch_up_on_fail" in text
     assert "RAG_DUAL_WRITE_SHADOW_MIN_OVERLAP" in text
     assert "schedule:" in text
     assert "workflow_dispatch" in text
     assert "dual_write_shadow_compare.json" in text
+
+
+def test_judge_ack_digest_workflow_yaml():
+    path = Path(".github/workflows/judge-ack-digest.yml")
+    text = path.read_text(encoding="utf-8")
+    assert "judge-ack-digest" in text
+    assert "RAG_JUDGE_SLACK_WEBHOOK" in text
+    assert "schedule:" in text
+    assert "0 9 * * 1" in text
+    assert "workflow_dispatch" in text
+
+
+def test_ci_alertmanager_check_config_step():
+    text = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "--check-config" in text
+    assert "alertmanager --render" in text
+    assert "Alertmanager check-config" in text
 
 
 def test_alertmanager_slack_rotate_workflow_yaml():

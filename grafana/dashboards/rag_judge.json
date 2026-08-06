@@ -177,10 +177,38 @@
         }
       ],
       "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 5 } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Judge ack audit (rate by event)",
+      "description": "rag_judge_ack_audit_total — soft-fail ack/alert/resolve audit trail",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 30 },
+      "id": 10,
+      "targets": [
+        {
+          "expr": "sum by (event) (rate(rag_judge_ack_audit_total[5m]))",
+          "legendFormat": "{{event}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Ack audit events (7d)",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 30 },
+      "id": 11,
+      "targets": [
+        {
+          "expr": "sum(increase(rag_judge_ack_audit_total[7d]))",
+          "legendFormat": "7d",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "decimals": 0 } }
     }
   ],
   "schemaVersion": 39,
-  "tags": ["rag", "judge", "soft-fail", "llm", "otel", "tempo"],
+  "tags": ["rag", "judge", "soft-fail", "llm", "otel", "tempo", "ack-audit"],
   "templating": { "list": [] },
   "time": { "from": "now-6h", "to": "now" },
   "timezone": "browser",
