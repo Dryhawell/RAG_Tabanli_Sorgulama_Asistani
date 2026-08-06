@@ -68,23 +68,49 @@ def test_dispatch_judge_ack_digest_dry_run(tmp_path: Path, monkeypatch) -> None:
 
 def test_digest_reexport_interactive_action(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
     path = str(tmp_path / "ack.jsonl")
     append_judge_ack_audit("ack", actor="alice", path=path)
     from rag.judge_alert import handle_slack_interactive_ack
 
-    result = handle_slack_interactive_ack(
-        {
-            "type": "block_actions",
-            "actions": [
-                {"action_id": "judge_ack_digest_reexport", "value": "reexport"}
-            ],
-            "user": {"username": "ops"},
+    uploaded = {}
+
+    def fake_upload(**kwargs):
+        uploaded.update(kwargs)
+        return {
+            "ok": True,
+            "file_id": "F1",
+            "permalink": "https://slack.test/file",
+            "filename": kwargs.get("filename"),
         }
-    )
+
+    with patch("rag.judge_alert.slack_files_upload", side_effect=fake_upload):
+        result = handle_slack_interactive_ack(
+            {
+                "type": "block_actions",
+                "actions": [
+                    {"action_id": "judge_ack_digest_reexport", "value": "reexport"}
+                ],
+                "user": {"username": "ops"},
+                "channel": {"id": "C123"},
+            }
+        )
     assert result["ok"] is True
     assert result["mode"] == "digest_reexport"
     assert result["summary"]["total"] >= 1
     assert "Total events" in result["text"]
+    assert result["upload"]["ok"] is True
+    assert uploaded.get("channels") == "C123"
+    assert "judge_ack_audit.jsonl" in (uploaded.get("filename") or "")
+    assert "Attached file" in result["text"]
+
+
+def test_slack_files_upload_requires_token() -> None:
+    from rag.judge_alert import slack_files_upload
+
+    result = slack_files_upload(content="x", channels="C1", bot_token="")
+    assert result["ok"] is False
+    assert result["error"] == "bot_token_missing"
 
 
 

@@ -70,9 +70,17 @@ jobs:
           path: |
             metadata/inhibit_equal_tune.json
             metadata/inhibit_equal_pr_comment.md
+            metadata/inhibit_equal_apply.json
+            metadata/inhibit_equal.diff
             metadata/inhibit_rules.ci.yml
             metadata/alertmanager.ci.yml
           if-no-files-found: ignore
+      - name: Inhibit equal diff gate (dry-run)
+        if: always()
+        env:
+          INHIBIT_EQUAL_APPLY: "dry-run"
+          INHIBIT_EQUAL_GIT_COMMIT: "0"
+        run: python scripts/ci_inhibit_equal_apply.py || true
       - name: Judge gate (heuristic)
         env:
           RAG_JUDGE_MODE: heuristic
@@ -215,4 +223,42 @@ jobs:
             metadata/judge_report_llm.json
             metadata/metrics.jsonl
             metadata/judge_alert_state.json
+          if-no-files-found: ignore
+
+  inhibit-equal-apply:
+    name: Inhibit equal auto-apply (main)
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Apply inhibit equal (gate + commit)
+        env:
+          INHIBIT_EQUAL_APPLY: "1"
+          INHIBIT_EQUAL_GIT_COMMIT: "1"
+          ALERTMANAGER_URL: ${{ secrets.ALERTMANAGER_URL }}
+          RAG_ALERTMANAGER_URL: ${{ secrets.ALERTMANAGER_URL }}
+          RAG_ALERTMANAGER_SLACK_WEBHOOK: ${{ secrets.RAG_ALERTMANAGER_SLACK_WEBHOOK }}
+          RAG_ALERTMANAGER_WEBHOOK_URL: ${{ secrets.RAG_ALERTMANAGER_WEBHOOK_URL }}
+        run: python scripts/ci_inhibit_equal_apply.py
+      - name: Upload apply artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inhibit-equal-apply-${{ github.run_id }}
+          path: |
+            metadata/inhibit_equal_apply.json
+            metadata/inhibit_equal.diff
+            grafana/inhibit_rules.generated.yml
           if-no-files-found: ignore

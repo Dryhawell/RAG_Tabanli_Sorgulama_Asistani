@@ -96,3 +96,97 @@ def test_http_adapter_unauthorized(monkeypatch) -> None:
     )
     assert code2 == 200
     assert json.loads(body2.decode())["skipped"] is True
+
+
+def test_github_dispatch_fallback_on_not_dual_write(monkeypatch, tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    from rag.dual_write_webhook import (
+        handle_dual_write_alertmanager_webhook,
+        maybe_github_dispatch_fallback,
+        trigger_github_workflow_dispatch,
+    )
+
+    monkeypatch.setenv("RAG_DUAL_WRITE_GH_DISPATCH", "1")
+    monkeypatch.setenv("GH_PAT", "ghp_test")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "acme/rag")
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_COOLDOWN_SEC", "0")
+
+    calls = []
+
+    def fake_dispatch(workflow, **kwargs):
+        calls.append({"workflow": workflow, **kwargs})
+        return {"ok": True, "method": "rest", "workflow": workflow}
+
+    row = {"ok": False, "action": "catch_up", "error": "not_dual_write"}
+    with patch(
+        "rag.dual_write_webhook.trigger_github_workflow_dispatch",
+        side_effect=fake_dispatch,
+    ):
+        out = maybe_github_dispatch_fallback(row)
+    assert out["github_fallback"]["ok"] is True
+    assert calls[0]["workflow"] == "dual-write-catch-up.yml"
+
+    payload = {
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {
+                    "alertname": "RagDualWriteLagHigh",
+                    "service": "rag-ingest",
+                },
+            }
+        ],
+    }
+    with patch(
+        "rag.dual_write_webhook.run_dual_write_catch_up",
+        return_value={"ok": False, "action": "catch_up", "error": "not_dual_write"},
+    ):
+        with patch(
+            "rag.dual_write_webhook.trigger_github_workflow_dispatch",
+            side_effect=fake_dispatch,
+        ):
+            report = handle_dual_write_alertmanager_webhook(
+                payload, force=True, state_path=str(tmp_path / "st.json")
+            )
+    assert report["ok"] is True  # fallback ok
+    assert report["results"][0]["github_fallback"]["ok"] is True
+
+
+def test_trigger_github_workflow_dispatch_rest(monkeypatch) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from rag.dual_write_webhook import trigger_github_workflow_dispatch
+
+    monkeypatch.setenv("GH_PAT", "ghp_x")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "acme/rag")
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def getcode(self):
+            return 204
+
+        status = 204
+
+        def read(self):
+            return b""
+
+    with patch("subprocess.run", side_effect=FileNotFoundError("no gh")):
+        with patch("urllib.request.urlopen", return_value=_Resp()) as opener:
+            result = trigger_github_workflow_dispatch(
+                "dual-write-shadow-compare.yml",
+                inputs={"auto_catch_up_on_fail": "true"},
+                ref="main",
+            )
+    assert result["ok"] is True
+    assert result["method"] == "rest"
+    req = opener.call_args[0][0]
+    assert req.full_url.endswith(
+        "/repos/acme/rag/actions/workflows/dual-write-shadow-compare.yml/dispatches"
+    )
