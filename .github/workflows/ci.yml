@@ -37,6 +37,14 @@ jobs:
           pip install -r requirements.txt
       - name: Fast tests
         run: pytest -q -m "not slow"
+      - name: Alertmanager check-config
+        run: |
+          mkdir -p metadata
+          python -m rag.cli alertmanager --render \
+            --output metadata/alertmanager.ci.yml \
+            --slack-webhook 'https://hooks.slack.com/services/T/B/CI' \
+            --webhook-url 'http://127.0.0.1/hook'
+          python -m rag.cli alertmanager --check-config --output metadata/alertmanager.ci.yml
       - name: Judge gate (heuristic)
         env:
           RAG_JUDGE_MODE: heuristic

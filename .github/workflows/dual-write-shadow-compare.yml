@@ -22,6 +22,11 @@ on:
         required: false
         default: "1.0"
         type: string
+      auto_catch_up_on_fail:
+        description: "Fail olursa catch-up + yeniden gate"
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   shadow-compare:
@@ -50,11 +55,17 @@ jobs:
           mkdir -p metadata indexes
           SAMPLE="${{ inputs.sample || '16' }}"
           TOP_K="${{ inputs.top_k || '6' }}"
-          # Gate: non-zero exit if mean/min overlap < threshold (report.ok=false)
+          EXTRA="--auto-catch-up-on-fail"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.auto_catch_up_on_fail }}" = "false" ]; then
+            EXTRA=""
+          fi
+          # Gate: non-zero exit if final overlap < threshold
+          # shellcheck disable=SC2086
           python -m rag.cli migrate-vector \
             --shadow-compare \
             --sample "$SAMPLE" \
             --top-k "$TOP_K" \
+            $EXTRA \
             | tee metadata/dual_write_shadow_compare.json
       - name: Upload shadow-compare report
         if: always()

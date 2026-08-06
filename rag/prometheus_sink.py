@@ -29,6 +29,7 @@ _push_prune_total = None
 _judge_accuracy = None
 _judge_soft_fail_total = None
 _judge_runs_total = None
+_judge_ack_audit_total = None
 _llm_tokens_total = None
 _llm_calls_total = None
 _dual_write_lag = None
@@ -57,6 +58,7 @@ def _ensure_metrics():
     global _ingest_total, _ingest_chunks, _rebuild_total, _delete_total, _events_total
     global _push_revoked_total, _push_prune_total
     global _judge_accuracy, _judge_soft_fail_total, _judge_runs_total
+    global _judge_ack_audit_total
     global _llm_tokens_total, _llm_calls_total
     global _dual_write_lag, _dual_write_errors
     global _dual_write_catch_up_sources, _dual_write_catch_up_chunks
@@ -117,6 +119,11 @@ def _ensure_metrics():
         "rag_judge_runs_total",
         "Judge koşu sayısı",
         ["mode", "ok"],
+    )
+    _judge_ack_audit_total = Counter(
+        "rag_judge_ack_audit_total",
+        "Judge soft-fail ack audit olayları",
+        ["event"],
     )
     _llm_tokens_total = Counter(
         "rag_llm_tokens_total",
@@ -248,6 +255,10 @@ def observe_metric(
                     pass
             if vals.get("soft_fail"):
                 _judge_soft_fail_total.labels(mode=mode).inc()
+        elif kind == "judge_ack_audit":
+            assert _judge_ack_audit_total is not None
+            event = str(vals.get("event") or "unknown")
+            _judge_ack_audit_total.labels(event=event).inc()
         elif kind == "llm_usage":
             assert _llm_tokens_total is not None
             assert _llm_calls_total is not None

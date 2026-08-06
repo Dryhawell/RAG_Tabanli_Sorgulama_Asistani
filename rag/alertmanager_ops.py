@@ -634,3 +634,105 @@ def merge_inhibit_rules_into_config(
         "added": len(to_add),
         "existing": len(existing),
     }
+
+
+def _structural_alertmanager_check(path: str) -> Dict[str, Any]:
+    """amtool yoksa minimal yapısal doğrulama (route + receivers)."""
+    import re
+
+    p = Path(path)
+    if not p.is_file():
+        return {"ok": False, "error": "config_missing", "path": str(p), "method": "structural"}
+    try:
+        text = p.read_text(encoding="utf-8")
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": type(exc).__name__,
+            "path": str(p),
+            "method": "structural",
+        }
+    if not text.strip():
+        return {"ok": False, "error": "empty_config", "path": str(p), "method": "structural"}
+    has_route = bool(
+        re.search(r"(?m)^route\s*:", text)
+        or text.lstrip().startswith("route:")
+    )
+    has_receivers = "receivers:" in text
+    ok = has_route and has_receivers
+    return {
+        "ok": ok,
+        "path": str(p),
+        "method": "structural",
+        "has_route": has_route,
+        "has_receivers": has_receivers,
+        "error": None if ok else "missing_route_or_receivers",
+    }
+
+
+def check_alertmanager_config(
+    path: Optional[str] = None,
+    *,
+    timeout: float = 30.0,
+) -> Dict[str, Any]:
+    """amtool check-config (PATH/docker) veya yapısal fallback."""
+    import shutil
+
+    cfg = str(
+        path
+        or os.environ.get("ALERTMANAGER_OUTPUT", "").strip()
+        or DEFAULT_OUTPUT
+    )
+    if not Path(cfg).is_file():
+        return {"ok": False, "error": "config_missing", "path": cfg}
+
+    amtool = shutil.which("amtool")
+    if amtool:
+        proc = subprocess.run(
+            [amtool, "check-config", cfg],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        return {
+            "ok": proc.returncode == 0,
+            "method": "amtool",
+            "path": cfg,
+            "returncode": proc.returncode,
+            "stdout": (proc.stdout or "").strip(),
+            "stderr": (proc.stderr or "").strip(),
+            "error": None if proc.returncode == 0 else "amtool_failed",
+        }
+
+    docker = shutil.which("docker")
+    if docker:
+        cfg_path = Path(cfg).resolve()
+        proc = subprocess.run(
+            [
+                docker,
+                "run",
+                "--rm",
+                "-v",
+                f"{cfg_path}:/tmp/am.yml:ro",
+                "prom/alertmanager:v0.27.0",
+                "amtool",
+                "check-config",
+                "/tmp/am.yml",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        return {
+            "ok": proc.returncode == 0,
+            "method": "docker_amtool",
+            "path": cfg,
+            "returncode": proc.returncode,
+            "stdout": (proc.stdout or "").strip(),
+            "stderr": (proc.stderr or "").strip(),
+            "error": None if proc.returncode == 0 else "docker_amtool_failed",
+        }
+
+    return _structural_alertmanager_check(cfg)

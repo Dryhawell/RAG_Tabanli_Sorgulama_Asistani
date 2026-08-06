@@ -209,7 +209,7 @@ def cmd_migrate_vector(args: argparse.Namespace) -> int:
         return 0 if report.get("ok", False) or report.get("reason") == "not_dual_write" else 1
 
     if getattr(args, "shadow_compare", False):
-        from rag.store import dual_write_shadow_compare_from_index
+        from rag.store import dual_write_catch_up, dual_write_shadow_compare_from_index
 
         index = load_index(INDEX_PATH, DOCSTORE_PATH)
         if not isinstance(index, DualWriteIndex):
@@ -237,6 +237,27 @@ def cmd_migrate_vector(args: argparse.Namespace) -> int:
             top_k=int(getattr(args, "top_k", 6) or 6),
             seed=int(getattr(args, "seed", 0) or 0),
         )
+        if (
+            not report.get("ok")
+            and getattr(args, "auto_catch_up_on_fail", False)
+            and isinstance(index, DualWriteIndex)
+        ):
+            catch_up = dual_write_catch_up(index)
+            retry = dual_write_shadow_compare_from_index(
+                index,
+                sample=int(getattr(args, "sample", 16) or 16),
+                top_k=int(getattr(args, "top_k", 6) or 6),
+                seed=int(getattr(args, "seed", 0) or 0),
+            )
+            combined = {
+                "ok": bool(retry.get("ok")),
+                "auto_catch_up": True,
+                "initial": report,
+                "catch_up": catch_up,
+                "retry": retry,
+            }
+            print(json.dumps(combined, ensure_ascii=False, indent=2, default=str))
+            return 0 if combined.get("ok") else 1
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0 if report.get("ok") else 1
 
@@ -1277,8 +1298,31 @@ def cmd_judge_ack_purge(args: argparse.Namespace) -> int:
     return 0 if report.get("ok") else 1
 
 
+def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
+    from rag.judge_alert import dispatch_judge_ack_digest, summarize_judge_ack_audit
+
+    summary = summarize_judge_ack_audit(
+        path=getattr(args, "audit", None),
+        since_hours=float(getattr(args, "hours", 168) or 168),
+    )
+    dispatched = dispatch_judge_ack_digest(
+        summary,
+        webhook=getattr(args, "webhook", None),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+    print(
+        json.dumps(
+            {"summary": summary, "dispatch": dispatched},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0 if summary.get("ok") and dispatched.get("ok") else 1
+
+
 def cmd_alertmanager(args: argparse.Namespace) -> int:
     from rag.alertmanager_ops import (
+        check_alertmanager_config,
         create_silence,
         delete_silence,
         list_silences,
@@ -1289,6 +1333,12 @@ def cmd_alertmanager(args: argparse.Namespace) -> int:
         rotate_alertmanager_slack_webhook,
         write_inhibit_rules,
     )
+
+    if getattr(args, "check_config", False):
+        path = getattr(args, "output", None)
+        report = check_alertmanager_config(path)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
 
     if getattr(args, "generate_inhibit", False):
         equal = [
@@ -1397,7 +1447,7 @@ def cmd_alertmanager(args: argparse.Namespace) -> int:
         return 0 if reloaded.get("ok") else 1
 
     print(
-        "Kullanım: alertmanager --render | --reload | --rotate-slack-webhook | --silence | --generate-inhibit",
+        "Kullanım: alertmanager --render | --reload | --rotate-slack-webhook | --silence | --generate-inhibit | --check-config",
         file=sys.stderr,
     )
     return 2
@@ -1450,6 +1500,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--shadow-compare",
         action="store_true",
         help="Dual-write shadow-read: primary vs secondary search overlap",
+    )
+    p_mig.add_argument(
+        "--auto-catch-up-on-fail",
+        action="store_true",
+        help="Shadow-compare fail olursa catch-up + yeniden gate",
     )
     p_mig.add_argument(
         "--sample",
@@ -1595,6 +1650,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_jpurge.set_defaults(func=cmd_judge_ack_purge)
 
+    p_jdig = sub.add_parser(
+        "judge-ack-digest",
+        help="Judge ack audit haftalık özet (Slack webhook)",
+    )
+    p_jdig.add_argument("--audit", default=None, help="Audit JSONL yolu")
+    p_jdig.add_argument(
+        "--hours",
+        type=float,
+        default=168.0,
+        help="Özet penceresi (saat, varsayılan 168=7g)",
+    )
+    p_jdig.add_argument(
+        "--webhook",
+        default=None,
+        help="Slack webhook (varsayılan RAG_JUDGE_SLACK_WEBHOOK)",
+    )
+    p_jdig.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Webhook göndermeden özet yazdır",
+    )
+    p_jdig.set_defaults(func=cmd_judge_ack_digest)
+
     p_stats = sub.add_parser("stats", help="Metrik özeti (JSONL)")
     p_stats.add_argument("--path", default=None, help=f"metrics.jsonl yolu (varsayılan: {METRICS_PATH})")
     p_stats.add_argument("--limit", type=int, default=5000, help="Okunacak son kayıt sayısı")
@@ -1613,6 +1691,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_am.add_argument("--render", action="store_true", help="Template → YAML render")
     p_am.add_argument("--reload", action="store_true", help="POST /-/reload")
+    p_am.add_argument(
+        "--check-config",
+        action="store_true",
+        help="amtool check-config (veya yapısal fallback)",
+    )
     p_am.add_argument(
         "--generate-inhibit",
         action="store_true",

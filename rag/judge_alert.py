@@ -68,6 +68,18 @@ def append_judge_ack_audit(
         os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
         with open(out, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        try:
+            from rag.metrics import record_metric
+
+            record_metric(
+                "judge_ack_audit",
+                values={
+                    "event": record.get("event"),
+                    "source": record.get("source") or "unknown",
+                },
+            )
+        except Exception:
+            pass
     except Exception as exc:
         record["_write_error"] = type(exc).__name__
     return record
@@ -263,6 +275,83 @@ def export_judge_ack_audit(
         "output": output,
         "text": text if not output else None,
     }
+
+
+def summarize_judge_ack_audit(
+    *,
+    path: Optional[str] = None,
+    since_hours: float = 168.0,
+) -> Dict[str, Any]:
+    """Ack audit özeti (varsayılan son 7 gün)."""
+    hours = max(0.0, float(since_hours))
+    cutoff = datetime.fromtimestamp(
+        time.time() - hours * 3600.0, tz=timezone.utc
+    ).isoformat()
+    rows = read_judge_ack_audit(path=path, since=cutoff)
+    by_event: Dict[str, int] = {}
+    actors: set = set()
+    last_by_event: Dict[str, str] = {}
+    for row in rows:
+        ev = str(row.get("event") or "unknown")
+        by_event[ev] = by_event.get(ev, 0) + 1
+        actor = str(row.get("actor") or row.get("acknowledged_by") or "").strip()
+        if actor:
+            actors.add(actor)
+        ts = str(row.get("ts") or "")
+        if ts and (ev not in last_by_event or ts > last_by_event[ev]):
+            last_by_event[ev] = ts
+    return {
+        "ok": True,
+        "since_hours": hours,
+        "cutoff": cutoff,
+        "total": len(rows),
+        "by_event": by_event,
+        "actors": sorted(actors),
+        "actor_count": len(actors),
+        "last_by_event": last_by_event,
+    }
+
+
+def dispatch_judge_ack_digest(
+    summary: Dict[str, Any],
+    *,
+    webhook: Optional[str] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Haftalık ack audit özetini Slack webhook'a gönder."""
+    url = (
+        (webhook or "").strip()
+        or os.environ.get("RAG_JUDGE_SLACK_WEBHOOK", "").strip()
+    )
+    by_event = summary.get("by_event") or {}
+    lines = [
+        f"*RAG judge ack audit digest* (last {summary.get('since_hours')}h)",
+        f"Total events: *{summary.get('total', 0)}* · actors: *{summary.get('actor_count', 0)}*",
+    ]
+    if by_event:
+        parts = [f"`{k}`={v}" for k, v in sorted(by_event.items())]
+        lines.append("By event: " + ", ".join(parts))
+    actors = summary.get("actors") or []
+    if actors:
+        lines.append("Actors: " + ", ".join(f"`{a}`" for a in actors[:20]))
+    last = summary.get("last_by_event") or {}
+    if last:
+        lines.append(
+            "Last: "
+            + ", ".join(f"{k}@{v}" for k, v in sorted(last.items())[:6])
+        )
+    text = "\n".join(lines)
+    payload = {"text": text}
+    if dry_run or not url:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "skipped": not bool(url),
+            "payload": payload,
+            "configured": bool(url),
+        }
+    ok = post_slack(url, payload)
+    return {"ok": ok, "dry_run": False, "configured": True, "payload": payload}
 
 
 def load_judge_alert_state(path: Optional[str] = None) -> Dict[str, Any]:
