@@ -1,4 +1,4 @@
-"""Judge ack audit weekly digest (Slack)."""
+"""Judge ack audit weekly digest (Slack) — tenant fan-out + quiet hours."""
 
 name: Judge Ack Digest
 
@@ -17,6 +17,16 @@ on:
         required: false
         default: false
         type: boolean
+      force:
+        description: "Quiet hours'ı yok say"
+        required: false
+        default: false
+        type: boolean
+      fan_out:
+        description: "Tenant webhook fan-out"
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   digest:
@@ -34,16 +44,27 @@ jobs:
       - name: Judge ack digest
         env:
           RAG_JUDGE_SLACK_WEBHOOK: ${{ secrets.RAG_JUDGE_SLACK_WEBHOOK }}
+          RAG_JUDGE_ACK_DIGEST_WEBHOOKS_JSON: ${{ secrets.RAG_JUDGE_ACK_DIGEST_WEBHOOKS_JSON }}
+          RAG_JUDGE_ACK_DIGEST_QUIET_HOURS: ${{ vars.RAG_JUDGE_ACK_DIGEST_QUIET_HOURS }}
+          RAG_JUDGE_ACK_DIGEST_TIMEZONE: ${{ vars.RAG_JUDGE_ACK_DIGEST_TIMEZONE || 'UTC' }}
           RAG_JUDGE_ACK_AUDIT: metadata/judge_ack_audit.jsonl
         run: |
           mkdir -p metadata
           EXTRA=""
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
-            EXTRA="--dry-run"
+            EXTRA="$EXTRA --dry-run"
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            EXTRA="$EXTRA --force"
+          fi
+          FANOUT="--fan-out"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.fan_out }}" = "false" ]; then
+            FANOUT=""
           fi
           HOURS="${{ inputs.hours || '168' }}"
           # shellcheck disable=SC2086
-          python -m rag.cli judge-ack-digest --hours "$HOURS" $EXTRA | tee metadata/judge_ack_digest.json
+          python -m rag.cli judge-ack-digest --hours "$HOURS" $FANOUT $EXTRA \
+            | tee metadata/judge_ack_digest.json
       - name: Upload digest report
         if: always()
         uses: actions/upload-artifact@v4

@@ -276,6 +276,67 @@ def test_cli_alertmanager_generate_inhibit_parser():
     assert args.equal == "alertname,service"
 
 
+def test_cli_alertmanager_inhibit_arg_parser():
+    from rag.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "alertmanager",
+            "--render",
+            "--inhibit",
+            "metadata/inhibit.yml",
+            "--output",
+            "metadata/am.yml",
+        ]
+    )
+    assert args.render is True
+    assert args.inhibit == "metadata/inhibit.yml"
+    assert args.output == "metadata/am.yml"
+
+
+def test_render_inhibit_then_check_config(tmp_path, monkeypatch):
+    """CI pipeline: generate-inhibit → render --inhibit → check-config."""
+    import json
+    from unittest.mock import patch
+
+    from rag.alertmanager_ops import check_alertmanager_config, write_inhibit_rules
+    from rag.cli import main
+
+    inhibit = tmp_path / "inhibit.yml"
+    out = tmp_path / "am.yml"
+    report = write_inhibit_rules(output=str(inhibit))
+    assert report["ok"] is True
+    assert inhibit.is_file()
+
+    code = main(
+        [
+            "alertmanager",
+            "--render",
+            "--output",
+            str(out),
+            "--inhibit",
+            str(inhibit),
+            "--slack-webhook",
+            "https://hooks.slack.test/T/B/x",
+            "--webhook-url",
+            "http://127.0.0.1/hook",
+        ]
+    )
+    assert code == 0
+    text = out.read_text(encoding="utf-8")
+    assert "route:" in text
+    assert "receivers:" in text
+    if "source_matchers:" in inhibit.read_text(encoding="utf-8"):
+        assert "inhibit_rules:" in text
+
+    with patch("shutil.which", return_value=None):
+        checked = check_alertmanager_config(str(out))
+    assert checked["ok"] is True
+    assert checked["method"] == "structural"
+
+
+
 def test_dual_write_catch_up_workflow_yaml():
     path = Path(".github/workflows/dual-write-catch-up.yml")
     text = path.read_text(encoding="utf-8")
@@ -303,7 +364,10 @@ def test_judge_ack_digest_workflow_yaml():
     path = Path(".github/workflows/judge-ack-digest.yml")
     text = path.read_text(encoding="utf-8")
     assert "judge-ack-digest" in text
+    assert "--fan-out" in text
     assert "RAG_JUDGE_SLACK_WEBHOOK" in text
+    assert "RAG_JUDGE_ACK_DIGEST_WEBHOOKS_JSON" in text
+    assert "RAG_JUDGE_ACK_DIGEST_QUIET_HOURS" in text
     assert "schedule:" in text
     assert "0 9 * * 1" in text
     assert "workflow_dispatch" in text
@@ -312,8 +376,26 @@ def test_judge_ack_digest_workflow_yaml():
 def test_ci_alertmanager_check_config_step():
     text = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "--check-config" in text
+    assert "--generate-inhibit" in text
+    assert "--inhibit" in text
     assert "alertmanager --render" in text
     assert "Alertmanager check-config" in text
+
+
+def test_dual_write_shadow_alert_artifacts():
+    rules = Path("grafana/rules/rag_dual_write.yml").read_text(encoding="utf-8")
+    assert "RagDualWriteShadowOverlapLow" in rules
+    assert "rag_vector_dual_write_shadow_overlap" in rules
+    assert "rag:dual_write_shadow_overlap:avg1h" in rules
+    alerting = Path("grafana/alerting/rag_dual_write_shadow.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "rag-dual-write-shadow-overlap-low" in alerting
+    assert "0.95" in alerting
+    dash = Path("grafana/dashboards/rag_judge.json").read_text(encoding="utf-8")
+    assert "rag_vector_dual_write_shadow_overlap" in dash
+    assert "rag:dual_write_shadow_overlap:avg1h" in dash
+
 
 
 def test_alertmanager_slack_rotate_workflow_yaml():

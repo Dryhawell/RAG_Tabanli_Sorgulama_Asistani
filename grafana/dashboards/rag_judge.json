@@ -205,10 +205,73 @@
         }
       ],
       "fieldConfig": { "defaults": { "decimals": 0 } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Dual-write shadow overlap",
+      "description": "rag_vector_dual_write_shadow_overlap + 1h avg (see grafana/rules/rag_dual_write.yml)",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 37 },
+      "id": 12,
+      "targets": [
+        {
+          "expr": "rag_vector_dual_write_shadow_overlap",
+          "legendFormat": "{{secondary_backend}}",
+          "refId": "A"
+        },
+        {
+          "expr": "rag:dual_write_shadow_overlap:avg1h",
+          "legendFormat": "avg1h {{secondary_backend}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.9 },
+              { "color": "green", "value": 0.95 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Shadow overlap (last)",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 37 },
+      "id": 13,
+      "targets": [
+        {
+          "expr": "avg(rag_vector_dual_write_shadow_overlap)",
+          "legendFormat": "overlap",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.9 },
+              { "color": "green", "value": 0.95 }
+            ]
+          }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
     }
   ],
   "schemaVersion": 39,
-  "tags": ["rag", "judge", "soft-fail", "llm", "otel", "tempo", "ack-audit"],
+  "tags": ["rag", "judge", "soft-fail", "llm", "otel", "tempo", "ack-audit", "dual-write", "shadow"],
   "templating": { "list": [] },
   "time": { "from": "now-6h", "to": "now" },
   "timezone": "browser",

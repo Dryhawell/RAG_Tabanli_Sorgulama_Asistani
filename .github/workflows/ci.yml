@@ -40,11 +40,18 @@ jobs:
       - name: Alertmanager check-config
         run: |
           mkdir -p metadata
+          python -m rag.cli alertmanager --generate-inhibit \
+            --output metadata/inhibit_rules.ci.yml
           python -m rag.cli alertmanager --render \
             --output metadata/alertmanager.ci.yml \
+            --inhibit metadata/inhibit_rules.ci.yml \
             --slack-webhook 'https://hooks.slack.com/services/T/B/CI' \
             --webhook-url 'http://127.0.0.1/hook'
           python -m rag.cli alertmanager --check-config --output metadata/alertmanager.ci.yml
+          # merged artifact must carry inhibit_rules when generator produced matchers
+          if grep -q 'source_matchers:' metadata/inhibit_rules.ci.yml; then
+            grep -q 'inhibit_rules:' metadata/alertmanager.ci.yml
+          fi
       - name: Judge gate (heuristic)
         env:
           RAG_JUDGE_MODE: heuristic
