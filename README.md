@@ -512,3 +512,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
 - Push: VAPID OIDC / Deploy-key based secret store sync
+- Judge: Slack ack audit → Grafana panel + weekly digest
+- Ingest: shadow-compare fail → auto catch-up then re-gate
+- Observability: Alertmanager config `amtool check-config` CI step
