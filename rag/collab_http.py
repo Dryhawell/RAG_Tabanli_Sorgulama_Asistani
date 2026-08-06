@@ -6,7 +6,7 @@ import json
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 _http_started = False
@@ -104,6 +104,46 @@ document.getElementById("go").onclick = async () => {
     )
 
 
+def handle_judge_ack_export(
+    *,
+    query: Optional[Dict[str, List[str]]] = None,
+) -> Tuple[int, Dict[str, str], bytes]:
+    """GET: ack audit JSONL/CSV export (digest deep-link)."""
+    from rag.judge_alert import export_judge_ack_audit
+
+    qs = query or {}
+    fmt = ((qs.get("format") or qs.get("fmt") or ["jsonl"])[0] or "jsonl").strip().lower()
+    if fmt not in {"jsonl", "csv"}:
+        fmt = "jsonl"
+    limit_raw = (qs.get("limit") or [""])[0]
+    limit = None
+    try:
+        if limit_raw:
+            limit = int(limit_raw)
+    except Exception:
+        limit = 500
+    if limit is None:
+        limit = 500
+    report = export_judge_ack_audit(fmt=fmt, limit=limit)
+    text = report.get("text") or ""
+    ctype = (
+        "text/csv; charset=utf-8"
+        if fmt == "csv"
+        else "application/x-ndjson; charset=utf-8"
+    )
+    filename = f"judge_ack_audit.{ 'csv' if fmt == 'csv' else 'jsonl' }"
+    return (
+        200,
+        {
+            "Content-Type": ctype,
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-cache",
+            "X-Export-Count": str(report.get("count") or 0),
+        },
+        text.encode("utf-8"),
+    )
+
+
 def handle_judge_slack_interactive(
     body: bytes,
     *,
@@ -166,6 +206,19 @@ def handle_judge_slack_interactive(
                     "errors": {"ack_note_block": f"Ack failed: {err}"},
                 }
             ).encode("utf-8"),
+        )
+
+    if result.get("mode") == "digest_reexport":
+        text = str(result.get("text") or "Ack audit re-exported")
+        resp = {
+            "response_type": "ephemeral",
+            "replace_original": False,
+            "text": text[:2900],
+        }
+        return (
+            200,
+            {"Content-Type": "application/json"},
+            json.dumps(resp, ensure_ascii=False).encode("utf-8"),
         )
 
     if result.get("ok"):
@@ -493,6 +546,10 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
         if path in {"/judge/ack-form", "/judge/ack-ui"}:
             self._send(*handle_judge_ack_form())
             return
+        if path == "/judge/ack-export":
+            qs = parse_qs(parsed.query or "")
+            self._send(*handle_judge_ack_export(query=qs))
+            return
         if path in {"/judge/alert", "/judge/alert-state"}:
             self._send(*handle_judge_alert_state())
             return
@@ -507,8 +564,11 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
                         "/webpush/register",
                         "/judge/ack",
                         "/judge/ack-form",
+                        "/judge/ack-export",
                         "/judge/slack-interactive",
                         "/judge/alert",
+                        "/alertmanager",
+                        "/hooks/dual-write-catch-up",
                     ],
                 }
             ).encode("utf-8")
@@ -531,6 +591,12 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
         if path in {"/judge/slack-interactive", "/slack/interactive"}:
             hdrs = {k: v for k, v in self.headers.items()}
             self._send(*handle_judge_slack_interactive(raw, headers=hdrs))
+            return
+        if path in {"/alertmanager", "/hooks/dual-write-catch-up", "/hooks/alertmanager"}:
+            from rag.dual_write_webhook import handle_alertmanager_webhook_http
+
+            hdrs = {k: v for k, v in self.headers.items()}
+            self._send(*handle_alertmanager_webhook_http(raw, headers=hdrs))
             return
         self._send(404, {"Content-Type": "text/plain"}, b"not found\n")
 

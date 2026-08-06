@@ -13,6 +13,10 @@ route:
       receiver: judge-webhook
       continue: true
     - matchers:
+        - service = rag-ingest
+      receiver: ingest-webhook
+      continue: true
+    - matchers:
         - service = rag
       receiver: rag-webhook
       continue: true
@@ -27,6 +31,11 @@ receivers:
   - name: judge-webhook
     webhook_configs:
       - url: http://host.docker.internal:9999/alertmanager-judge
+        send_resolved: true
+
+  - name: ingest-webhook
+    webhook_configs:
+      - url: http://host.docker.internal:8766/hooks/dual-write-catch-up
         send_resolved: true
 
   - name: rag-webhook
