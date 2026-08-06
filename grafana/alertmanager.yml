@@ -1,0 +1,51 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  group_by: ["alertname", "service"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - service = rag-judge
+      receiver: judge-webhook
+      continue: true
+    - matchers:
+        - service = rag-ingest
+      receiver: ingest-webhook
+      continue: true
+    - matchers:
+        - service = rag
+      receiver: rag-webhook
+      continue: true
+
+receivers:
+  - name: default
+    webhook_configs:
+      - url: http://host.docker.internal:9999/alertmanager-default
+        send_resolved: true
+
+  # Slack Incoming Webhook URL'ini buraya yazın (veya volume override).
+  - name: judge-webhook
+    webhook_configs:
+      - url: http://host.docker.internal:9999/alertmanager-judge
+        send_resolved: true
+
+  - name: ingest-webhook
+    webhook_configs:
+      - url: http://host.docker.internal:8766/hooks/dual-write-catch-up
+        send_resolved: true
+
+  - name: rag-webhook
+    webhook_configs:
+      - url: http://host.docker.internal:9999/alertmanager-rag
+        send_resolved: true
+
+inhibit_rules:
+  - source_matchers:
+      - severity = critical
+    target_matchers:
+      - severity = warning
+    equal: ["alertname", "service"]
