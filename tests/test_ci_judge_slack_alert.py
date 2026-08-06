@@ -749,3 +749,61 @@ def test_judge_ack_audit_export(tmp_path, monkeypatch):
     )
     assert written["count"] >= 2
     assert open(dest, encoding="utf-8").read().count("\n") >= 2
+
+
+def test_purge_judge_ack_audit_days_keep_dry_run(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from rag.judge_alert import append_judge_ack_audit, purge_judge_ack_audit, read_judge_ack_audit
+
+    audit = str(tmp_path / "audit.jsonl")
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", audit)
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+    new_ts = datetime.now(timezone.utc).isoformat()
+    with open(audit, "w", encoding="utf-8") as f:
+        for i, ts in enumerate([old_ts, old_ts, new_ts, new_ts, new_ts]):
+            f.write(
+                __import__("json").dumps(
+                    {"ts": ts, "event": "ack", "actor": f"u{i}"}
+                )
+                + "\n"
+            )
+    dry = purge_judge_ack_audit(path=audit, days=30, dry_run=True)
+    assert dry["ok"] is True
+    assert dry["dry_run"] is True
+    assert dry["before"] == 5
+    assert dry["removed"] == 2
+    assert dry["after"] == 3
+    assert len(read_judge_ack_audit(path=audit)) == 5  # unchanged
+
+    real = purge_judge_ack_audit(path=audit, days=30, keep=2)
+    assert real["ok"] is True
+    assert real["dry_run"] is False
+    assert real["after"] == 2
+    rows = read_judge_ack_audit(path=audit)
+    assert len(rows) == 2
+    assert all(r["ts"] >= dry["cutoff"] for r in rows)
+
+    missing = purge_judge_ack_audit(path=str(tmp_path / "nope.jsonl"), days=7)
+    assert missing["ok"] is True and missing.get("missing") is True
+
+    bad = purge_judge_ack_audit(path=audit)
+    assert bad["ok"] is False
+    assert bad["error"] == "days_or_keep_required"
+
+    append_judge_ack_audit("alert", path=audit, actor="x")
+    keep_only = purge_judge_ack_audit(path=audit, keep=1)
+    assert keep_only["after"] == 1
+
+
+def test_cli_judge_ack_purge_parser():
+    from rag.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        ["judge-ack-purge", "--days", "90", "--keep", "100", "--dry-run"]
+    )
+    assert args.command == "judge-ack-purge"
+    assert args.days == 90.0
+    assert args.keep == 100
+    assert args.dry_run is True

@@ -1264,6 +1264,19 @@ def cmd_judge_ack_export(args: argparse.Namespace) -> int:
     return 0 if report.get("ok") else 1
 
 
+def cmd_judge_ack_purge(args: argparse.Namespace) -> int:
+    from rag.judge_alert import purge_judge_ack_audit
+
+    report = purge_judge_ack_audit(
+        path=getattr(args, "audit", None),
+        days=getattr(args, "days", None),
+        keep=getattr(args, "keep", None),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("ok") else 1
+
+
 def cmd_alertmanager(args: argparse.Namespace) -> int:
     from rag.alertmanager_ops import (
         create_silence,
@@ -1557,6 +1570,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Mevcut state snapshot satırını ekle",
     )
     p_jexp.set_defaults(func=cmd_judge_ack_export)
+
+    p_jpurge = sub.add_parser(
+        "judge-ack-purge",
+        help="Judge ack audit retention purge (days/keep, dry-run)",
+    )
+    p_jpurge.add_argument("--audit", default=None, help="Audit JSONL yolu")
+    p_jpurge.add_argument(
+        "--days",
+        type=float,
+        default=None,
+        help="Bu günden eski kayıtları sil",
+    )
+    p_jpurge.add_argument(
+        "--keep",
+        type=int,
+        default=None,
+        help="Son N kaydı tut (days sonrası uygulanır)",
+    )
+    p_jpurge.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Silmeden before/after/removed raporu yaz",
+    )
+    p_jpurge.set_defaults(func=cmd_judge_ack_purge)
 
     p_stats = sub.add_parser("stats", help="Metrik özeti (JSONL)")
     p_stats.add_argument("--path", default=None, help=f"metrics.jsonl yolu (varsayılan: {METRICS_PATH})")

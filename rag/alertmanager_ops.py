@@ -207,8 +207,10 @@ def render_alertmanager_config(
     output: Optional[str] = None,
     slack_webhook: Optional[str] = None,
     webhook_url: Optional[str] = None,
+    inhibit_path: Optional[str] = None,
+    merge_inhibit: bool = True,
 ) -> Dict[str, Any]:
-    """Template → YAML (shell script / envsubst)."""
+    """Template → YAML (shell script / envsubst) + opsiyonel inhibit merge."""
     env = os.environ.copy()
     if slack_webhook is not None:
         env["RAG_ALERTMANAGER_SLACK_WEBHOOK"] = slack_webhook
@@ -218,6 +220,11 @@ def render_alertmanager_config(
     out = output or env.get("ALERTMANAGER_OUTPUT") or str(DEFAULT_OUTPUT)
     env["ALERTMANAGER_TEMPLATE"] = tmpl
     env["ALERTMANAGER_OUTPUT"] = out
+    if inhibit_path is not None:
+        env["ALERTMANAGER_INHIBIT"] = inhibit_path
+    # Shell merge kapalı; Python merge (dedupe) çalışır. Docker/direct sh hâlâ shell merge eder.
+    if merge_inhibit:
+        env["ALERTMANAGER_MERGE_INHIBIT"] = "0"
     if not Path(RENDER_SCRIPT).is_file():
         return {"ok": False, "error": "render_script_missing", "script": str(RENDER_SCRIPT)}
     proc = subprocess.run(
@@ -227,13 +234,19 @@ def render_alertmanager_config(
         text=True,
         check=False,
     )
-    return {
+    result: Dict[str, Any] = {
         "ok": proc.returncode == 0,
         "returncode": proc.returncode,
         "output": out,
         "stdout": (proc.stdout or "").strip(),
         "stderr": (proc.stderr or "").strip(),
     }
+    if proc.returncode == 0 and merge_inhibit:
+        merged = merge_inhibit_rules_into_config(out, inhibit_path=inhibit_path)
+        result["inhibit_merge"] = merged
+        if not merged.get("ok"):
+            result["ok"] = False
+    return result
 
 
 def reload_alertmanager(
@@ -470,4 +483,154 @@ def write_inhibit_rules(
         "rules": len(rules),
         "label_sets": len(label_sets),
         "sources": sorted({str(x.get("source_file")) for x in label_sets}),
+    }
+
+
+DEFAULT_INHIBIT = ROOT / "grafana" / "inhibit_rules.generated.yml"
+
+
+def _extract_inhibit_rule_blocks(text: str) -> List[str]:
+    """inhibit_rules YAML içinden rule bloklarını ( '  - ...' ) ayıkla."""
+    lines = text.splitlines()
+    blocks: List[str] = []
+    current: List[str] = []
+    in_rules = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if stripped == "inhibit_rules:" or stripped.startswith("inhibit_rules:"):
+            in_rules = True
+            continue
+        if not in_rules:
+            # generated file is only inhibit_rules; still accept rule starts
+            if line.startswith("  - "):
+                in_rules = True
+            else:
+                continue
+        if line.startswith("  - "):
+            if current:
+                blocks.append("\n".join(current))
+            current = [line]
+        elif current and (line.startswith("    ") or stripped == ""):
+            if stripped:
+                current.append(line)
+        elif current and not line.startswith(" ") and stripped:
+            # left inhibit_rules section
+            break
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+def merge_inhibit_rules_into_config(
+    config_path: str,
+    *,
+    inhibit_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Rendered Alertmanager YAML'a generated inhibit_rules ekle (post-process).
+
+    Template include yerine: envsubst sonrası text merge — generated dosya
+    gitignore'da ve yoksa no-op. Mevcut kurallarla birebir aynı bloklar atlanır.
+    """
+    cfg = Path(config_path)
+    inh = Path(
+        inhibit_path
+        or os.environ.get("ALERTMANAGER_INHIBIT", "").strip()
+        or str(DEFAULT_INHIBIT)
+    )
+    if not cfg.is_file():
+        return {"ok": False, "error": "config_missing", "config": str(cfg)}
+    if not inh.is_file():
+        return {
+            "ok": True,
+            "merged": False,
+            "reason": "inhibit_missing",
+            "config": str(cfg),
+            "inhibit": str(inh),
+            "added": 0,
+        }
+
+    cfg_text = cfg.read_text(encoding="utf-8")
+    inh_text = inh.read_text(encoding="utf-8")
+    new_blocks = _extract_inhibit_rule_blocks(inh_text)
+    if not new_blocks:
+        return {
+            "ok": True,
+            "merged": False,
+            "reason": "no_rules",
+            "config": str(cfg),
+            "inhibit": str(inh),
+            "added": 0,
+        }
+
+    existing = _extract_inhibit_rule_blocks(cfg_text)
+    existing_norm = {b.strip() for b in existing}
+    to_add = [b for b in new_blocks if b.strip() not in existing_norm]
+    if not to_add:
+        return {
+            "ok": True,
+            "merged": False,
+            "reason": "already_present",
+            "config": str(cfg),
+            "inhibit": str(inh),
+            "added": 0,
+            "existing": len(existing),
+        }
+
+    if "inhibit_rules:" in cfg_text:
+        # Append after last inhibit rule block / at end of inhibit_rules section
+        addition = "\n" + "\n".join(to_add) + "\n"
+        # Find inhibit_rules: and insert before next top-level key or EOF
+        lines = cfg_text.splitlines(keepends=True)
+        out_lines: List[str] = []
+        in_inhibit = False
+        inserted = False
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+            if stripped.startswith("inhibit_rules:"):
+                in_inhibit = True
+                out_lines.append(line)
+                i += 1
+                continue
+            if in_inhibit:
+                # still in section while indented or blank
+                if stripped == "" or line.startswith(" ") or line.startswith("\t"):
+                    out_lines.append(line)
+                    i += 1
+                    continue
+                # top-level key → insert before it
+                if not inserted:
+                    if out_lines and not out_lines[-1].endswith("\n"):
+                        out_lines[-1] += "\n"
+                    out_lines.append(addition if addition.endswith("\n") else addition + "\n")
+                    inserted = True
+                in_inhibit = False
+                out_lines.append(line)
+                i += 1
+                continue
+            out_lines.append(line)
+            i += 1
+        if in_inhibit and not inserted:
+            if out_lines and not str(out_lines[-1]).endswith("\n"):
+                out_lines[-1] = str(out_lines[-1]) + "\n"
+            out_lines.append(addition if addition.endswith("\n") else addition + "\n")
+            inserted = True
+        cfg.write_text("".join(out_lines), encoding="utf-8")
+    else:
+        block = "inhibit_rules:\n" + "\n".join(to_add) + "\n"
+        with cfg.open("a", encoding="utf-8") as f:
+            if not cfg_text.endswith("\n"):
+                f.write("\n")
+            f.write(block)
+
+    return {
+        "ok": True,
+        "merged": True,
+        "config": str(cfg),
+        "inhibit": str(inh),
+        "added": len(to_add),
+        "existing": len(existing),
     }

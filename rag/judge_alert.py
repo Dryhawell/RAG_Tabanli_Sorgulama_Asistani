@@ -110,6 +110,90 @@ def read_judge_ack_audit(
     return rows
 
 
+def purge_judge_ack_audit(
+    *,
+    path: Optional[str] = None,
+    days: Optional[float] = None,
+    keep: Optional[int] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Judge ack audit JSONL retention: eski satırları sil (days ve/veya keep).
+
+    - days: ts < now-days olanları at
+    - keep: kalanlardan sadece son N'i tut
+    En az biri gerekli. dry_run=True ise dosyaya yazmaz.
+    """
+    out_path = path or judge_ack_audit_path()
+    if days is None and keep is None:
+        return {
+            "ok": False,
+            "error": "days_or_keep_required",
+            "path": out_path,
+            "dry_run": bool(dry_run),
+        }
+    if days is not None and float(days) < 0:
+        return {"ok": False, "error": "days_negative", "path": out_path}
+    if keep is not None and int(keep) < 0:
+        return {"ok": False, "error": "keep_negative", "path": out_path}
+
+    if not os.path.isfile(out_path):
+        return {
+            "ok": True,
+            "path": out_path,
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "dry_run": bool(dry_run),
+            "missing": True,
+        }
+
+    raw_rows: List[Dict[str, Any]] = []
+    with open(out_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                raw_rows.append(row)
+
+    before = len(raw_rows)
+    kept = list(raw_rows)
+    cutoff: Optional[str] = None
+    if days is not None:
+        cutoff_ts = time.time() - float(days) * 86400.0
+        cutoff = datetime.fromtimestamp(cutoff_ts, tz=timezone.utc).isoformat()
+        kept = [r for r in kept if str(r.get("ts") or "") >= cutoff]
+    if keep is not None:
+        kept = kept[-int(keep) :]
+
+    after = len(kept)
+    removed = before - after
+    if not dry_run and removed > 0:
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            for row in kept:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    elif not dry_run and before == 0:
+        # touch empty file stays empty
+        pass
+
+    return {
+        "ok": True,
+        "path": out_path,
+        "before": before,
+        "after": after,
+        "removed": removed,
+        "dry_run": bool(dry_run),
+        "days": float(days) if days is not None else None,
+        "keep": int(keep) if keep is not None else None,
+        "cutoff": cutoff,
+    }
+
+
 def export_judge_ack_audit(
     *,
     fmt: str = "jsonl",

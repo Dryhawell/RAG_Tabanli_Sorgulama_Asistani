@@ -73,6 +73,8 @@ def test_render_alertmanager_config_script(tmp_path, monkeypatch):
     env["RAG_ALERTMANAGER_SLACK_WEBHOOK"] = "https://hooks.slack.test/T/B/xxx"
     env["RAG_ALERTMANAGER_WEBHOOK_URL"] = "http://example.test/hook"
     env["ALERTMANAGER_OUTPUT"] = str(out)
+    # no inhibit file → no merge noise
+    env["ALERTMANAGER_INHIBIT"] = str(tmp_path / "missing_inhibit.yml")
     rc = subprocess.run(
         ["sh", "scripts/render_alertmanager_config.sh"],
         env=env,
@@ -85,6 +87,43 @@ def test_render_alertmanager_config_script(tmp_path, monkeypatch):
     assert "https://hooks.slack.test/T/B/xxx" in text
     assert "http://example.test/hook" in text
     assert "${RAG_" not in text
+
+
+def test_render_merges_generated_inhibit_rules(tmp_path):
+    import os
+    import subprocess
+
+    from rag.alertmanager_ops import merge_inhibit_rules_into_config, write_inhibit_rules
+
+    out = tmp_path / "am.yml"
+    inhibit = tmp_path / "inhibit.yml"
+    write_inhibit_rules(
+        paths=[
+            "grafana/alerting/rag_judge_soft_fail.yaml",
+            "grafana/rules/rag_llm_cost.yml",
+        ],
+        output=str(inhibit),
+    )
+    env = os.environ.copy()
+    env["RAG_ALERTMANAGER_SLACK_WEBHOOK"] = "https://hooks.slack.test/T/B/xxx"
+    env["RAG_ALERTMANAGER_WEBHOOK_URL"] = "http://example.test/hook"
+    env["ALERTMANAGER_OUTPUT"] = str(out)
+    env["ALERTMANAGER_INHIBIT"] = str(inhibit)
+    rc = subprocess.run(
+        ["sh", "scripts/render_alertmanager_config.sh"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rc.returncode == 0, rc.stderr
+    assert "inhibit_merged:" in (rc.stdout or "")
+    text = out.read_text(encoding="utf-8")
+    assert text.count("source_matchers:") >= 2
+    # idempotent python merge
+    report = merge_inhibit_rules_into_config(str(out), inhibit_path=str(inhibit))
+    assert report["ok"] is True
+    assert report.get("added", 0) == 0 or report.get("merged") is False
 
 
 def test_rotate_alertmanager_slack_webhook(tmp_path, monkeypatch):
@@ -245,6 +284,17 @@ def test_dual_write_catch_up_workflow_yaml():
     assert "RAG_VECTOR_DUAL_WRITE" in text
     assert "auto_cutover" in text
     assert "--auto-cutover" in text
+
+
+def test_dual_write_shadow_compare_workflow_yaml():
+    path = Path(".github/workflows/dual-write-shadow-compare.yml")
+    text = path.read_text(encoding="utf-8")
+    assert "migrate-vector" in text
+    assert "--shadow-compare" in text
+    assert "RAG_DUAL_WRITE_SHADOW_MIN_OVERLAP" in text
+    assert "schedule:" in text
+    assert "workflow_dispatch" in text
+    assert "dual_write_shadow_compare.json" in text
 
 
 def test_alertmanager_slack_rotate_workflow_yaml():

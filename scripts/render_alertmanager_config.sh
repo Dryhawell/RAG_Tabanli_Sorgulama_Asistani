@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
 # Alertmanager config: template → rendered YAML (envsubst) + opsiyonel reload.
+# Generated inhibit_rules (ALERTMANAGER_INHIBIT) post-process merge edilir.
 # Kullanım:
 #   ./scripts/render_alertmanager_config.sh
 #   ALERTMANAGER_RELOAD=1 ./scripts/render_alertmanager_config.sh
@@ -8,6 +9,7 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 TEMPLATE="${ALERTMANAGER_TEMPLATE:-$ROOT/grafana/alertmanager.yml.template}"
 OUTPUT="${ALERTMANAGER_OUTPUT:-$ROOT/grafana/alertmanager.rendered.yml}"
+INHIBIT="${ALERTMANAGER_INHIBIT:-$ROOT/grafana/inhibit_rules.generated.yml}"
 RELOAD_URL="${ALERTMANAGER_RELOAD_URL:-http://127.0.0.1:9093/-/reload}"
 
 if [ ! -f "$TEMPLATE" ]; then
@@ -28,6 +30,21 @@ else
     -e "s|\${RAG_ALERTMANAGER_SLACK_WEBHOOK}|${RAG_ALERTMANAGER_SLACK_WEBHOOK}|g" \
     -e "s|\${RAG_ALERTMANAGER_WEBHOOK_URL}|${RAG_ALERTMANAGER_WEBHOOK_URL}|g" \
     "$TEMPLATE" > "$OUTPUT"
+fi
+
+# Post-process: merge generated inhibit_rules (yoksa no-op).
+# Template include yerine — generated dosya gitignore'da.
+# Python render_alertmanager_config ALERTMANAGER_MERGE_INHIBIT=0 ile shell merge'i kapatır.
+if [ "${ALERTMANAGER_MERGE_INHIBIT:-1}" != "0" ] && [ -f "$INHIBIT" ]; then
+  # Yorum ve inhibit_rules: başlığını at; rule bloklarını ekle
+  awk '
+    /^[[:space:]]*#/ { next }
+    /^inhibit_rules:[[:space:]]*$/ { next }
+    /^inhibit_rules:/ { next }
+    /^[[:space:]]+- / { print; next }
+    /^[[:space:]]{2,}/ { print; next }
+  ' "$INHIBIT" >> "$OUTPUT"
+  echo "inhibit_merged: $INHIBIT"
 fi
 
 echo "rendered: $OUTPUT"

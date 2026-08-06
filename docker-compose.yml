@@ -52,6 +52,7 @@ services:
       - "9093:9093"
     volumes:
       - ./grafana/alertmanager.yml.template:/etc/alertmanager/alertmanager.yml.template:ro
+      - ./grafana:/grafana:ro
       - ./scripts/render_alertmanager_config.sh:/render.sh:ro
       - alertmanager_cfg:/etc/alertmanager
     entrypoint: ["/bin/sh", "-c"]
@@ -62,6 +63,7 @@ services:
         OUTPUT=/etc/alertmanager/alertmanager.yml \
         ALERTMANAGER_TEMPLATE=/etc/alertmanager/alertmanager.yml.template \
         ALERTMANAGER_OUTPUT=/etc/alertmanager/alertmanager.yml \
+        ALERTMANAGER_INHIBIT=/grafana/inhibit_rules.generated.yml \
         /render.sh
         exec /bin/alertmanager \
           --config.file=/etc/alertmanager/alertmanager.yml \
