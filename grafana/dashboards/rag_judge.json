@@ -268,10 +268,44 @@
         }
       },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Dual-write lag + shadow burn",
+      "description": "rag:dual_write_lag:avg1h and rag:dual_write_shadow_burn:1h (RagDualWriteLagShadowBurn)",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 44 },
+      "id": 14,
+      "targets": [
+        {
+          "expr": "rag:dual_write_lag:avg1h",
+          "legendFormat": "lag avg1h {{secondary_backend}}",
+          "refId": "A"
+        },
+        {
+          "expr": "rag:dual_write_shadow_burn:1h",
+          "legendFormat": "shadow burn 1h {{secondary_backend}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Dual-write lag (last)",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 44 },
+      "id": 15,
+      "targets": [
+        {
+          "expr": "avg(rag_vector_dual_write_lag)",
+          "legendFormat": "lag",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "decimals": 0 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
     }
   ],
   "schemaVersion": 39,
-  "tags": ["rag", "judge", "soft-fail", "llm", "otel", "tempo", "ack-audit", "dual-write", "shadow"],
+  "tags": ["rag", "judge", "soft-fail", "llm", "otel", "tempo", "ack-audit", "dual-write", "shadow", "burn-rate"],
   "templating": { "list": [] },
   "time": { "from": "now-6h", "to": "now" },
   "timezone": "browser",

@@ -386,6 +386,167 @@ def resolve_judge_ack_digest_webhook(
     return os.environ.get("RAG_JUDGE_SLACK_WEBHOOK", "").strip()
 
 
+def parse_judge_ack_digest_quiet_hours(
+    spec: Optional[str] = None,
+    *,
+    base: Optional[str] = None,
+) -> Dict[str, str]:
+    """Tenant → quiet hours HH:MM-HH:MM. Env JSON veya metadata dosyası."""
+    try:
+        from app.config import JUDGE_ACK_DIGEST_QUIET_HOURS_JSON, METADATA_DIR
+    except ImportError:
+        JUDGE_ACK_DIGEST_QUIET_HOURS_JSON = ""
+        METADATA_DIR = "metadata"
+    raw = spec if spec is not None else JUDGE_ACK_DIGEST_QUIET_HOURS_JSON
+    mapping: Dict[str, str] = {}
+    text = (raw or "").strip()
+    if text:
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    tid = str(k).strip()
+                    qh = str(v or "").strip()
+                    if tid and qh:
+                        mapping[tid] = qh
+        except json.JSONDecodeError:
+            pass
+    if mapping:
+        return mapping
+    path = os.path.join(base or METADATA_DIR, "judge_ack_digest_quiet_hours.json")
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    tid = str(k).strip()
+                    qh = str(v or "").strip()
+                    if tid and qh:
+                        mapping[tid] = qh
+        except Exception:
+            pass
+    return mapping
+
+
+def resolve_judge_ack_digest_quiet_hours(
+    tenant_id: Optional[str] = None,
+    *,
+    quiet_hours: Optional[str] = None,
+    base: Optional[str] = None,
+) -> Optional[str]:
+    """Açık arg > tenant override dosya/env > global quiet hours."""
+    if quiet_hours is not None:
+        return quiet_hours
+    tid = (tenant_id or "").strip()
+    if tid:
+        mapping = parse_judge_ack_digest_quiet_hours(base=base)
+        if tid in mapping:
+            return mapping[tid]
+        if tid.lower() in mapping:
+            return mapping[tid.lower()]
+    return _judge_ack_digest_quiet_spec(None)
+
+
+def build_judge_ack_digest_slack_blocks(
+    summary: Dict[str, Any],
+    *,
+    tenant_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Haftalık ack digest için Slack Block Kit."""
+    tid = (tenant_id or summary.get("tenant_id") or "").strip() or None
+    title = "RAG judge ack audit digest"
+    if tid:
+        title += f" · tenant `{tid}`"
+    header = (
+        f"*{title}* (last {summary.get('since_hours')}h)\n"
+        f"Total events: *{summary.get('total', 0)}* · "
+        f"actors: *{summary.get('actor_count', 0)}*"
+    )
+    blocks: List[Dict[str, Any]] = [
+        {"type": "header", "text": {"type": "plain_text", "text": "Judge ack digest"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": header}},
+    ]
+    by_event = summary.get("by_event") or {}
+    if by_event:
+        parts = [f"`{k}` = *{v}*" for k, v in sorted(by_event.items())]
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "*By event*\n" + " · ".join(parts)},
+            }
+        )
+    by_tenant = summary.get("by_tenant") or {}
+    if by_tenant and not tid:
+        parts = [f"`{k}`={v}" for k, v in sorted(by_tenant.items())[:12]]
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "*By tenant*\n" + ", ".join(parts)},
+            }
+        )
+    actors = summary.get("actors") or []
+    if actors:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "Actors: " + ", ".join(f"`{a}`" for a in actors[:20]),
+                    }
+                ],
+            }
+        )
+    last = summary.get("last_by_event") or {}
+    if last:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "Last: "
+                        + ", ".join(f"{k}@{v}" for k, v in sorted(last.items())[:6]),
+                    }
+                ],
+            }
+        )
+    return blocks
+
+
+def build_judge_ack_digest_text(
+    summary: Dict[str, Any],
+    *,
+    tenant_id: Optional[str] = None,
+) -> str:
+    tid = (tenant_id or summary.get("tenant_id") or "").strip() or None
+    title = "*RAG judge ack audit digest*"
+    if tid:
+        title += f" · tenant `{tid}`"
+    lines = [
+        f"{title} (last {summary.get('since_hours')}h)",
+        f"Total events: *{summary.get('total', 0)}* · actors: *{summary.get('actor_count', 0)}*",
+    ]
+    by_event = summary.get("by_event") or {}
+    if by_event:
+        parts = [f"`{k}`={v}" for k, v in sorted(by_event.items())]
+        lines.append("By event: " + ", ".join(parts))
+    by_tenant = summary.get("by_tenant") or {}
+    if by_tenant and not tid:
+        parts = [f"`{k}`={v}" for k, v in sorted(by_tenant.items())[:12]]
+        lines.append("By tenant: " + ", ".join(parts))
+    actors = summary.get("actors") or []
+    if actors:
+        lines.append("Actors: " + ", ".join(f"`{a}`" for a in actors[:20]))
+    last = summary.get("last_by_event") or {}
+    if last:
+        lines.append(
+            "Last: " + ", ".join(f"{k}@{v}" for k, v in sorted(last.items())[:6])
+        )
+    return "\n".join(lines)
+
+
 def _judge_ack_digest_quiet_spec(quiet_hours: Optional[str] = None) -> Optional[str]:
     if quiet_hours is not None:
         return quiet_hours
@@ -407,14 +568,21 @@ def dispatch_judge_ack_digest(
     ignore_quiet_hours: bool = False,
     timezone_name: Optional[str] = None,
     base: Optional[str] = None,
+    block_kit: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Haftalık ack audit özetini Slack webhook'a gönder (quiet hours + tenant)."""
+    """Haftalık ack audit özetini Slack webhook'a gönder (Block Kit + quiet hours)."""
     tid = (tenant_id or summary.get("tenant_id") or "").strip() or None
     if not ignore_quiet_hours:
         try:
             from rag.collab_notify_digest import is_quiet_hours
 
-            qspec = _judge_ack_digest_quiet_spec(quiet_hours)
+            # Explicit quiet_hours arg wins; else tenant override file then global
+            if quiet_hours is not None:
+                qspec = quiet_hours
+            else:
+                qspec = resolve_judge_ack_digest_quiet_hours(
+                    tid, quiet_hours=None, base=base
+                )
             tz = timezone_name
             if not tz:
                 try:
@@ -432,6 +600,7 @@ def dispatch_judge_ack_digest(
                     "skipped": True,
                     "reason": "quiet_hours",
                     "tenant_id": tid,
+                    "quiet_hours": qspec,
                     "configured": bool(
                         resolve_judge_ack_digest_webhook(
                             tid, url=webhook, base=base
@@ -442,32 +611,20 @@ def dispatch_judge_ack_digest(
             pass
 
     url = resolve_judge_ack_digest_webhook(tid, url=webhook, base=base)
-    by_event = summary.get("by_event") or {}
-    title = "*RAG judge ack audit digest*"
-    if tid:
-        title += f" · tenant `{tid}`"
-    lines = [
-        f"{title} (last {summary.get('since_hours')}h)",
-        f"Total events: *{summary.get('total', 0)}* · actors: *{summary.get('actor_count', 0)}*",
-    ]
-    if by_event:
-        parts = [f"`{k}`={v}" for k, v in sorted(by_event.items())]
-        lines.append("By event: " + ", ".join(parts))
-    by_tenant = summary.get("by_tenant") or {}
-    if by_tenant and not tid:
-        parts = [f"`{k}`={v}" for k, v in sorted(by_tenant.items())[:12]]
-        lines.append("By tenant: " + ", ".join(parts))
-    actors = summary.get("actors") or []
-    if actors:
-        lines.append("Actors: " + ", ".join(f"`{a}`" for a in actors[:20]))
-    last = summary.get("last_by_event") or {}
-    if last:
-        lines.append(
-            "Last: "
-            + ", ".join(f"{k}@{v}" for k, v in sorted(last.items())[:6])
+    text = build_judge_ack_digest_text(summary, tenant_id=tid)
+    use_blocks = block_kit
+    if use_blocks is None:
+        try:
+            from app.config import JUDGE_ACK_DIGEST_BLOCK_KIT
+
+            use_blocks = bool(JUDGE_ACK_DIGEST_BLOCK_KIT)
+        except ImportError:
+            use_blocks = True
+    payload: Dict[str, Any] = {"text": text}
+    if use_blocks:
+        payload["blocks"] = build_judge_ack_digest_slack_blocks(
+            summary, tenant_id=tid
         )
-    text = "\n".join(lines)
-    payload = {"text": text}
     if dry_run or not url:
         return {
             "ok": True,
@@ -476,6 +633,7 @@ def dispatch_judge_ack_digest(
             "payload": payload,
             "configured": bool(url),
             "tenant_id": tid,
+            "block_kit": bool(use_blocks),
         }
     ok = post_slack(url, payload)
     return {
@@ -484,6 +642,7 @@ def dispatch_judge_ack_digest(
         "configured": True,
         "payload": payload,
         "tenant_id": tid,
+        "block_kit": bool(use_blocks),
     }
 
 
@@ -497,9 +656,11 @@ def dispatch_judge_ack_digest_fanout(
     timezone_name: Optional[str] = None,
     base: Optional[str] = None,
     webhook: Optional[str] = None,
+    block_kit: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Tenant webhook haritasına göre ack digest fan-out."""
+    """Tenant webhook haritasına göre ack digest fan-out (per-tenant quiet hours)."""
     mapping = parse_judge_ack_digest_webhooks(base=base)
+    quiet_map = parse_judge_ack_digest_quiet_hours(base=base)
     global_summary = summarize_judge_ack_audit(
         path=path, since_hours=since_hours
     )
@@ -512,6 +673,7 @@ def dispatch_judge_ack_digest_fanout(
             ignore_quiet_hours=ignore_quiet_hours,
             timezone_name=timezone_name,
             base=base,
+            block_kit=block_kit,
         )
         return {
             "ok": bool(global_summary.get("ok") and dispatched.get("ok")),
@@ -526,20 +688,24 @@ def dispatch_judge_ack_digest_fanout(
         tenant_summary = summarize_judge_ack_audit(
             path=path, since_hours=since_hours, tenant_id=tid
         )
-        # Tenant'a özel olay yoksa global özeti tenant etiketiyle gönder
         summary = tenant_summary if tenant_summary.get("total", 0) > 0 else {
             **global_summary,
             "tenant_id": tid,
         }
+        # Explicit CLI quiet_hours overrides all; else per-tenant file then global
+        tenant_quiet = quiet_hours
+        if tenant_quiet is None and tid in quiet_map:
+            tenant_quiet = quiet_map[tid]
         dispatched = dispatch_judge_ack_digest(
             summary,
             webhook=url,
             dry_run=dry_run,
             tenant_id=tid,
-            quiet_hours=quiet_hours,
+            quiet_hours=tenant_quiet,
             ignore_quiet_hours=ignore_quiet_hours,
             timezone_name=timezone_name,
             base=base,
+            block_kit=block_kit,
         )
         results.append({"tenant_id": tid, "summary": summary, **dispatched})
 
@@ -550,6 +716,7 @@ def dispatch_judge_ack_digest_fanout(
         "tenant_count": len(results),
         "summary": global_summary,
         "results": results,
+        "quiet_overrides": len(quiet_map),
     }
 
 

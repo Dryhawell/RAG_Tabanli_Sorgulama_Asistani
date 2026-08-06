@@ -1311,6 +1311,11 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
     force = bool(getattr(args, "force", False))
     tz = getattr(args, "timezone", None)
     audit = getattr(args, "audit", None)
+    block_kit = None
+    if getattr(args, "no_block_kit", False):
+        block_kit = False
+    elif getattr(args, "block_kit", False):
+        block_kit = True
 
     if getattr(args, "fan_out", False):
         report = dispatch_judge_ack_digest_fanout(
@@ -1321,6 +1326,7 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
             ignore_quiet_hours=force,
             timezone_name=tz,
             webhook=getattr(args, "webhook", None),
+            block_kit=block_kit,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("ok") else 1
@@ -1338,6 +1344,7 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
         quiet_hours=quiet,
         ignore_quiet_hours=force,
         timezone_name=tz,
+        block_kit=block_kit,
     )
     print(
         json.dumps(
@@ -1354,18 +1361,33 @@ def cmd_alertmanager(args: argparse.Namespace) -> int:
         check_alertmanager_config,
         create_silence,
         delete_silence,
+        list_alerts,
         list_silences,
         parse_duration_sec,
         parse_silence_matcher,
         reload_alertmanager,
         render_alertmanager_config,
         rotate_alertmanager_slack_webhook,
+        tune_inhibit_equal_from_live,
         write_inhibit_rules,
     )
 
     if getattr(args, "check_config", False):
         path = getattr(args, "output", None)
         report = check_alertmanager_config(path)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+
+    if getattr(args, "list_alerts", False):
+        report = list_alerts(base_url=getattr(args, "api_url", None))
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("ok") else 1
+
+    if getattr(args, "tune_equal", False):
+        report = tune_inhibit_equal_from_live(
+            base_url=getattr(args, "api_url", None),
+            paths=getattr(args, "alerting_path", None) or None,
+        )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("ok") else 1
 
@@ -1380,6 +1402,8 @@ def cmd_alertmanager(args: argparse.Namespace) -> int:
             paths=paths,
             output=getattr(args, "output", None),
             equal_labels=equal,
+            from_live=bool(getattr(args, "from_live", False)),
+            api_url=getattr(args, "api_url", None),
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("ok") else 1
@@ -1477,7 +1501,7 @@ def cmd_alertmanager(args: argparse.Namespace) -> int:
         return 0 if reloaded.get("ok") else 1
 
     print(
-        "Kullanım: alertmanager --render | --reload | --rotate-slack-webhook | --silence | --generate-inhibit | --check-config",
+        "Kullanım: alertmanager --render | --reload | --rotate-slack-webhook | --silence | --generate-inhibit [--from-live] | --tune-equal | --list-alerts | --check-config",
         file=sys.stderr,
     )
     return 2
@@ -1722,6 +1746,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Quiet hours'ı yok say",
     )
     p_jdig.add_argument(
+        "--block-kit",
+        action="store_true",
+        help="Slack Block Kit payload zorla",
+    )
+    p_jdig.add_argument(
+        "--no-block-kit",
+        action="store_true",
+        help="Sadece düz text payload",
+    )
+    p_jdig.add_argument(
         "--dry-run",
         action="store_true",
         help="Webhook göndermeden özet yazdır",
@@ -1755,6 +1789,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--generate-inhibit",
         action="store_true",
         help="Grafana label'larından Alertmanager inhibit_rules üret",
+    )
+    p_am.add_argument(
+        "--from-live",
+        action="store_true",
+        help="Inhibit equal label'larını canlı Alertmanager alert'lerinden ayarla",
+    )
+    p_am.add_argument(
+        "--tune-equal",
+        action="store_true",
+        help="Canlı+statik label'lardan equal öner (yazmadan)",
+    )
+    p_am.add_argument(
+        "--list-alerts",
+        action="store_true",
+        help="Alertmanager /api/v2/alerts listele",
     )
     p_am.add_argument(
         "--equal",
