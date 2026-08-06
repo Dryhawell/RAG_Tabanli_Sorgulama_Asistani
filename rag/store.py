@@ -454,6 +454,160 @@ def dual_write_catch_up(
         "lag_after": lag_after,
     }
 
+
+def _hit_key(chunk: Any) -> str:
+    meta = getattr(chunk, "metadata", None)
+    uid = getattr(meta, "chunk_uid", None) if meta is not None else None
+    if uid:
+        return f"uid:{uid}"
+    src = getattr(meta, "source_file", "") if meta is not None else ""
+    cid = getattr(meta, "chunk_id", None) if meta is not None else None
+    if cid is None:
+        cid = getattr(chunk, "chunk_id", None)
+    return f"{src}#{cid}"
+
+
+def dual_write_shadow_compare(
+    index: Any,
+    queries: Sequence[np.ndarray],
+    *,
+    top_k: int = 6,
+    min_overlap: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Primary vs secondary search overlap karşılaştırması (shadow-read)."""
+    if not isinstance(index, DualWriteIndex):
+        return {"ok": True, "dual_write": False, "reason": "not_dual_write"}
+    threshold = min_overlap
+    if threshold is None:
+        raw = os.environ.get("RAG_DUAL_WRITE_SHADOW_MIN_OVERLAP", "1.0").strip()
+        try:
+            threshold = float(raw)
+        except (TypeError, ValueError):
+            threshold = 1.0
+    k = max(1, int(top_k))
+    per_query: List[Dict[str, Any]] = []
+    overlaps: List[float] = []
+    rank_mismatches = 0
+    secondary_backend = index.secondary_backend or type(index.secondary).__name__
+
+    for i, q in enumerate(queries):
+        arr = np.asarray(q, dtype=np.float32)
+        if arr.ndim == 1:
+            arr = arr.reshape(1, -1)
+        primary_hits = index.primary.search(arr, top_k=k)
+        secondary_error = None
+        try:
+            secondary_hits = index.secondary.search(arr, top_k=k)
+        except Exception as exc:
+            secondary_hits = []
+            secondary_error = type(exc).__name__
+        p_ids = [_hit_key(h) for h in primary_hits]
+        s_ids = [_hit_key(h) for h in secondary_hits]
+        p_set, s_set = set(p_ids), set(s_ids)
+        if not p_set and not s_set:
+            overlap = 1.0
+        elif not p_set or not s_set:
+            overlap = 0.0
+        else:
+            overlap = len(p_set & s_set) / float(max(len(p_set), len(s_set)))
+        mismatches = sum(
+            1 for a, b in zip(p_ids, s_ids) if a != b
+        ) + abs(len(p_ids) - len(s_ids))
+        if mismatches:
+            rank_mismatches += 1
+        overlaps.append(overlap)
+        per_query.append(
+            {
+                "index": i,
+                "primary_ids": p_ids,
+                "secondary_ids": s_ids,
+                "overlap": overlap,
+                "rank_mismatch": mismatches > 0,
+                "secondary_error": secondary_error,
+            }
+        )
+
+    mean_overlap = float(sum(overlaps) / len(overlaps)) if overlaps else 1.0
+    min_ov = float(min(overlaps)) if overlaps else 1.0
+    ok = mean_overlap >= float(threshold) and min_ov >= float(threshold)
+    report = {
+        "ok": ok,
+        "dual_write": True,
+        "queries": len(queries),
+        "top_k": k,
+        "min_overlap_threshold": float(threshold),
+        "mean_overlap": mean_overlap,
+        "min_overlap": min_ov,
+        "rank_mismatches": rank_mismatches,
+        "secondary_backend": secondary_backend,
+        "per_query": per_query,
+    }
+    try:
+        from rag.metrics import record_metric
+
+        record_metric(
+            "vector_dual_write_shadow",
+            values={
+                "mean_overlap": mean_overlap,
+                "min_overlap": min_ov,
+                "queries": len(queries),
+                "rank_mismatches": rank_mismatches,
+                "ok": ok,
+                "secondary_backend": secondary_backend,
+            },
+        )
+    except Exception:
+        pass
+    return report
+
+
+def dual_write_shadow_compare_from_index(
+    index: Any,
+    *,
+    sample: int = 16,
+    top_k: int = 6,
+    seed: int = 0,
+    min_overlap: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Primary docstore'dan örnek vektörlerle shadow-compare."""
+    if not isinstance(index, DualWriteIndex):
+        return {"ok": True, "dual_write": False, "reason": "not_dual_write"}
+    ids = sorted(int(i) for i in (getattr(index.primary, "_id_to_meta", {}) or {}).keys())
+    if not ids:
+        return {
+            "ok": True,
+            "dual_write": True,
+            "queries": 0,
+            "reason": "empty_index",
+            "mean_overlap": 1.0,
+            "min_overlap": 1.0,
+        }
+    rng = np.random.default_rng(int(seed))
+    n = min(max(1, int(sample)), len(ids))
+    chosen = rng.choice(ids, size=n, replace=False)
+    queries: List[np.ndarray] = []
+    skipped = 0
+    for cid in chosen:
+        vec = _reconstruct_vector(index.primary, int(cid))
+        if vec is None:
+            skipped += 1
+            continue
+        queries.append(np.asarray(vec, dtype=np.float32))
+    if not queries:
+        return {
+            "ok": False,
+            "dual_write": True,
+            "error": "no_reconstructable_vectors",
+            "skipped": skipped,
+        }
+    report = dual_write_shadow_compare(
+        index, queries, top_k=top_k, min_overlap=min_overlap
+    )
+    report["sample"] = n
+    report["seed"] = int(seed)
+    report["skipped"] = skipped
+    return report
+
 def _reconstruct_vector(index: VectorIndex, cid: int) -> Optional[np.ndarray]:
     try:
         if hasattr(index, "idmap"):

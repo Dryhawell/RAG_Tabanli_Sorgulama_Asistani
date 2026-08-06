@@ -78,6 +78,16 @@ def test_prometheus_observe_and_dump(monkeypatch):
         },
         enabled=True,
     )
+    observe_metric(
+        "vector_dual_write_shadow",
+        values={
+            "mean_overlap": 0.95,
+            "min_overlap": 0.9,
+            "secondary_backend": "qdrant",
+            "ok": True,
+        },
+        enabled=True,
+    )
     body = render_prometheus().decode("utf-8")
     assert "rag_queries_total" in body
     assert "rag_ingest_total" in body
@@ -91,6 +101,7 @@ def test_prometheus_observe_and_dump(monkeypatch):
     assert "rag_vector_dual_write_catch_up_sources_total" in body
     assert "rag_vector_dual_write_catch_up_chunks_total" in body
     assert "rag_vector_dual_write_catch_up_remaining" in body
+    assert "rag_vector_dual_write_shadow_overlap" in body
 
 
 def test_record_metric_forwards_to_prometheus(tmp_path, monkeypatch):

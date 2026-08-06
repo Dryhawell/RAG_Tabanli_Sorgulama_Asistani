@@ -718,3 +718,34 @@ def test_remote_judge_state_roundtrip(tmp_path, monkeypatch):
     save_judge_alert_state({"soft_fail": False, "last_action": "resolve"}, str(tmp_path / "local.json"))
     assert any(c["method"] == "put" for c in calls)
 
+
+
+def test_judge_ack_audit_export(tmp_path, monkeypatch):
+    from rag.judge_alert import (
+        acknowledge_judge_alert,
+        export_judge_ack_audit,
+        read_judge_ack_audit,
+        save_judge_alert_state,
+    )
+
+    state = str(tmp_path / "state.json")
+    audit = str(tmp_path / "audit.jsonl")
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", audit)
+    save_judge_alert_state(
+        {"soft_fail": True, "source": "report", "acknowledged": False},
+        state,
+    )
+    ack = acknowledge_judge_alert(actor="ops", note="checking", state_path=state, notify=False)
+    assert ack["ok"] is True
+    rows = read_judge_ack_audit(path=audit)
+    assert any(r.get("event") == "ack" and r.get("actor") == "ops" for r in rows)
+    csv_out = export_judge_ack_audit(fmt="csv", path=audit)
+    assert csv_out["ok"] is True
+    assert "ts,event,actor" in (csv_out.get("text") or "")
+    assert "ack" in (csv_out.get("text") or "")
+    dest = str(tmp_path / "out.jsonl")
+    written = export_judge_ack_audit(
+        fmt="jsonl", path=audit, output=dest, include_state=True, state_path=state
+    )
+    assert written["count"] >= 2
+    assert open(dest, encoding="utf-8").read().count("\n") >= 2

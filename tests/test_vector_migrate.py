@@ -239,3 +239,40 @@ def test_migrate_vector_catch_up_auto_cutover_cli(tmp_path, monkeypatch, capsys)
     printed = capsys.readouterr().out
     assert '"auto_cutover": true' in printed or '"auto_cutover": true'.replace(" ", "") in printed.replace(" ", "")
     assert open(out, encoding="utf-8").read().count("RAG_VECTOR_BACKEND=qdrant") == 1
+
+
+def test_dual_write_shadow_compare_identical():
+    from rag.store import DualWriteIndex, dual_write_shadow_compare
+
+    primary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    secondary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    dual = DualWriteIndex(primary, secondary, secondary_backend="faiss")
+    vecs = np.eye(2, 3, dtype=np.float32)
+    dual.add(
+        vecs,
+        ["hello world text", "another chunk here"],
+        [_meta("a.txt", 0, "u0"), _meta("b.txt", 0, "u1")],
+    )
+    report = dual_write_shadow_compare(dual, [vecs[0], vecs[1]], top_k=2, min_overlap=1.0)
+    assert report["dual_write"] is True
+    assert report["mean_overlap"] == 1.0
+    assert report["ok"] is True
+
+
+def test_dual_write_shadow_compare_divergence():
+    from rag.store import DualWriteIndex, dual_write_shadow_compare
+
+    primary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    secondary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    dual = DualWriteIndex(primary, secondary, secondary_backend="faiss")
+    vecs = np.eye(2, 3, dtype=np.float32)
+    dual.add(
+        vecs,
+        ["hello world text", "another chunk here"],
+        [_meta("a.txt", 0, "u0"), _meta("b.txt", 0, "u1")],
+    )
+    dual.secondary = create_index(dim=3, embedding_model="m", backend="faiss", dual_write="")
+    dual.secondary.add(vecs[:1], ["hello world text"], [_meta("a.txt", 0, "u0")])
+    report = dual_write_shadow_compare(dual, [vecs[0]], top_k=2, min_overlap=1.0)
+    assert report["ok"] is False
+    assert report["mean_overlap"] < 1.0

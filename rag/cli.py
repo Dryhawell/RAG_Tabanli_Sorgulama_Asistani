@@ -208,6 +208,38 @@ def cmd_migrate_vector(args: argparse.Namespace) -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("ok", False) or report.get("reason") == "not_dual_write" else 1
 
+    if getattr(args, "shadow_compare", False):
+        from rag.store import dual_write_shadow_compare_from_index
+
+        index = load_index(INDEX_PATH, DOCSTORE_PATH)
+        if not isinstance(index, DualWriteIndex):
+            secondary = (getattr(args, "target", None) or dual_write_backend() or "qdrant")
+            try:
+                sec = create_index(
+                    dim=getattr(index, "dim", 384),
+                    embedding_model=getattr(index, "embedding_model", None),
+                    backend=secondary,
+                    dual_write="",
+                )
+                index = DualWriteIndex(index, sec, secondary_backend=secondary)
+            except Exception as exc:
+                print(
+                    json.dumps(
+                        {"ok": False, "error": str(exc), "dual_write": False},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 1
+        report = dual_write_shadow_compare_from_index(
+            index,
+            sample=int(getattr(args, "sample", 16) or 16),
+            top_k=int(getattr(args, "top_k", 6) or 6),
+            seed=int(getattr(args, "seed", 0) or 0),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("ok") else 1
+
     if getattr(args, "catch_up", False) and not getattr(args, "cutover", False):
         index = load_index(INDEX_PATH, DOCSTORE_PATH)
         if not isinstance(index, DualWriteIndex):
@@ -1211,6 +1243,27 @@ def cmd_prometheus(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_judge_ack_export(args: argparse.Namespace) -> int:
+    from rag.judge_alert import export_judge_ack_audit
+
+    report = export_judge_ack_audit(
+        fmt=getattr(args, "format", None) or "jsonl",
+        path=getattr(args, "audit", None),
+        output=getattr(args, "output", None),
+        limit=getattr(args, "limit", None),
+        since=getattr(args, "since", None),
+        until=getattr(args, "until", None),
+        event=getattr(args, "event", None),
+        include_state=bool(getattr(args, "include_state", False)),
+        state_path=getattr(args, "state", None),
+    )
+    if report.get("output"):
+        print(json.dumps({k: v for k, v in report.items() if k != "text"}, indent=2))
+    else:
+        sys.stdout.write(report.get("text") or "")
+    return 0 if report.get("ok") else 1
+
+
 def cmd_alertmanager(args: argparse.Namespace) -> int:
     from rag.alertmanager_ops import (
         create_silence,
@@ -1221,7 +1274,23 @@ def cmd_alertmanager(args: argparse.Namespace) -> int:
         reload_alertmanager,
         render_alertmanager_config,
         rotate_alertmanager_slack_webhook,
+        write_inhibit_rules,
     )
+
+    if getattr(args, "generate_inhibit", False):
+        equal = [
+            x.strip()
+            for x in str(getattr(args, "equal", None) or "alertname,service").split(",")
+            if x.strip()
+        ]
+        paths = getattr(args, "alerting_path", None) or None
+        report = write_inhibit_rules(
+            paths=paths,
+            output=getattr(args, "output", None),
+            equal_labels=equal,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
 
     if getattr(args, "silence", False):
         matchers = []
@@ -1315,7 +1384,7 @@ def cmd_alertmanager(args: argparse.Namespace) -> int:
         return 0 if reloaded.get("ok") else 1
 
     print(
-        "Kullanım: alertmanager --render | --reload | --rotate-slack-webhook URL | --silence",
+        "Kullanım: alertmanager --render | --reload | --rotate-slack-webhook | --silence | --generate-inhibit",
         file=sys.stderr,
     )
     return 2
@@ -1363,6 +1432,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--lag-report",
         action="store_true",
         help="Dual-write lag raporu (primary vs secondary size/sources)",
+    )
+    p_mig.add_argument(
+        "--shadow-compare",
+        action="store_true",
+        help="Dual-write shadow-read: primary vs secondary search overlap",
+    )
+    p_mig.add_argument(
+        "--sample",
+        type=int,
+        default=16,
+        help="Shadow-compare örnek vektör sayısı",
+    )
+    p_mig.add_argument(
+        "--top-k",
+        type=int,
+        default=6,
+        help="Shadow-compare top_k",
+    )
+    p_mig.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Shadow-compare RNG seed",
     )
     p_mig.add_argument(
         "--catch-up",
@@ -1442,6 +1534,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_judge.add_argument("--output", default=None, help="JSON rapor çıktı yolu")
     p_judge.set_defaults(func=cmd_judge)
 
+    p_jexp = sub.add_parser(
+        "judge-ack-export",
+        help="Judge soft-fail ack audit trail export (JSONL/CSV)",
+    )
+    p_jexp.add_argument(
+        "--format",
+        choices=["jsonl", "csv"],
+        default="jsonl",
+        help="Çıktı formatı",
+    )
+    p_jexp.add_argument("--output", default=None, help="Dosyaya yaz (yoksa stdout)")
+    p_jexp.add_argument("--audit", default=None, help="Audit JSONL yolu")
+    p_jexp.add_argument("--state", default=None, help="Judge alert state yolu")
+    p_jexp.add_argument("--limit", type=int, default=None, help="Son N kayıt")
+    p_jexp.add_argument("--since", default=None, help="ISO başlangıç filtresi")
+    p_jexp.add_argument("--until", default=None, help="ISO bitiş filtresi")
+    p_jexp.add_argument("--event", default=None, help="Olay filtresi (ack/alert/resolve)")
+    p_jexp.add_argument(
+        "--include-state",
+        action="store_true",
+        help="Mevcut state snapshot satırını ekle",
+    )
+    p_jexp.set_defaults(func=cmd_judge_ack_export)
+
     p_stats = sub.add_parser("stats", help="Metrik özeti (JSONL)")
     p_stats.add_argument("--path", default=None, help=f"metrics.jsonl yolu (varsayılan: {METRICS_PATH})")
     p_stats.add_argument("--limit", type=int, default=5000, help="Okunacak son kayıt sayısı")
@@ -1460,6 +1576,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_am.add_argument("--render", action="store_true", help="Template → YAML render")
     p_am.add_argument("--reload", action="store_true", help="POST /-/reload")
+    p_am.add_argument(
+        "--generate-inhibit",
+        action="store_true",
+        help="Grafana label'larından Alertmanager inhibit_rules üret",
+    )
+    p_am.add_argument(
+        "--equal",
+        default="alertname,service",
+        help="Inhibit equal label listesi (virgülle)",
+    )
+    p_am.add_argument(
+        "--alerting-path",
+        action="append",
+        default=None,
+        help="Grafana alert/rule YAML yolu (tekrarlanabilir; varsayılan grafana/alerting+rules)",
+    )
     p_am.add_argument(
         "--silence",
         action="store_true",

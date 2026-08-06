@@ -25,6 +25,162 @@ def judge_alert_state_path(base: Optional[str] = None) -> str:
     return os.path.join(root, "judge_alert_state.json")
 
 
+def judge_ack_audit_path(base: Optional[str] = None) -> str:
+    env = os.environ.get("RAG_JUDGE_ACK_AUDIT", "").strip()
+    if env:
+        return env
+    try:
+        from app.config import METADATA_DIR
+    except ImportError:
+        METADATA_DIR = "metadata"
+    root = base or METADATA_DIR
+    return os.path.join(root, "judge_ack_audit.jsonl")
+
+
+def append_judge_ack_audit(
+    event: str,
+    *,
+    actor: Optional[str] = None,
+    note: Optional[str] = None,
+    source: Optional[str] = None,
+    state: Optional[Dict[str, Any]] = None,
+    path: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Judge ack/alert/resolve audit satırı (JSONL append)."""
+    st = state or {}
+    record: Dict[str, Any] = {
+        "ts": _utcnow_iso(),
+        "event": str(event or "unknown"),
+        "actor": actor,
+        "note": (note or "")[:500] if note is not None else None,
+        "source": source or st.get("source"),
+        "soft_fail": st.get("soft_fail"),
+        "acknowledged": st.get("acknowledged"),
+        "acknowledged_by": st.get("acknowledged_by"),
+        "acknowledged_at": st.get("acknowledged_at"),
+        "ack_note": st.get("ack_note"),
+    }
+    if extra:
+        record.update(extra)
+    out = path or judge_ack_audit_path()
+    try:
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        with open(out, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        record["_write_error"] = type(exc).__name__
+    return record
+
+
+def read_judge_ack_audit(
+    *,
+    path: Optional[str] = None,
+    limit: Optional[int] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    event: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Audit JSONL oku (eskiden yeniye); limit varsa son N."""
+    out_path = path or judge_ack_audit_path()
+    if not os.path.isfile(out_path):
+        return []
+    rows: List[Dict[str, Any]] = []
+    with open(out_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            if event and str(row.get("event") or "") != str(event):
+                continue
+            ts = str(row.get("ts") or "")
+            if since and ts < since:
+                continue
+            if until and ts > until:
+                continue
+            rows.append(row)
+    if limit is not None and limit >= 0:
+        rows = rows[-int(limit) :]
+    return rows
+
+
+def export_judge_ack_audit(
+    *,
+    fmt: str = "jsonl",
+    path: Optional[str] = None,
+    output: Optional[str] = None,
+    limit: Optional[int] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    event: Optional[str] = None,
+    include_state: bool = False,
+    state_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Audit trail'i JSONL veya CSV olarak dışa aktar."""
+    rows = read_judge_ack_audit(
+        path=path, limit=limit, since=since, until=until, event=event
+    )
+    if include_state:
+        st = load_judge_alert_state(state_path)
+        rows = list(rows) + [
+            {
+                "ts": _utcnow_iso(),
+                "event": "state_snapshot",
+                "actor": None,
+                "note": None,
+                "source": st.get("source"),
+                "soft_fail": st.get("soft_fail"),
+                "acknowledged": st.get("acknowledged"),
+                "acknowledged_by": st.get("acknowledged_by"),
+                "acknowledged_at": st.get("acknowledged_at"),
+                "ack_note": st.get("ack_note"),
+            }
+        ]
+    kind = (fmt or "jsonl").strip().lower()
+    if kind == "csv":
+        import csv
+        import io
+
+        fields = [
+            "ts",
+            "event",
+            "actor",
+            "note",
+            "source",
+            "soft_fail",
+            "acknowledged",
+            "acknowledged_by",
+            "acknowledged_at",
+            "ack_note",
+        ]
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({k: row.get(k) for k in fields})
+        text = buf.getvalue()
+    else:
+        kind = "jsonl"
+        text = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+    if output:
+        os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
+        with open(output, "w", encoding="utf-8") as f:
+            f.write(text)
+    return {
+        "ok": True,
+        "format": kind,
+        "count": len(rows),
+        "output": output,
+        "text": text if not output else None,
+    }
+
+
 def load_judge_alert_state(path: Optional[str] = None) -> Dict[str, Any]:
     # Explicit path → sadece dosya (test/izolasyon); aksi halde remote öncelikli
     if path is None:
@@ -1315,6 +1471,13 @@ def acknowledge_judge_alert(
             "state": state,
         }
     if state.get("acknowledged"):
+        append_judge_ack_audit(
+            "ack_already",
+            actor=who,
+            note=note or "",
+            source=str(state.get("source") or "report"),
+            state=state,
+        )
         return {
             "ok": True,
             "already": True,
@@ -1334,6 +1497,13 @@ def acknowledge_judge_alert(
         "last_action": "ack",
     }
     save_judge_alert_state(new_state, state_path)
+    append_judge_ack_audit(
+        "ack",
+        actor=who,
+        note=note or "",
+        source=source,
+        state=new_state,
+    )
     notify_result: Dict[str, Any] = {"acked": False, "skipped": True}
     if notify:
         notify_result = dispatch_judge_ack(
@@ -1368,6 +1538,12 @@ def detect_and_dispatch(
 
     if fired:
         if prev and acked:
+            append_judge_ack_audit(
+                "ack_hold",
+                actor=str(state.get("acknowledged_by") or ""),
+                source=source or prev_source,
+                state=state,
+            )
             return {
                 "action": "ack_hold",
                 "soft_fail": True,
@@ -1378,18 +1554,21 @@ def detect_and_dispatch(
                 "source": source or prev_source,
             }
         result = dispatch_judge_alerts(report or {"summary": {}}, source=source or "unknown")
-        save_judge_alert_state(
-            {
-                "soft_fail": True,
-                "source": source or "unknown",
-                "updated_at": _utcnow_iso(),
-                "last_action": "alert",
-                "acknowledged": False,
-                "acknowledged_at": None,
-                "acknowledged_by": None,
-                "ack_note": None,
-            },
-            state_path,
+        new_state = {
+            "soft_fail": True,
+            "source": source or "unknown",
+            "updated_at": _utcnow_iso(),
+            "last_action": "alert",
+            "acknowledged": False,
+            "acknowledged_at": None,
+            "acknowledged_by": None,
+            "ack_note": None,
+        }
+        save_judge_alert_state(new_state, state_path)
+        append_judge_ack_audit(
+            "alert",
+            source=source or "unknown",
+            state=new_state,
         )
         return {
             "action": "alert",
@@ -1402,18 +1581,21 @@ def detect_and_dispatch(
             report or {"summary": {"ok": True}},
             source=prev_source,
         )
-        save_judge_alert_state(
-            {
-                "soft_fail": False,
-                "source": None,
-                "updated_at": _utcnow_iso(),
-                "last_action": "resolve",
-                "acknowledged": False,
-                "acknowledged_at": None,
-                "acknowledged_by": None,
-                "ack_note": None,
-            },
-            state_path,
+        new_state = {
+            "soft_fail": False,
+            "source": None,
+            "updated_at": _utcnow_iso(),
+            "last_action": "resolve",
+            "acknowledged": False,
+            "acknowledged_at": None,
+            "acknowledged_by": None,
+            "ack_note": None,
+        }
+        save_judge_alert_state(new_state, state_path)
+        append_judge_ack_audit(
+            "resolve",
+            source=prev_source,
+            state={**new_state, "source": prev_source},
         )
         return {
             "action": "resolve",

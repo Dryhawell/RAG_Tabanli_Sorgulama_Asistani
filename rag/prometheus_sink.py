@@ -37,6 +37,7 @@ _dual_write_errors = None
 _dual_write_catch_up_sources = None
 _dual_write_catch_up_chunks = None
 _dual_write_catch_up_remaining = None
+_dual_write_shadow_overlap = None
 
 
 def prometheus_available() -> bool:
@@ -60,6 +61,7 @@ def _ensure_metrics():
     global _dual_write_lag, _dual_write_errors
     global _dual_write_catch_up_sources, _dual_write_catch_up_chunks
     global _dual_write_catch_up_remaining
+    global _dual_write_shadow_overlap
     if _events_total is not None:
         return
     if not prometheus_available():
@@ -149,6 +151,11 @@ def _ensure_metrics():
     _dual_write_catch_up_remaining = Gauge(
         "rag_vector_dual_write_catch_up_remaining",
         "Catch-up bekleyen kaynak sayısı",
+        ["secondary_backend"],
+    )
+    _dual_write_shadow_overlap = Gauge(
+        "rag_vector_dual_write_shadow_overlap",
+        "Dual-write shadow-read mean overlap",
         ["secondary_backend"],
     )
 
@@ -306,6 +313,15 @@ def observe_metric(
             _dual_write_catch_up_remaining.labels(secondary_backend=secondary).set(
                 remaining
             )
+        elif kind == "vector_dual_write_shadow":
+            assert _dual_write_shadow_overlap is not None
+            secondary = str(vals.get("secondary_backend") or "secondary")
+            try:
+                _dual_write_shadow_overlap.labels(secondary_backend=secondary).set(
+                    float(vals.get("mean_overlap") or 0)
+                )
+            except (TypeError, ValueError):
+                pass
 
 
 def render_prometheus() -> bytes:

@@ -193,6 +193,50 @@ def test_create_silence_posts_api(monkeypatch):
     assert captured["method"] == "POST"
 
 
+def test_generate_inhibit_rules_from_grafana_labels(tmp_path):
+    from rag.alertmanager_ops import (
+        extract_grafana_alert_labels,
+        generate_inhibit_rules,
+        render_inhibit_rules_yaml,
+        write_inhibit_rules,
+    )
+
+    labels = extract_grafana_alert_labels(
+        ["grafana/alerting/rag_judge_soft_fail.yaml", "grafana/rules/rag_llm_cost.yml"]
+    )
+    assert labels
+    assert any(
+        (item.get("labels") or {}).get("service") == "rag-judge" for item in labels
+    )
+    rules = generate_inhibit_rules(labels)
+    assert rules
+    yaml_text = render_inhibit_rules_yaml(rules)
+    assert "inhibit_rules:" in yaml_text
+    assert "source_matchers:" in yaml_text
+    out = tmp_path / "inhibit.yml"
+    report = write_inhibit_rules(
+        paths=[
+            "grafana/alerting/rag_judge_soft_fail.yaml",
+            "grafana/rules/rag_llm_cost.yml",
+        ],
+        output=str(out),
+    )
+    assert report["ok"] is True
+    assert out.is_file()
+    assert "severity = critical" in out.read_text(encoding="utf-8")
+
+
+def test_cli_alertmanager_generate_inhibit_parser():
+    from rag.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        ["alertmanager", "--generate-inhibit", "--equal", "alertname,service"]
+    )
+    assert args.generate_inhibit is True
+    assert args.equal == "alertname,service"
+
+
 def test_dual_write_catch_up_workflow_yaml():
     path = Path(".github/workflows/dual-write-catch-up.yml")
     text = path.read_text(encoding="utf-8")
