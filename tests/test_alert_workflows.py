@@ -388,6 +388,8 @@ def test_ci_alertmanager_check_config_step():
     assert "--inhibit" in text
     assert "--tune-equal" in text
     assert "ci_inhibit_equal_pr_comment.py" in text
+    assert "ci_inhibit_equal_apply.py" in text
+    assert "inhibit-equal-apply" in text
     assert "alertmanager-inhibit-" in text
     assert "alertmanager --render" in text
     assert "Alertmanager check-config" in text

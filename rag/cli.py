@@ -1358,6 +1358,7 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
 
 def cmd_alertmanager(args: argparse.Namespace) -> int:
     from rag.alertmanager_ops import (
+        apply_inhibit_equal_with_gate,
         check_alertmanager_config,
         create_silence,
         delete_silence,
@@ -1383,12 +1384,35 @@ def cmd_alertmanager(args: argparse.Namespace) -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0 if report.get("ok") else 1
 
-    if getattr(args, "tune_equal", False):
+    if getattr(args, "tune_equal", False) and not getattr(args, "apply_equal", False):
         report = tune_inhibit_equal_from_live(
             base_url=getattr(args, "api_url", None),
             paths=getattr(args, "alerting_path", None) or None,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+
+    if getattr(args, "apply_equal", False) or getattr(args, "diff_inhibit", False):
+        equal = [
+            x.strip()
+            for x in str(getattr(args, "equal", None) or "alertname,service").split(",")
+            if x.strip()
+        ]
+        # --diff-inhibit alone is dry-run; --apply-equal writes after gate
+        dry = bool(getattr(args, "diff_inhibit", False)) and not bool(
+            getattr(args, "apply_equal", False)
+        )
+        dry = dry or bool(getattr(args, "dry_run", False))
+        report = apply_inhibit_equal_with_gate(
+            paths=getattr(args, "alerting_path", None) or None,
+            output=getattr(args, "output", None),
+            from_live=True,
+            api_url=getattr(args, "api_url", None),
+            equal_labels=equal,
+            require_amtool=bool(getattr(args, "require_amtool", False)),
+            dry_run=dry,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0 if report.get("ok") else 1
 
     if getattr(args, "generate_inhibit", False):
@@ -1501,7 +1525,7 @@ def cmd_alertmanager(args: argparse.Namespace) -> int:
         return 0 if reloaded.get("ok") else 1
 
     print(
-        "Kullanım: alertmanager --render | --reload | --rotate-slack-webhook | --silence | --generate-inhibit [--from-live] | --tune-equal | --list-alerts | --check-config",
+        "Kullanım: alertmanager --render | --reload | --rotate-slack-webhook | --silence | --generate-inhibit [--from-live] | --tune-equal | --diff-inhibit | --apply-equal | --list-alerts | --check-config",
         file=sys.stderr,
     )
     return 2
@@ -1799,6 +1823,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--tune-equal",
         action="store_true",
         help="Canlı+statik label'lardan equal öner (yazmadan)",
+    )
+    p_am.add_argument(
+        "--diff-inhibit",
+        action="store_true",
+        help="Equal tune adayını diff'le (dry-run, yazmadan)",
+    )
+    p_am.add_argument(
+        "--apply-equal",
+        action="store_true",
+        help="Equal tune + amtool/structural gate sonrası inhibit dosyasına yaz",
+    )
+    p_am.add_argument(
+        "--require-amtool",
+        action="store_true",
+        help="--apply-equal/--diff-inhibit için structural fallback'i reddet",
+    )
+    p_am.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Apply/diff yollarında yazmadan çalış",
     )
     p_am.add_argument(
         "--list-alerts",

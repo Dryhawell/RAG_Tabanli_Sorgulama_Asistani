@@ -190,11 +190,15 @@ def run_dual_write_shadow_compare(*, dry_run: bool = False) -> Dict[str, Any]:
             parsed = json.loads(proc.stdout or "")
         except Exception:
             parsed = None
+        err = None
+        if isinstance(parsed, dict) and parsed.get("error") == "not_dual_write":
+            err = "not_dual_write"
         return {
             "ok": proc.returncode == 0,
             "action": "shadow_compare",
             "returncode": proc.returncode,
             "report": parsed,
+            "error": err,
             "stdout": (proc.stdout or "")[:2000],
             "stderr": (proc.stderr or "")[:500],
         }
@@ -205,6 +209,188 @@ def run_dual_write_shadow_compare(*, dry_run: bool = False) -> Dict[str, Any]:
             "error": type(exc).__name__,
             "detail": str(exc),
         }
+
+
+_WORKFLOW_BY_ACTION = {
+    "catch_up": "dual-write-catch-up.yml",
+    "shadow_compare": "dual-write-shadow-compare.yml",
+}
+
+
+def github_dispatch_enabled() -> bool:
+    raw = os.environ.get("RAG_DUAL_WRITE_GH_DISPATCH", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def trigger_github_workflow_dispatch(
+    workflow: str,
+    *,
+    inputs: Optional[Dict[str, Any]] = None,
+    ref: Optional[str] = None,
+    token: Optional[str] = None,
+    repo: Optional[str] = None,
+) -> Dict[str, Any]:
+    """GitHub Actions workflow_dispatch (GH_PAT / GITHUB_TOKEN)."""
+    import subprocess
+    from urllib import error, request
+
+    tok = (
+        (token or "").strip()
+        or os.environ.get("GH_PAT", "").strip()
+        or os.environ.get("GITHUB_TOKEN", "").strip()
+    )
+    if not tok:
+        return {"ok": False, "error": "token_missing"}
+    slug = (repo or os.environ.get("GITHUB_REPOSITORY") or "").strip()
+    if "/" not in slug:
+        return {"ok": False, "error": "repo_missing"}
+    branch = (
+        (ref or "").strip()
+        or os.environ.get("RAG_DUAL_WRITE_GH_REF", "").strip()
+        or os.environ.get("GITHUB_REF_NAME", "").strip()
+        or "main"
+    )
+    wf = (workflow or "").strip()
+    if not wf:
+        return {"ok": False, "error": "workflow_missing"}
+    payload_inputs = inputs or {}
+
+    # Prefer gh CLI
+    env = os.environ.copy()
+    env["GH_TOKEN"] = tok
+    env["GITHUB_TOKEN"] = tok
+    cmd = [
+        "gh",
+        "workflow",
+        "run",
+        wf,
+        "--repo",
+        slug,
+        "--ref",
+        branch,
+    ]
+    for k, v in payload_inputs.items():
+        cmd.extend(["-f", f"{k}={v}"])
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return {
+                "ok": True,
+                "method": "gh",
+                "workflow": wf,
+                "ref": branch,
+                "repo": slug,
+                "inputs": payload_inputs,
+            }
+        gh_err = (proc.stderr or proc.stdout or "").strip()[:500]
+    except FileNotFoundError:
+        gh_err = "gh_not_found"
+    except Exception as exc:
+        gh_err = f"{type(exc).__name__}:{exc}"
+
+    # REST fallback
+    url = (
+        f"https://api.github.com/repos/{slug}/actions/workflows/"
+        f"{wf}/dispatches"
+    )
+    body = json.dumps({"ref": branch, "inputs": payload_inputs}).encode("utf-8")
+    req = request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {tok}",
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with request.urlopen(req, timeout=30) as resp:
+            code = getattr(resp, "status", None) or resp.getcode()
+            return {
+                "ok": 200 <= int(code) < 300,
+                "method": "rest",
+                "status": int(code),
+                "workflow": wf,
+                "ref": branch,
+                "repo": slug,
+                "inputs": payload_inputs,
+                "gh_error": gh_err,
+            }
+    except error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            detail = str(exc)
+        return {
+            "ok": False,
+            "method": "rest",
+            "status": int(exc.code),
+            "error": detail or str(exc),
+            "workflow": wf,
+            "gh_error": gh_err,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "method": "rest",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+            "gh_error": gh_err,
+            "workflow": wf,
+        }
+
+
+def maybe_github_dispatch_fallback(result: Dict[str, Any]) -> Dict[str, Any]:
+    """In-process fail (özellikle not_dual_write) → workflow_dispatch."""
+    if not github_dispatch_enabled():
+        result["github_fallback"] = {"ok": False, "skipped": True, "reason": "disabled"}
+        return result
+    if result.get("dry_run"):
+        result["github_fallback"] = {"ok": True, "skipped": True, "reason": "dry_run"}
+        return result
+    should = (not result.get("ok")) and (
+        result.get("error") == "not_dual_write"
+        or os.environ.get("RAG_DUAL_WRITE_GH_DISPATCH_ON_ANY_FAIL", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    if not should:
+        result["github_fallback"] = {"ok": False, "skipped": True, "reason": "not_needed"}
+        return result
+    action = str(result.get("action") or "")
+    workflow = _WORKFLOW_BY_ACTION.get(action)
+    if not workflow:
+        result["github_fallback"] = {
+            "ok": False,
+            "skipped": True,
+            "reason": "unknown_action",
+        }
+        return result
+    inputs: Dict[str, Any]
+    if action == "catch_up":
+        inputs = {
+            "force_cutover_check": "true",
+            "auto_cutover": "false",
+        }
+    else:
+        inputs = {
+            "sample": "16",
+            "top_k": "6",
+            "min_overlap": os.environ.get("RAG_DUAL_WRITE_SHADOW_MIN_OVERLAP", "1.0"),
+            "auto_catch_up_on_fail": "true",
+        }
+    dispatched = trigger_github_workflow_dispatch(workflow, inputs=inputs)
+    result["github_fallback"] = dispatched
+    return result
 
 
 def handle_dual_write_alertmanager_webhook(
@@ -243,11 +429,14 @@ def handle_dual_write_alertmanager_webhook(
     results: List[Dict[str, Any]] = []
     for act in actions:
         if act == "catch_up":
-            results.append(run_dual_write_catch_up(dry_run=dry_run))
+            row = run_dual_write_catch_up(dry_run=dry_run)
         elif act == "shadow_compare":
-            results.append(run_dual_write_shadow_compare(dry_run=dry_run))
+            row = run_dual_write_shadow_compare(dry_run=dry_run)
+        else:
+            continue
+        results.append(maybe_github_dispatch_fallback(row))
 
-    ok = all(r.get("ok") for r in results) if results else True
+    ok = all(r.get("ok") or (r.get("github_fallback") or {}).get("ok") for r in results) if results else True
     if not dry_run:
         state.update(
             {

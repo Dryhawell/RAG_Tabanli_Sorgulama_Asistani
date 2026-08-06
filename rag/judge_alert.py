@@ -1388,6 +1388,40 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
         export_url = judge_ack_export_public_url()
         if export_url:
             text = f"{text}\nExport link: {export_url}"
+        channel_id = str(
+            ((payload.get("channel") or {}).get("id"))
+            or ((payload.get("container") or {}).get("channel_id"))
+            or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "")
+            or ""
+        ).strip() or None
+        upload: Dict[str, Any] = {"ok": False, "skipped": True, "reason": "not_attempted"}
+        content = exported.get("text") or ""
+        if content and os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip():
+            count = int(exported.get("count") or 0)
+            upload = slack_files_upload(
+                content=content,
+                filename="judge_ack_audit.jsonl",
+                title=f"Judge ack audit ({count} rows)",
+                channels=channel_id,
+                initial_comment=(
+                    f"Ack audit re-export · {count} events · last {hours:g}h"
+                ),
+            )
+            if upload.get("ok"):
+                text = (
+                    f"{text}\nAttached file: `{upload.get('filename')}`"
+                    + (
+                        f" (<{upload.get('permalink')}|open>)"
+                        if upload.get("permalink")
+                        else ""
+                    )
+                )
+            else:
+                text = f"{text}\nFile upload skipped: `{upload.get('error')}`"
+        elif not os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip():
+            upload = {"ok": False, "skipped": True, "reason": "bot_token_missing"}
+        elif not content:
+            upload = {"ok": False, "skipped": True, "reason": "empty_export"}
         return {
             "ok": True,
             "mode": "digest_reexport",
@@ -1397,6 +1431,8 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "count": exported.get("count"),
                 "format": exported.get("format"),
             },
+            "upload": upload,
+            "channel_id": channel_id,
             "text": text,
             "export_url": export_url or None,
         }
@@ -1488,6 +1524,80 @@ def slack_api(
         return data
     except Exception as exc:
         return {"ok": False, "error": type(exc).__name__}
+
+
+def slack_files_upload(
+    *,
+    bot_token: Optional[str] = None,
+    content: str,
+    filename: str = "judge_ack_audit.jsonl",
+    title: Optional[str] = None,
+    channels: Optional[str] = None,
+    initial_comment: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Slack files.upload (multipart) — digest re-export eki."""
+    token = (
+        (bot_token or "").strip()
+        or os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
+    )
+    if not token:
+        return {"ok": False, "error": "bot_token_missing"}
+    channel = (
+        (channels or "").strip()
+        or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "").strip()
+    )
+    if not channel:
+        return {"ok": False, "error": "channel_missing"}
+    try:
+        import requests
+
+        data = {
+            "filename": filename,
+            "title": title or filename,
+            "channels": channel,
+        }
+        if initial_comment:
+            data["initial_comment"] = initial_comment
+        files = {
+            "file": (
+                filename,
+                (content or "").encode("utf-8"),
+                "application/octet-stream",
+            )
+        }
+        r = requests.post(
+            "https://slack.com/api/files.upload",
+            headers={"Authorization": f"Bearer {token}"},
+            data=data,
+            files=files,
+            timeout=30,
+        )
+        body = r.json() if r.content else {}
+        if r.status_code >= 400:
+            return {
+                "ok": False,
+                "error": str(body.get("error") or f"http_{r.status_code}"),
+                "response": body,
+            }
+        if not isinstance(body, dict):
+            return {"ok": False, "error": "invalid_response"}
+        if not body.get("ok"):
+            return {
+                "ok": False,
+                "error": str(body.get("error") or "files_upload_failed"),
+                "response": body,
+            }
+        file_obj = body.get("file") if isinstance(body.get("file"), dict) else {}
+        return {
+            "ok": True,
+            "file_id": file_obj.get("id"),
+            "permalink": file_obj.get("permalink"),
+            "filename": filename,
+            "channels": channel,
+            "response": body,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__, "detail": str(exc)}
 
 
 def lookup_slack_channel_for_ts(

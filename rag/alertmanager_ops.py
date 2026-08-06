@@ -623,6 +623,144 @@ def render_inhibit_rules_yaml(rules: Sequence[Dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def canonicalize_inhibit_yaml(text: str) -> str:
+    """Yorum/boş satırları atıp karşılaştırılabilir forma getir."""
+    lines = []
+    for line in (text or "").splitlines():
+        stripped = line.rstrip()
+        if not stripped or stripped.lstrip().startswith("#"):
+            continue
+        lines.append(stripped)
+    return "\n".join(lines).strip() + ("\n" if lines else "")
+
+
+def diff_inhibit_rules(
+    current_path: Optional[str] = None,
+    new_text: Optional[str] = None,
+    *,
+    new_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Mevcut inhibit vs aday metin/diff."""
+    import difflib
+
+    cur = Path(
+        current_path
+        or os.environ.get("ALERTMANAGER_INHIBIT", "").strip()
+        or str(ROOT / "grafana" / "inhibit_rules.generated.yml")
+    )
+    if new_text is None:
+        if not new_path or not Path(new_path).is_file():
+            return {"ok": False, "error": "new_text_or_path_required"}
+        new_text = Path(new_path).read_text(encoding="utf-8")
+    old_text = cur.read_text(encoding="utf-8") if cur.is_file() else ""
+    old_c = canonicalize_inhibit_yaml(old_text)
+    new_c = canonicalize_inhibit_yaml(new_text or "")
+    changed = old_c != new_c
+    unified = "".join(
+        difflib.unified_diff(
+            old_c.splitlines(keepends=True),
+            new_c.splitlines(keepends=True),
+            fromfile=str(cur),
+            tofile="candidate",
+            n=3,
+        )
+    )
+    return {
+        "ok": True,
+        "changed": changed,
+        "current_path": str(cur),
+        "current_exists": cur.is_file(),
+        "unified_diff": unified,
+        "old_bytes": len(old_c.encode("utf-8")),
+        "new_bytes": len(new_c.encode("utf-8")),
+    }
+
+
+def apply_inhibit_equal_with_gate(
+    *,
+    paths: Optional[Sequence[str]] = None,
+    output: Optional[str] = None,
+    from_live: bool = True,
+    api_url: Optional[str] = None,
+    equal_labels: Sequence[str] = ("alertname", "service"),
+    render_output: Optional[str] = None,
+    require_amtool: bool = False,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Equal tune → inhibit üret → diff → render+check-config gate → opsiyonel yaz.
+    """
+    out = output or str(ROOT / "grafana" / "inhibit_rules.generated.yml")
+    candidate = str(ROOT / "metadata" / "inhibit_rules.apply.yml")
+    Path(candidate).parent.mkdir(parents=True, exist_ok=True)
+    generated = write_inhibit_rules(
+        paths=paths,
+        output=candidate,
+        equal_labels=equal_labels,
+        from_live=from_live,
+        api_url=api_url,
+    )
+    new_text = Path(candidate).read_text(encoding="utf-8")
+    diff = diff_inhibit_rules(out, new_text)
+    result: Dict[str, Any] = {
+        "ok": True,
+        "generated": generated,
+        "diff": diff,
+        "applied": False,
+        "dry_run": dry_run,
+        "output": out,
+        "candidate": candidate,
+    }
+    if not diff.get("changed"):
+        result["reason"] = "unchanged"
+        return result
+
+    # Gate: render merged config + check-config
+    rendered = render_output or str(ROOT / "metadata" / "alertmanager.apply.yml")
+    render = render_alertmanager_config(
+        output=rendered,
+        inhibit_path=candidate,
+        slack_webhook=os.environ.get(
+            "RAG_ALERTMANAGER_SLACK_WEBHOOK",
+            "https://hooks.slack.com/services/T/B/APPLY",
+        ),
+        webhook_url=os.environ.get(
+            "RAG_ALERTMANAGER_WEBHOOK_URL",
+            "http://127.0.0.1/hook",
+        ),
+    )
+    result["render"] = {
+        "ok": render.get("ok"),
+        "output": render.get("output"),
+        "error": render.get("stderr") or render.get("error"),
+    }
+    if not render.get("ok"):
+        result["ok"] = False
+        result["reason"] = "render_failed"
+        return result
+
+    checked = check_alertmanager_config(rendered)
+    result["check"] = checked
+    if require_amtool and checked.get("method") == "structural":
+        result["ok"] = False
+        result["reason"] = "amtool_required"
+        return result
+    if not checked.get("ok"):
+        result["ok"] = False
+        result["reason"] = "check_config_failed"
+        return result
+
+    if dry_run:
+        result["reason"] = "dry_run_changed"
+        return result
+
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text(new_text, encoding="utf-8")
+    result["applied"] = True
+    result["reason"] = "applied"
+    return result
+
+
 def write_inhibit_rules(
     *,
     paths: Optional[Sequence[str]] = None,
