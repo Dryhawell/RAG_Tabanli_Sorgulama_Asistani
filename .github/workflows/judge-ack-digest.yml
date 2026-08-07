@@ -1,4 +1,4 @@
-"""Judge ack audit weekly digest (Slack) — tenant fan-out + quiet hours."""
+"""Judge ack audit weekly digest (Slack) — tenant fan-out + quiet hours + retention prune."""
 
 name: Judge Ack Digest
 
@@ -27,6 +27,11 @@ on:
         required: false
         default: true
         type: boolean
+      prune:
+        description: "Digest öncesi retention purge"
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   digest:
@@ -49,6 +54,9 @@ jobs:
           RAG_JUDGE_ACK_DIGEST_QUIET_HOURS_JSON: ${{ secrets.RAG_JUDGE_ACK_DIGEST_QUIET_HOURS_JSON }}
           RAG_JUDGE_ACK_DIGEST_TIMEZONE: ${{ vars.RAG_JUDGE_ACK_DIGEST_TIMEZONE || 'UTC' }}
           RAG_JUDGE_ACK_AUDIT: metadata/judge_ack_audit.jsonl
+          RAG_JUDGE_ACK_AUDIT_RETENTION_DAYS: ${{ vars.RAG_JUDGE_ACK_AUDIT_RETENTION_DAYS || '90' }}
+          RAG_JUDGE_ACK_AUDIT_KEEP: ${{ vars.RAG_JUDGE_ACK_AUDIT_KEEP || '10000' }}
+          RAG_JUDGE_ACK_AUDIT_PRUNE: ${{ (github.event_name != 'workflow_dispatch' || inputs.prune) && '1' || '0' }}
         run: |
           mkdir -p metadata
           EXTRA=""

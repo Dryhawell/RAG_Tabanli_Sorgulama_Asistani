@@ -42,6 +42,21 @@ def resolve_dry_run() -> bool:
     return ref != "refs/heads/main"
 
 
+def resolve_apply_allowed() -> Dict[str, Any]:
+    """Green-CI gate: require CI_TEST_RESULT=success when REQUIRE_GREEN=1."""
+    require = os.environ.get("INHIBIT_EQUAL_APPLY_REQUIRE_GREEN", "0").strip().lower()
+    if require in {"0", "false", "no", "off", ""}:
+        return {"ok": True, "skipped": True, "reason": "not_required"}
+    result = (os.environ.get("CI_TEST_RESULT") or "success").strip().lower()
+    if result == "success":
+        return {"ok": True, "ci_test_result": result}
+    return {
+        "ok": False,
+        "ci_test_result": result,
+        "reason": "ci_not_green",
+    }
+
+
 def maybe_commit_and_push(path: str, *, message: str) -> Dict[str, Any]:
     """Force-add gitignored inhibit file and push when enabled."""
     if os.environ.get("INHIBIT_EQUAL_GIT_COMMIT", "1").lower() in {
@@ -184,6 +199,25 @@ def post_apply_pr_preview_comment(
 def main() -> int:
     from rag.alertmanager_ops import apply_inhibit_equal_with_gate
 
+    green = resolve_apply_allowed()
+    if not green.get("ok"):
+        out = {
+            "ok": False,
+            "skipped": True,
+            "reason": green.get("reason") or "ci_not_green",
+            "green_gate": green,
+            "dry_run": True,
+            "applied": False,
+        }
+        meta = ROOT / "metadata"
+        meta.mkdir(parents=True, exist_ok=True)
+        (meta / "inhibit_equal_apply.json").write_text(
+            json.dumps(out, ensure_ascii=False, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+        print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
+        return 1
+
     dry = resolve_dry_run()
     require_amtool = os.environ.get("INHIBIT_EQUAL_REQUIRE_AMTOOL", "0").lower() in {
         "1",
@@ -200,6 +234,7 @@ def main() -> int:
         require_amtool=require_amtool,
         dry_run=dry,
     )
+    report["green_gate"] = green
     if report.get("applied") and not dry:
         equal = (report.get("generated") or {}).get("equal") or []
         msg = (

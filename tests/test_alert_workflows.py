@@ -376,6 +376,8 @@ def test_judge_ack_digest_workflow_yaml():
     assert "RAG_JUDGE_ACK_DIGEST_WEBHOOKS_JSON" in text
     assert "RAG_JUDGE_ACK_DIGEST_QUIET_HOURS" in text
     assert "RAG_JUDGE_ACK_DIGEST_QUIET_HOURS_JSON" in text
+    assert "RAG_JUDGE_ACK_AUDIT_RETENTION_DAYS" in text
+    assert "RAG_JUDGE_ACK_AUDIT_PRUNE" in text
     assert "schedule:" in text
     assert "0 9 * * 1" in text
     assert "workflow_dispatch" in text
@@ -390,6 +392,7 @@ def test_ci_alertmanager_check_config_step():
     assert "ci_inhibit_equal_pr_comment.py" in text
     assert "ci_inhibit_equal_apply.py" in text
     assert "INHIBIT_EQUAL_APPLY_PR_COMMENT_POST" in text
+    assert "needs.test.result" in text or "needs: [test]" in text
     assert "inhibit-equal-apply" in text
     assert "alertmanager-inhibit-" in text
     assert "alertmanager --render" in text

@@ -126,12 +126,29 @@ def test_ci_workflow_has_apply_job() -> None:
     assert "ci_inhibit_equal_apply.py" in text
     assert "INHIBIT_EQUAL_APPLY" in text
     assert "INHIBIT_EQUAL_APPLY_PR_COMMENT_POST" in text
+    assert "needs: [test]" in text
+    assert "needs.test.result" in text
+    assert "INHIBIT_EQUAL_APPLY_REQUIRE_GREEN" in text
     assert "inhibit-equal-apply-bot" in Path("scripts/ci_inhibit_equal_apply.py").read_text(
         encoding="utf-8"
     )
     assert "--diff-inhibit" in Path("rag/cli.py").read_text(encoding="utf-8") or (
         "--apply-equal" in Path("rag/cli.py").read_text(encoding="utf-8")
     )
+
+
+def test_resolve_apply_allowed(monkeypatch) -> None:
+    from scripts.ci_inhibit_equal_apply import resolve_apply_allowed
+
+    monkeypatch.delenv("INHIBIT_EQUAL_APPLY_REQUIRE_GREEN", raising=False)
+    assert resolve_apply_allowed()["ok"] is True
+    monkeypatch.setenv("INHIBIT_EQUAL_APPLY_REQUIRE_GREEN", "1")
+    monkeypatch.setenv("CI_TEST_RESULT", "success")
+    assert resolve_apply_allowed()["ok"] is True
+    monkeypatch.setenv("CI_TEST_RESULT", "failure")
+    denied = resolve_apply_allowed()
+    assert denied["ok"] is False
+    assert denied["reason"] == "ci_not_green"
 
 
 def test_build_inhibit_equal_apply_comment() -> None:

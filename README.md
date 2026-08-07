@@ -512,6 +512,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
 - Push: VAPID OIDC / Deploy-key based secret store sync
-- Judge: digest re-export channel thread + retention prune
-- Ingest: dual-write webhook rate-limit headers + circuit breaker
-- Observability: inhibit equal apply auto-approve on green CI
+- Judge: digest Slack canvas / scheduled digest digest-diff
+- Ingest: dual-write webhook dead-letter queue + metrics
+- Observability: inhibit equal apply rollback on amtool regression

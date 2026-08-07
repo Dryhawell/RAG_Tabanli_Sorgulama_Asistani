@@ -80,6 +80,110 @@ def test_webhook_dry_run_and_cooldown(tmp_path: Path, monkeypatch) -> None:
     assert forced["skipped"] is False
 
 
+def test_webhook_circuit_breaker_and_rate_limit_headers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
+    import time
+
+    from rag.dual_write_webhook import (
+        handle_alertmanager_webhook_http,
+        handle_dual_write_alertmanager_webhook,
+        record_webhook_circuit_result,
+        webhook_rate_limit_headers,
+    )
+
+    monkeypatch.delenv("RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET", raising=False)
+    monkeypatch.delenv("RAG_ALERTMANAGER_WEBHOOK_TOKEN", raising=False)
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_CB_FAILURES", "2")
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_CB_OPEN_SEC", "3600")
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_STRICT_RL", "1")
+
+    hdrs = webhook_rate_limit_headers(
+        limit=900, remaining=0, reset_at=time.time() + 30, retry_after=30
+    )
+    assert hdrs["RateLimit-Remaining"] == "0"
+    assert hdrs["Retry-After"] == "30"
+
+    state = tmp_path / "cb.json"
+    payload = {
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {
+                    "alertname": "RagDualWriteLagHigh",
+                    "service": "rag-ingest",
+                },
+            }
+        ],
+    }
+
+    from unittest.mock import patch
+
+    with patch(
+        "rag.dual_write_webhook.run_dual_write_catch_up",
+        return_value={"ok": False, "action": "catch_up", "error": "boom"},
+    ):
+        monkeypatch.setenv("RAG_DUAL_WRITE_GH_DISPATCH", "0")
+        first = handle_dual_write_alertmanager_webhook(
+            payload, force=True, state_path=str(state)
+        )
+        second = handle_dual_write_alertmanager_webhook(
+            payload, force=True, state_path=str(state)
+        )
+    assert first["ok"] is False
+    assert second["ok"] is False
+
+    blocked = handle_dual_write_alertmanager_webhook(
+        payload, force=False, state_path=str(state)
+    )
+    assert blocked["skipped"] is True
+    assert blocked["reason"] == "circuit_open"
+
+    code, headers, body = handle_alertmanager_webhook_http(
+        json.dumps(payload).encode(),
+        headers={},
+        state_path=str(state),
+    )
+    assert code == 429
+    assert "RateLimit-Limit" in headers
+    assert headers.get("Retry-After")
+    assert json.loads(body.decode())["reason"] == "circuit_open"
+
+    # Recovery after success
+    st = json.loads(state.read_text(encoding="utf-8"))
+    record_webhook_circuit_result(st, ok=True)
+    assert st["consecutive_failures"] == 0
+    assert not st.get("circuit_open_until")
+
+
+def test_http_adapter_cooldown_rate_limit_headers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
+    import time
+
+    from rag.dual_write_webhook import handle_alertmanager_webhook_http
+
+    monkeypatch.delenv("RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET", raising=False)
+    monkeypatch.delenv("RAG_ALERTMANAGER_WEBHOOK_TOKEN", raising=False)
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_COOLDOWN_SEC", "3600")
+    monkeypatch.delenv("RAG_DUAL_WRITE_WEBHOOK_STRICT_RL", raising=False)
+    state = tmp_path / "rl.json"
+    state.write_text(json.dumps({"last_trigger_ts": time.time()}), encoding="utf-8")
+    payload = b'{"status":"firing","alerts":[{"status":"firing","labels":{"alertname":"RagDualWriteLagHigh","service":"rag-ingest"}}]}'
+    code, headers, body = handle_alertmanager_webhook_http(
+        payload, headers={}, state_path=str(state)
+    )
+    assert code == 200
+    assert "RateLimit-Remaining" in headers
+    assert headers["RateLimit-Remaining"] == "0"
+    assert "Retry-After" in headers
+    assert json.loads(body.decode())["reason"] == "cooldown"
+
+
 def test_http_adapter_unauthorized(monkeypatch) -> None:
     from rag.dual_write_webhook import handle_alertmanager_webhook_http
 

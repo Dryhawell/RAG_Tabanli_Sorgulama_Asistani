@@ -206,6 +206,38 @@ def purge_judge_ack_audit(
     }
 
 
+def maybe_purge_judge_ack_audit(
+    *,
+    path: Optional[str] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Env ile retention: RAG_JUDGE_ACK_AUDIT_RETENTION_DAYS / _KEEP / _PRUNE."""
+    prune_flag = os.environ.get("RAG_JUDGE_ACK_AUDIT_PRUNE", "").strip().lower()
+    if prune_flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "prune_disabled"}
+
+    days_raw = os.environ.get("RAG_JUDGE_ACK_AUDIT_RETENTION_DAYS", "").strip()
+    keep_raw = os.environ.get("RAG_JUDGE_ACK_AUDIT_KEEP", "").strip()
+    days: Optional[float] = None
+    keep: Optional[int] = None
+    if days_raw:
+        try:
+            days = float(days_raw)
+        except Exception:
+            return {"ok": False, "skipped": True, "reason": "days_invalid"}
+    if keep_raw:
+        try:
+            keep = int(keep_raw)
+        except Exception:
+            return {"ok": False, "skipped": True, "reason": "keep_invalid"}
+    if days is None and keep is None:
+        if prune_flag not in {"1", "true", "yes", "on"}:
+            return {"ok": True, "skipped": True, "reason": "retention_not_configured"}
+        days = 90.0
+        keep = 10000
+    return purge_judge_ack_audit(path=path, days=days, keep=keep, dry_run=dry_run)
+
+
 def export_judge_ack_audit(
     *,
     fmt: str = "jsonl",
@@ -1420,9 +1452,16 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "")
             or ""
         ).strip() or None
+        message_ts = str(
+            ((payload.get("message") or {}).get("ts"))
+            or ((payload.get("container") or {}).get("thread_ts"))
+            or ((payload.get("container") or {}).get("message_ts"))
+            or ""
+        ).strip() or None
         user_id = slack_interactive_user_id(payload)
         upload: Dict[str, Any] = {"ok": False, "skipped": True, "reason": "not_attempted"}
         progress: Dict[str, Any] = {"ok": False, "skipped": True}
+        thread_reply: Dict[str, Any] = {"ok": False, "skipped": True, "reason": "not_attempted"}
         content = exported.get("text") or ""
         count = int(exported.get("count") or 0)
         filename = f"judge_ack_audit.{fmt}"
@@ -1446,6 +1485,7 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
                 filename=filename,
                 title=f"Judge ack audit ({count} rows, {fmt})",
                 channels=channel_id,
+                thread_ts=message_ts,
                 initial_comment=(
                     f"Ack audit re-export · {count} events · {fmt} · last {hours:g}h"
                 ),
@@ -1462,6 +1502,20 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
                 )
             else:
                 text = f"{text}\nFile upload skipped: `{upload.get('error')}`"
+            # Channel thread confirmation under the digest message
+            if channel_id and message_ts:
+                thread_reply = post_judge_digest_reexport_thread_reply(
+                    fmt=fmt,
+                    count=count,
+                    hours=hours,
+                    channel_id=channel_id,
+                    thread_ts=message_ts,
+                    permalink=str(upload.get("permalink") or "") or None,
+                    bot_token=bot_token,
+                    upload_ok=bool(upload.get("ok")),
+                )
+                if thread_reply.get("ok"):
+                    text = f"{text}\nThread reply posted"
         elif not bot_token:
             upload = {"ok": False, "skipped": True, "reason": "bot_token_missing"}
         elif not content:
@@ -1481,7 +1535,9 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "skipped": bool(progress.get("skipped")),
                 "error": progress.get("error"),
             },
+            "thread_reply": thread_reply,
             "channel_id": channel_id,
+            "message_ts": message_ts,
             "text": text,
             "export_url": export_url or None,
             "format": fmt,
@@ -1584,6 +1640,7 @@ def slack_files_upload(
     title: Optional[str] = None,
     channels: Optional[str] = None,
     initial_comment: Optional[str] = None,
+    thread_ts: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Slack files.upload (multipart) — digest re-export eki."""
     token = (
@@ -1601,13 +1658,16 @@ def slack_files_upload(
     try:
         import requests
 
-        data = {
+        data: Dict[str, Any] = {
             "filename": filename,
             "title": title or filename,
             "channels": channel,
         }
         if initial_comment:
             data["initial_comment"] = initial_comment
+        ts = (thread_ts or "").strip()
+        if ts:
+            data["thread_ts"] = ts
         files = {
             "file": (
                 filename,
@@ -1644,6 +1704,7 @@ def slack_files_upload(
             "permalink": file_obj.get("permalink"),
             "filename": filename,
             "channels": channel,
+            "thread_ts": ts or None,
             "response": body,
         }
     except Exception as exc:
@@ -1781,6 +1842,58 @@ def post_judge_ack_thread_reply(
     bot_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Modal/instant ack sonrası Slack thread reply (chat.postMessage)."""
+    status = "already acknowledged" if already else "acknowledged"
+    text = f"Judge soft-fail {status} by *{actor}*"
+    if note:
+        text += f"\n> {note}"
+    return post_slack_thread_message(
+        text=text,
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+        bot_token=bot_token,
+    )
+
+
+def post_judge_digest_reexport_thread_reply(
+    *,
+    fmt: str,
+    count: int,
+    hours: float,
+    channel_id: Optional[str] = None,
+    thread_ts: Optional[str] = None,
+    permalink: Optional[str] = None,
+    bot_token: Optional[str] = None,
+    upload_ok: bool = True,
+) -> Dict[str, Any]:
+    """Digest re-export sonrası kanal thread'ine onay mesajı."""
+    kind = (fmt or "jsonl").strip().lower() or "jsonl"
+    if upload_ok:
+        text = (
+            f"Ack audit re-export ready · *{count}* rows · `{kind}` · last {hours:g}h"
+        )
+        if permalink:
+            text += f" · <{permalink}|open file>"
+    else:
+        text = (
+            f"Ack audit re-export attempted · *{count}* rows · `{kind}` "
+            f"(file upload failed or skipped)"
+        )
+    return post_slack_thread_message(
+        text=text,
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+        bot_token=bot_token,
+    )
+
+
+def post_slack_thread_message(
+    *,
+    text: str,
+    channel_id: Optional[str] = None,
+    thread_ts: Optional[str] = None,
+    bot_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Genel chat.postMessage (opsiyonel thread_ts + parent resolve)."""
     token = (
         bot_token
         if bot_token is not None
@@ -1813,10 +1926,6 @@ def post_judge_ack_thread_reply(
         )
         if resolve.get("ok"):
             ts = str(resolve.get("parent_ts") or ts).strip() or ts
-    status = "already acknowledged" if already else "acknowledged"
-    text = f"Judge soft-fail {status} by *{actor}*"
-    if note:
-        text += f"\n> {note}"
     body: Dict[str, Any] = {
         "channel": channel,
         "text": text,

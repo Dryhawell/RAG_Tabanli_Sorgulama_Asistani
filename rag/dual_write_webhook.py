@@ -72,6 +72,133 @@ def webhook_cooldown_sec() -> float:
         return 900.0
 
 
+def webhook_circuit_failure_threshold() -> int:
+    raw = os.environ.get("RAG_DUAL_WRITE_WEBHOOK_CB_FAILURES", "3").strip()
+    try:
+        return max(1, int(raw or 3))
+    except Exception:
+        return 3
+
+
+def webhook_circuit_open_sec() -> float:
+    raw = os.environ.get("RAG_DUAL_WRITE_WEBHOOK_CB_OPEN_SEC", "1800").strip()
+    try:
+        return max(0.0, float(raw or 1800))
+    except Exception:
+        return 1800.0
+
+
+def webhook_strict_rate_limit() -> bool:
+    return os.environ.get("RAG_DUAL_WRITE_WEBHOOK_STRICT_RL", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def check_webhook_circuit(
+    state: Dict[str, Any],
+    *,
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Circuit breaker: açıkken trigger atlanır."""
+    now_f = float(now if now is not None else time.time())
+    open_until = float(state.get("circuit_open_until") or 0)
+    if open_until and now_f < open_until:
+        return {
+            "open": True,
+            "retry_after_sec": max(0, int(open_until - now_f)),
+            "open_until": open_until,
+            "consecutive_failures": int(state.get("consecutive_failures") or 0),
+        }
+    return {
+        "open": False,
+        "consecutive_failures": int(state.get("consecutive_failures") or 0),
+    }
+
+
+def record_webhook_circuit_result(
+    state: Dict[str, Any],
+    *,
+    ok: bool,
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Başarı/başarısızlığa göre circuit state güncelle."""
+    now_f = float(now if now is not None else time.time())
+    if ok:
+        state["consecutive_failures"] = 0
+        state["circuit_open_until"] = 0
+        state["circuit_opened_at"] = None
+        state["last_ok"] = True
+        return state
+    failures = int(state.get("consecutive_failures") or 0) + 1
+    state["consecutive_failures"] = failures
+    state["last_ok"] = False
+    threshold = webhook_circuit_failure_threshold()
+    open_sec = webhook_circuit_open_sec()
+    if failures >= threshold and open_sec > 0:
+        state["circuit_open_until"] = now_f + open_sec
+        state["circuit_opened_at"] = _utcnow_iso()
+    return state
+
+
+def webhook_rate_limit_headers(
+    *,
+    limit: float,
+    remaining: int,
+    reset_at: float,
+    retry_after: Optional[int] = None,
+    extra: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """IETF-style RateLimit-* (+ optional Retry-After)."""
+    headers: Dict[str, str] = {
+        "Content-Type": "application/json",
+        "RateLimit-Limit": str(int(max(0, limit))),
+        "RateLimit-Remaining": str(max(0, int(remaining))),
+        "RateLimit-Reset": str(int(max(0, reset_at))),
+    }
+    if retry_after is not None:
+        headers["Retry-After"] = str(max(0, int(retry_after)))
+    if extra:
+        headers.update(extra)
+    return headers
+
+
+def build_webhook_http_headers(
+    report: Dict[str, Any],
+    *,
+    now: Optional[float] = None,
+) -> Dict[str, str]:
+    """Cooldown/circuit bilgisinden RateLimit header seti üret."""
+    now_f = float(now if now is not None else time.time())
+    cooldown = webhook_cooldown_sec()
+    reason = str(report.get("reason") or "")
+    retry = report.get("retry_after_sec")
+    retry_i = int(retry) if retry is not None else None
+    if reason in {"cooldown", "circuit_open"} and retry_i is not None:
+        remaining = 0
+        reset_at = now_f + max(0, retry_i)
+    else:
+        remaining = 1
+        last = float(report.get("last_trigger_ts") or 0)
+        if last and cooldown > 0:
+            reset_at = last + cooldown
+            if now_f < reset_at:
+                remaining = 0
+                retry_i = max(0, int(reset_at - now_f))
+            else:
+                reset_at = now_f + cooldown
+        else:
+            reset_at = now_f + cooldown
+    return webhook_rate_limit_headers(
+        limit=1 if cooldown <= 0 else max(1, int(cooldown)),
+        remaining=remaining,
+        reset_at=reset_at,
+        retry_after=retry_i if remaining == 0 else None,
+    )
+
+
 def webhook_signing_secret() -> str:
     return os.environ.get("RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET", "").strip()
 
@@ -628,6 +755,20 @@ def handle_dual_write_alertmanager_webhook(
     st_path = state_path or dual_write_webhook_state_path()
     state = load_dual_write_webhook_state(st_path)
     now = time.time()
+
+    circuit = check_webhook_circuit(state, now=now)
+    if not force and circuit.get("open"):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "circuit_open",
+            "retry_after_sec": circuit.get("retry_after_sec"),
+            "circuit": circuit,
+            "alerts": [a.get("alertname") for a in alerts],
+            "planned_actions": actions,
+            "last_trigger_ts": float(state.get("last_trigger_ts") or 0) or None,
+        }
+
     cooldown = webhook_cooldown_sec()
     last = float(state.get("last_trigger_ts") or 0)
     if not force and cooldown > 0 and last and (now - last) < cooldown:
@@ -638,6 +779,8 @@ def handle_dual_write_alertmanager_webhook(
             "retry_after_sec": max(0, int(cooldown - (now - last))),
             "alerts": [a.get("alertname") for a in alerts],
             "planned_actions": actions,
+            "last_trigger_ts": last,
+            "circuit": circuit,
         }
 
     results: List[Dict[str, Any]] = []
@@ -658,9 +801,9 @@ def handle_dual_write_alertmanager_webhook(
                 "last_trigger_at": _utcnow_iso(),
                 "last_alerts": [a.get("alertname") for a in alerts],
                 "last_actions": actions,
-                "last_ok": ok,
             }
         )
+        record_webhook_circuit_result(state, ok=ok, now=now)
         try:
             save_dual_write_webhook_state(state, path=st_path)
         except Exception:
@@ -673,6 +816,8 @@ def handle_dual_write_alertmanager_webhook(
         "alerts": [a.get("alertname") for a in alerts],
         "planned_actions": actions,
         "results": results,
+        "last_trigger_ts": now,
+        "circuit": check_webhook_circuit(state, now=now),
     }
 
 
@@ -728,10 +873,12 @@ def handle_alertmanager_webhook_http(
     )
     report["auth"] = auth.get("auth")
     status = 200 if report.get("ok") else 500
-    if report.get("skipped") and report.get("reason") == "cooldown":
-        status = 200
+    if report.get("skipped") and report.get("reason") in {"cooldown", "circuit_open"}:
+        # Alertmanager prefers 2xx; optional strict mode → 429 + Retry-After
+        status = 429 if webhook_strict_rate_limit() else 200
+    resp_headers = build_webhook_http_headers(report)
     return (
         status,
-        {"Content-Type": "application/json"},
+        resp_headers,
         json.dumps(report, ensure_ascii=False, default=str).encode("utf-8"),
     )

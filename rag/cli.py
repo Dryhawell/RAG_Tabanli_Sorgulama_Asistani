@@ -1302,6 +1302,7 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
     from rag.judge_alert import (
         dispatch_judge_ack_digest,
         dispatch_judge_ack_digest_fanout,
+        maybe_purge_judge_ack_audit,
         summarize_judge_ack_audit,
     )
 
@@ -1317,6 +1318,8 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
     elif getattr(args, "block_kit", False):
         block_kit = True
 
+    purge = maybe_purge_judge_ack_audit(path=audit, dry_run=dry_run)
+
     if getattr(args, "fan_out", False):
         report = dispatch_judge_ack_digest_fanout(
             path=audit,
@@ -1328,6 +1331,7 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
             webhook=getattr(args, "webhook", None),
             block_kit=block_kit,
         )
+        report["retention_purge"] = purge
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("ok") else 1
 
@@ -1348,12 +1352,16 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
     )
     print(
         json.dumps(
-            {"summary": summary, "dispatch": dispatched},
+            {
+                "summary": summary,
+                "dispatch": dispatched,
+                "retention_purge": purge,
+            },
             ensure_ascii=False,
             indent=2,
         )
     )
-    return 0 if summary.get("ok") and dispatched.get("ok") else 1
+    return 0 if dispatched.get("ok") else 1
 
 
 def cmd_alertmanager(args: argparse.Namespace) -> int:
