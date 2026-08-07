@@ -57,6 +57,9 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "false" ]; then
             EXTRA="$EXTRA --no-force"
           fi
+          # Age prune before replay (default 7d)
+          python -m rag.cli dual-write-dlq --prune --days "${{ vars.RAG_DUAL_WRITE_DLQ_RETENTION_DAYS || '7' }}" --notify \
+            | tee metadata/dual_write_dlq_prune.json || true
           # shellcheck disable=SC2086
           python -m rag.cli dual-write-dlq $EXTRA \
             | tee metadata/dual_write_dlq_replay.json
@@ -67,6 +70,7 @@ jobs:
           name: dual-write-dlq-replay
           path: |
             metadata/dual_write_dlq_replay.json
+            metadata/dual_write_dlq_prune.json
             metadata/dual_write_webhook_dlq.jsonl
             metadata/dual_write_webhook_state.json
             metadata/metrics.jsonl

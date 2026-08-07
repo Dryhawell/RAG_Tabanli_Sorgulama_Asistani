@@ -6,7 +6,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 _ACK_RATE: Dict[str, float] = {}
@@ -745,6 +745,82 @@ def parse_judge_ack_digest_quiet_hours(
     return mapping
 
 
+def parse_judge_ack_digest_mutes(
+    spec: Optional[str] = None,
+    *,
+    base: Optional[str] = None,
+) -> Set[str]:
+    """Muted tenant id set. Env CSV/JSON list veya metadata/judge_ack_digest_mutes.json."""
+    try:
+        from app.config import METADATA_DIR
+    except ImportError:
+        METADATA_DIR = "metadata"
+    muted: Set[str] = set()
+    raw = (
+        spec
+        if spec is not None
+        else os.environ.get("RAG_JUDGE_ACK_DIGEST_MUTE", "").strip()
+    )
+    text = (raw or "").strip()
+    if text:
+        if text.startswith("[") or text.startswith("{"):
+            try:
+                data = json.loads(text)
+                if isinstance(data, list):
+                    muted.update(str(x).strip() for x in data if str(x).strip())
+                elif isinstance(data, dict):
+                    for k, v in data.items():
+                        if v in {True, 1, "1", "true", "yes", "on", "mute", "muted"}:
+                            tid = str(k).strip()
+                            if tid:
+                                muted.add(tid)
+                        elif isinstance(v, str) and v.strip().lower() in {
+                            "mute",
+                            "muted",
+                            "1",
+                            "true",
+                        }:
+                            muted.add(str(k).strip())
+            except json.JSONDecodeError:
+                pass
+        if not muted:
+            for part in text.replace(";", ",").split(","):
+                tid = part.strip()
+                if tid:
+                    muted.add(tid)
+    if muted:
+        return muted
+    path = os.path.join(base or METADATA_DIR, "judge_ack_digest_mutes.json")
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                muted.update(str(x).strip() for x in data if str(x).strip())
+            elif isinstance(data, dict):
+                for k, v in data.items():
+                    if v in {True, 1, "1", "true", "yes", "on", "mute", "muted"}:
+                        tid = str(k).strip()
+                        if tid:
+                            muted.add(tid)
+        except Exception:
+            pass
+    return muted
+
+
+def is_judge_ack_digest_muted(
+    tenant_id: Optional[str],
+    *,
+    mutes: Optional[Set[str]] = None,
+    base: Optional[str] = None,
+) -> bool:
+    tid = (tenant_id or "").strip()
+    if not tid:
+        return False
+    pool = mutes if mutes is not None else parse_judge_ack_digest_mutes(base=base)
+    return tid in pool
+
+
 def resolve_judge_ack_digest_quiet_hours(
     tenant_id: Optional[str] = None,
     *,
@@ -883,11 +959,28 @@ def build_judge_ack_digest_slack_blocks(
                 "value": "ack",
             }
         )
+        # Hour zoom fills the 5th slot when no Ack form URL; otherwise
+        # prefer zoom over CSV when URL present (still capped at 5).
+        elements.append(
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Heatmap hour"},
+                "action_id": "judge_ack_digest_heatmap_zoom",
+                "value": "hour",
+            }
+        )
     ack_urls = judge_ack_canvas_urls(
         tenant_id=tid, hours=summary.get("since_hours")
     )
     ack_url = ack_urls.get("form") or judge_ack_public_url()
     if ack_url:
+        # Prefer zoom + form: drop CSV if we would exceed 5
+        if len(elements) >= 4:
+            elements = [
+                e
+                for e in elements
+                if e.get("action_id") != "judge_ack_digest_reexport_csv"
+            ]
         elements.append(
             {
                 "type": "button",
@@ -1020,6 +1113,16 @@ def dispatch_judge_ack_digest(
 ) -> Dict[str, Any]:
     """Haftalık ack audit özetini Slack webhook'a gönder (Block Kit + quiet hours + digest-diff)."""
     tid = (tenant_id or summary.get("tenant_id") or "").strip() or None
+    if tid and is_judge_ack_digest_muted(tid, base=base):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "muted",
+            "tenant_id": tid,
+            "configured": bool(
+                resolve_judge_ack_digest_webhook(tid, url=webhook, base=base)
+            ),
+        }
     if not ignore_quiet_hours:
         try:
             from rag.collab_notify_digest import is_quiet_hours
@@ -1073,11 +1176,24 @@ def dispatch_judge_ack_digest(
         "off",
     }:
         try:
+            max_buckets_raw = os.environ.get(
+                "RAG_JUDGE_ACK_DIGEST_HEATMAP_MAX_BUCKETS", ""
+            ).strip()
+            max_buckets = int(max_buckets_raw) if max_buckets_raw else (
+                24
+                if (
+                    os.environ.get("RAG_JUDGE_ACK_DIGEST_HEATMAP_BUCKET", "day")
+                    or "day"
+                ).strip().lower()
+                == "hour"
+                else 14
+            )
             heatmap = build_ack_heatmap(
                 since_hours=float(summary.get("since_hours") or 168),
                 tenant_id=tid,
                 bucket=os.environ.get("RAG_JUDGE_ACK_DIGEST_HEATMAP_BUCKET", "day")
                 or "day",
+                max_buckets=max_buckets,
             )
         except Exception:
             heatmap = None
@@ -1156,9 +1272,10 @@ def dispatch_judge_ack_digest_fanout(
     webhook: Optional[str] = None,
     block_kit: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Tenant webhook haritasına göre ack digest fan-out (per-tenant quiet hours)."""
+    """Tenant webhook haritasına göre ack digest fan-out (per-tenant quiet hours + mute)."""
     mapping = parse_judge_ack_digest_webhooks(base=base)
     quiet_map = parse_judge_ack_digest_quiet_hours(base=base)
+    mutes = parse_judge_ack_digest_mutes(base=base)
     global_summary = summarize_judge_ack_audit(
         path=path, since_hours=since_hours
     )
@@ -1179,10 +1296,22 @@ def dispatch_judge_ack_digest_fanout(
             "summary": global_summary,
             "dispatch": dispatched,
             "results": [{"tenant_id": None, **dispatched}],
+            "muted": sorted(mutes),
         }
 
     results: List[Dict[str, Any]] = []
     for tid, url in sorted(mapping.items()):
+        if is_judge_ack_digest_muted(tid, mutes=mutes):
+            results.append(
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "muted",
+                    "tenant_id": tid,
+                    "configured": True,
+                }
+            )
+            continue
         tenant_summary = summarize_judge_ack_audit(
             path=path, since_hours=since_hours, tenant_id=tid
         )
@@ -1215,6 +1344,8 @@ def dispatch_judge_ack_digest_fanout(
         "summary": global_summary,
         "results": results,
         "quiet_overrides": len(quiet_map),
+        "muted": sorted(mutes),
+        "muted_count": sum(1 for r in results if r.get("reason") == "muted"),
     }
 
 
@@ -1793,6 +1924,63 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             "opened": opened,
             "channel_id": channel_id,
             "message_ts": message_ts,
+        }
+
+    if "judge_ack_digest_heatmap_zoom" in action_ids:
+        hours = 168.0
+        try:
+            hours = float(os.environ.get("RAG_JUDGE_ACK_DIGEST_HOURS", "168") or 168)
+        except Exception:
+            hours = 168.0
+        bucket = "hour"
+        for act in actions:
+            if not isinstance(act, dict):
+                continue
+            if str(act.get("action_id") or "") == "judge_ack_digest_heatmap_zoom":
+                val = str(act.get("value") or "hour").strip().lower()
+                if val in {"hour", "day"}:
+                    bucket = val
+                break
+        tid = None
+        channel_id = str(
+            ((payload.get("channel") or {}).get("id"))
+            or ((payload.get("container") or {}).get("channel_id"))
+            or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "")
+            or ""
+        ).strip() or None
+        user_id = slack_interactive_user_id(payload)
+        heatmap = build_ack_heatmap(
+            since_hours=hours,
+            tenant_id=tid,
+            bucket=bucket,
+            max_buckets=24 if bucket == "hour" else 14,
+        )
+        text = format_ack_heatmap_mrkdwn(heatmap)
+        ephemeral: Dict[str, Any] = {"ok": False, "skipped": True}
+        bot_token = os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
+        if bot_token and channel_id and user_id:
+            ephemeral = slack_api(
+                "chat.postEphemeral",
+                bot_token=bot_token,
+                json_body={
+                    "channel": channel_id,
+                    "user": user_id,
+                    "text": text,
+                    "mrkdwn": True,
+                },
+            )
+        return {
+            "ok": True,
+            "mode": "heatmap_zoom",
+            "bucket": bucket,
+            "heatmap": heatmap,
+            "text": text,
+            "ephemeral": {
+                "ok": bool(ephemeral.get("ok")),
+                "skipped": bool(ephemeral.get("skipped")),
+                "error": ephemeral.get("error"),
+            },
+            "channel_id": channel_id,
         }
 
     if (

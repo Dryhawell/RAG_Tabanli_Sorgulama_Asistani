@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from rag.dual_write_webhook import (
     extract_firing_dual_write_alerts,
@@ -137,6 +138,36 @@ def test_dual_write_webhook_dlq_and_metrics(tmp_path: Path, monkeypatch) -> None
     assert replayed["ok"] is True
     assert replayed["replayed"] == 1
     assert dual_write_dlq_depth() == 0
+
+
+def test_prune_dual_write_dlq_by_age(tmp_path: Path, monkeypatch) -> None:
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from rag.dual_write_webhook import prune_dual_write_dlq, read_dual_write_dlq
+
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_DLQ", str(tmp_path / "dlq.jsonl"))
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(days=10)).isoformat()
+    young = (now - timedelta(hours=1)).isoformat()
+    path = tmp_path / "dlq.jsonl"
+    with path.open("w", encoding="utf-8") as f:
+        f.write(json.dumps({"ts": old, "payload_digest": "old", "payload": {}}) + "\n")
+        f.write(json.dumps({"ts": young, "payload_digest": "young", "payload": {}}) + "\n")
+
+    dry = prune_dual_write_dlq(days=7, dry_run=True)
+    assert dry["removed"] == 1
+    assert dry["after"] == 1
+    assert len(read_dual_write_dlq()) == 2
+
+    monkeypatch.setenv("RAG_DUAL_WRITE_DLQ_SLACK_WEBHOOK", "https://hooks.slack.test/dlq")
+    with patch("rag.judge_alert.post_slack", return_value=True) as post:
+        report = prune_dual_write_dlq(days=7, dry_run=False, notify=True)
+    assert report["removed"] == 1
+    assert report["after"] == 1
+    assert read_dual_write_dlq()[0]["payload_digest"] == "young"
+    assert report["notify"]["posted"] is True
+    assert post.called
 
 
 def test_webhook_circuit_breaker_and_rate_limit_headers(

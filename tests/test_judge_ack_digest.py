@@ -68,9 +68,11 @@ def test_dispatch_judge_ack_digest_dry_run(tmp_path: Path, monkeypatch) -> None:
     assert actions
     ids = {e.get("action_id") for e in actions[0].get("elements") or []}
     assert "judge_ack_digest_reexport" in ids
-    assert "judge_ack_digest_reexport_csv" in ids
+    assert "judge_ack_digest_heatmap_zoom" in ids
     assert "judge_ack_digest_open" in ids
     assert "judge_ack_interactive" in ids
+    # CSV dropped when form URL present so zoom fits the 5-button cap
+    assert "judge_ack_digest_reexport_csv" not in ids or len(actions[0]["elements"]) <= 5
 
 
 def test_digest_diff_snapshot_delta(tmp_path: Path, monkeypatch) -> None:
@@ -142,6 +144,61 @@ def test_ack_heatmap_and_tenant_canvas_urls(tmp_path: Path, monkeypatch) -> None
     assert "Ack heatmap" in result["payload"]["text"]
     assert "Canvas:" in result["payload"]["text"] or "tenant=acme" in result["payload"]["text"]
 
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_HEATMAP_BUCKET", "hour")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_HEATMAP_MAX_BUCKETS", "24")
+    hour = build_ack_heatmap(
+        path=path, since_hours=24 * 365, tenant_id="acme", bucket="hour", max_buckets=24
+    )
+    assert hour["bucket"] == "hour"
+    assert hour["total"] == 2
+
+
+def test_tenant_mute_skips_digest(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE", "acme,beta")
+    path = str(tmp_path / "ack.jsonl")
+    append_judge_ack_audit("ack", actor="a", path=path, extra={"tenant_id": "acme"})
+    summary = summarize_judge_ack_audit(path=path, since_hours=24 * 365, tenant_id="acme")
+    result = dispatch_judge_ack_digest(summary, dry_run=True, tenant_id="acme", base=str(tmp_path))
+    assert result["skipped"] is True
+    assert result["reason"] == "muted"
+
+    (tmp_path / "judge_ack_digest_webhooks.json").write_text(
+        '{"acme": "https://hooks.slack.test/acme", "gamma": "https://hooks.slack.test/gamma"}',
+        encoding="utf-8",
+    )
+    fan = dispatch_judge_ack_digest_fanout(
+        path=path, since_hours=24 * 365, dry_run=True, base=str(tmp_path)
+    )
+    by_tid = {r.get("tenant_id"): r for r in fan["results"]}
+    assert by_tid["acme"]["reason"] == "muted"
+    assert by_tid["gamma"].get("reason") != "muted"
+    assert "acme" in fan["muted"]
+
+
+def test_heatmap_zoom_interactive(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    path = str(tmp_path / "ack.jsonl")
+    append_judge_ack_audit("ack", actor="alice", path=path)
+    from rag.judge_alert import handle_slack_interactive_ack
+
+    with patch("rag.judge_alert.slack_api", return_value={"ok": True}):
+        result = handle_slack_interactive_ack(
+            {
+                "type": "block_actions",
+                "actions": [
+                    {"action_id": "judge_ack_digest_heatmap_zoom", "value": "hour"}
+                ],
+                "user": {"id": "U1", "username": "ops"},
+                "channel": {"id": "C1"},
+            }
+        )
+    assert result["ok"] is True
+    assert result["mode"] == "heatmap_zoom"
+    assert result["bucket"] == "hour"
+    assert "Ack heatmap" in result["text"]
+    assert result["ephemeral"]["ok"] is True
+
 
 def test_dual_write_dlq_cli_parser() -> None:
     from rag.cli import build_parser
@@ -153,6 +210,12 @@ def test_dual_write_dlq_cli_parser() -> None:
     assert args.replay is True
     assert args.limit == 3
     assert args.dry_run is True
+    prune_args = build_parser().parse_args(
+        ["dual-write-dlq", "--prune", "--days", "14", "--notify", "--dry-run"]
+    )
+    assert prune_args.prune is True
+    assert prune_args.days == 14.0
+    assert prune_args.notify is True
 
 
 def test_digest_reexport_interactive_action(tmp_path: Path, monkeypatch) -> None:

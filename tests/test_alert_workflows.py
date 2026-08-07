@@ -374,6 +374,8 @@ def test_dual_write_dlq_replay_workflow_yaml():
     assert "--replay" in text
     assert "15 */6 * * *" in text
     assert "dual_write_dlq_replay.json" in text
+    assert "--prune" in text
+    assert "dual_write_dlq_prune.json" in text
     assert "workflow_dispatch" in text
 
 

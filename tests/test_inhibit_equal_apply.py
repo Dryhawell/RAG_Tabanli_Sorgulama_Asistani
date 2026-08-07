@@ -165,6 +165,7 @@ def test_ci_workflow_has_apply_job() -> None:
     assert "needs.test.result" in text
     assert "INHIBIT_EQUAL_APPLY_REQUIRE_GREEN" in text
     assert "INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK" in text
+    assert "INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY" in text
     assert "inhibit-equal-apply-bot" in Path("scripts/ci_inhibit_equal_apply.py").read_text(
         encoding="utf-8"
     )
@@ -236,6 +237,7 @@ def test_notify_inhibit_equal_rollback_canary(monkeypatch) -> None:
         "post_check": {"ok": False, "method": "amtool"},
     }
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", raising=False)
     skipped = notify_inhibit_equal_rollback_canary(report)
     assert skipped["skipped"] is True
 
@@ -244,6 +246,18 @@ def test_notify_inhibit_equal_rollback_canary(monkeypatch) -> None:
         out = notify_inhibit_equal_rollback_canary(report)
     assert out["ok"] is True
     assert out["posted"] is True
+    assert out["slack"] is True
     assert post.called
     payload = post.call_args[0][1]
     assert "rolled back" in payload["text"].lower() or "rollback" in payload["text"].lower()
+
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", raising=False)
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", "pd-key")
+    with patch("rag.judge_alert.post_pagerduty", return_value=True) as pd:
+        with patch("rag.judge_alert.post_slack", return_value=False):
+            pd_out = notify_inhibit_equal_rollback_canary(report)
+    assert pd_out["pagerduty"] is True
+    assert pd_out["posted"] is True
+    assert pd.called
+    assert pd.call_args.kwargs.get("source") == "inhibit-equal-canary"
+    assert pd.call_args.kwargs.get("routing_key") == "pd-key"

@@ -1301,12 +1301,24 @@ def cmd_judge_ack_purge(args: argparse.Namespace) -> int:
 def cmd_dual_write_dlq(args: argparse.Namespace) -> int:
     from rag.dual_write_webhook import (
         dual_write_dlq_depth,
+        maybe_alert_dual_write_dlq,
+        prune_dual_write_dlq,
         read_dual_write_dlq,
         replay_dual_write_dlq,
     )
 
     path = getattr(args, "path", None)
-    if getattr(args, "replay", False):
+    if getattr(args, "prune", False):
+        days = getattr(args, "days", None)
+        if days is None:
+            days = float(os.environ.get("RAG_DUAL_WRITE_DLQ_RETENTION_DAYS", "7") or 7)
+        report = prune_dual_write_dlq(
+            path=path,
+            days=float(days),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            notify=bool(getattr(args, "notify", False)),
+        )
+    elif getattr(args, "replay", False):
         report = replay_dual_write_dlq(
             path=path,
             limit=int(getattr(args, "limit", 5) or 5),
@@ -1315,9 +1327,10 @@ def cmd_dual_write_dlq(args: argparse.Namespace) -> int:
         )
     else:
         rows = read_dual_write_dlq(path=path, limit=getattr(args, "limit", None))
+        depth = dual_write_dlq_depth(path=path)
         report = {
             "ok": True,
-            "depth": dual_write_dlq_depth(path=path),
+            "depth": depth,
             "count": len(rows),
             "entries": [
                 {
@@ -1330,6 +1343,8 @@ def cmd_dual_write_dlq(args: argparse.Namespace) -> int:
                 for r in rows
             ],
         }
+        if getattr(args, "notify", False):
+            report["notify"] = maybe_alert_dual_write_dlq(depth=depth)
     print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
     return 0 if report.get("ok") else 1
 
@@ -1787,6 +1802,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Son N kaydı yeniden işle",
     )
     p_dlq.add_argument(
+        "--prune",
+        action="store_true",
+        help="Yaşa göre eski DLQ kayıtlarını sil",
+    )
+    p_dlq.add_argument(
+        "--days",
+        type=float,
+        default=None,
+        help="Prune: bu günden eski kayıtları sil (varsayılan env/7)",
+    )
+    p_dlq.add_argument(
+        "--notify",
+        action="store_true",
+        help="Prune/liste sonrası Slack eşik uyarısı",
+    )
+    p_dlq.add_argument(
         "--limit",
         type=int,
         default=5,
@@ -1795,7 +1826,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_dlq.add_argument(
         "--dry-run",
         action="store_true",
-        help="Replay etmeden plan yaz",
+        help="Replay/prune etmeden plan yaz",
     )
     p_dlq.add_argument(
         "--no-force",

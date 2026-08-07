@@ -134,6 +134,146 @@ def dual_write_dlq_depth(*, path: Optional[str] = None) -> int:
     return len(read_dual_write_dlq(path=path))
 
 
+def _parse_dlq_ts(ts: Any) -> Optional[float]:
+    if ts is None:
+        return None
+    try:
+        if isinstance(ts, (int, float)):
+            return float(ts)
+        text = str(ts).strip()
+        if not text:
+            return None
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def prune_dual_write_dlq(
+    *,
+    path: Optional[str] = None,
+    days: float = 7.0,
+    dry_run: bool = False,
+    notify: bool = False,
+) -> Dict[str, Any]:
+    """Age-based DLQ drop: ts < now-days olanları sil."""
+    from datetime import datetime, timezone
+
+    p = path or dual_write_webhook_dlq_path()
+    rows = read_dual_write_dlq(path=p)
+    if days is None or float(days) < 0:
+        return {"ok": False, "error": "days_invalid", "path": p}
+    cutoff = time.time() - float(days) * 86400.0
+    kept: List[Dict[str, Any]] = []
+    dropped: List[Dict[str, Any]] = []
+    oldest_age_hours: Optional[float] = None
+    now = time.time()
+    for row in rows:
+        ts = _parse_dlq_ts(row.get("ts"))
+        if ts is None:
+            kept.append(row)
+            continue
+        age_h = (now - ts) / 3600.0
+        if oldest_age_hours is None or age_h > oldest_age_hours:
+            oldest_age_hours = age_h
+        if ts < cutoff:
+            dropped.append(
+                {
+                    "ts": row.get("ts"),
+                    "digest": row.get("payload_digest"),
+                    "reason": row.get("reason"),
+                    "age_hours": round(age_h, 2),
+                }
+            )
+        else:
+            kept.append(row)
+    if not dry_run and dropped:
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            for row in kept:
+                f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+    report = {
+        "ok": True,
+        "path": p,
+        "days": float(days),
+        "before": len(rows),
+        "after": len(kept),
+        "removed": len(dropped),
+        "dry_run": bool(dry_run),
+        "oldest_age_hours": oldest_age_hours,
+        "dropped": dropped[:50],
+        "cutoff": datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat(),
+    }
+    if notify:
+        report["notify"] = maybe_alert_dual_write_dlq(
+            depth=len(kept) if not dry_run else len(rows),
+            removed=len(dropped),
+            oldest_age_hours=oldest_age_hours,
+            prune_report=report,
+        )
+    try:
+        emit_dual_write_webhook_metric(
+            result="dlq_pruned" if dropped and not dry_run else "dlq_prune_dry",
+            reason="age_drop",
+            actions=len(dropped),
+            dlq_depth=len(kept) if not dry_run else len(rows),
+        )
+    except Exception:
+        pass
+    return report
+
+
+def maybe_alert_dual_write_dlq(
+    *,
+    depth: Optional[int] = None,
+    removed: int = 0,
+    oldest_age_hours: Optional[float] = None,
+    prune_report: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Slack alert on DLQ drop and/or depth/age thresholds."""
+    webhook = (
+        os.environ.get("RAG_DUAL_WRITE_DLQ_SLACK_WEBHOOK", "").strip()
+        or os.environ.get("RAG_JUDGE_SLACK_WEBHOOK", "").strip()
+    )
+    if not webhook:
+        return {"ok": True, "skipped": True, "reason": "webhook_missing"}
+    depth_n = int(depth if depth is not None else dual_write_dlq_depth())
+    try:
+        alert_depth = int(os.environ.get("RAG_DUAL_WRITE_DLQ_ALERT_DEPTH", "10") or 10)
+    except Exception:
+        alert_depth = 10
+    try:
+        alert_age_days = float(
+            os.environ.get("RAG_DUAL_WRITE_DLQ_ALERT_AGE_DAYS", "3") or 3
+        )
+    except Exception:
+        alert_age_days = 3.0
+    reasons: List[str] = []
+    if removed > 0:
+        reasons.append(f"pruned `{removed}` aged entries")
+    if depth_n >= alert_depth:
+        reasons.append(f"depth `{depth_n}` ≥ `{alert_depth}`")
+    if oldest_age_hours is not None and oldest_age_hours >= alert_age_days * 24:
+        reasons.append(
+            f"oldest `{oldest_age_hours:.1f}h` ≥ `{alert_age_days:g}d`"
+        )
+    if not reasons:
+        return {"ok": True, "skipped": True, "reason": "below_threshold"}
+    text = (
+        "*Dual-write webhook DLQ alert*\n"
+        + " · ".join(reasons)
+        + f"\nRemaining depth: *{depth_n}*"
+    )
+    if prune_report and prune_report.get("cutoff"):
+        text += f"\nCutoff: `{prune_report.get('cutoff')}`"
+    try:
+        from rag.judge_alert import post_slack
+
+        ok = post_slack(webhook, {"text": text})
+        return {"ok": bool(ok), "skipped": False, "posted": bool(ok), "reasons": reasons}
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__, "detail": str(exc)}
+
+
 def replay_dual_write_dlq(
     *,
     path: Optional[str] = None,
