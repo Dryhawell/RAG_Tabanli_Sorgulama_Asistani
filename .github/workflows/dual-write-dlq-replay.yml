@@ -1,0 +1,73 @@
+"""Dual-write Alertmanager webhook DLQ replay (cron + manuel)."""
+
+name: Dual-write DLQ Replay
+
+on:
+  schedule:
+    - cron: "15 */6 * * *"  # catch-up :30 ofseti
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Replay limiti"
+        required: false
+        default: "5"
+        type: string
+      dry_run:
+        description: "Replay etmeden plan"
+        required: false
+        default: false
+        type: boolean
+      force:
+        description: "Cooldownoldown/circuit'i yok say"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Replay dual-write webhook DLQ
+        env:
+          RAG_ENABLE_METRICS: "1"
+          RAG_ENABLE_PROMETHEUS: "1"
+          RAG_DUAL_WRITE_WEBHOOK_DLQ: metadata/dual_write_webhook_dlq.jsonl
+          RAG_DUAL_WRITE_WEBHOOK_STATE: metadata/dual_write_webhook_state.json
+          RAG_VECTOR_BACKEND: ${{ vars.RAG_VECTOR_BACKEND || 'faiss' }}
+          RAG_VECTOR_DUAL_WRITE: ${{ vars.RAG_VECTOR_DUAL_WRITE || secrets.RAG_VECTOR_DUAL_WRITE }}
+          RAG_QDRANT_URL: ${{ secrets.RAG_QDRANT_URL }}
+          RAG_QDRANT_API_KEY: ${{ secrets.RAG_QDRANT_API_KEY }}
+          RAG_QDRANT_COLLECTION: ${{ vars.RAG_QDRANT_COLLECTION || 'rag_chunks' }}
+        run: |
+          mkdir -p metadata indexes
+          LIMIT="${{ inputs.limit || '5' }}"
+          EXTRA="--replay --limit $LIMIT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            EXTRA="$EXTRA --dry-run"
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "false" ]; then
+            EXTRA="$EXTRA --no-force"
+          fi
+          # shellcheck disable=SC2086
+          python -m rag.cli dual-write-dlq $EXTRA \
+            | tee metadata/dual_write_dlq_replay.json
+      - name: Upload DLQ replay report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dual-write-dlq-replay
+          path: |
+            metadata/dual_write_dlq_replay.json
+            metadata/dual_write_webhook_dlq.jsonl
+            metadata/dual_write_webhook_state.json
+            metadata/metrics.jsonl
+          if-no-files-found: ignore
