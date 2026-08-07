@@ -367,6 +367,16 @@ def test_dual_write_shadow_compare_workflow_yaml():
     assert "dual_write_shadow_compare.json" in text
 
 
+def test_dual_write_dlq_replay_workflow_yaml():
+    path = Path(".github/workflows/dual-write-dlq-replay.yml")
+    text = path.read_text(encoding="utf-8")
+    assert "dual-write-dlq" in text
+    assert "--replay" in text
+    assert "15 */6 * * *" in text
+    assert "dual_write_dlq_replay.json" in text
+    assert "workflow_dispatch" in text
+
+
 def test_judge_ack_digest_workflow_yaml():
     path = Path(".github/workflows/judge-ack-digest.yml")
     text = path.read_text(encoding="utf-8")

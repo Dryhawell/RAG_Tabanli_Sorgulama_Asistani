@@ -164,9 +164,11 @@ def test_ci_workflow_has_apply_job() -> None:
     assert "needs: [test]" in text
     assert "needs.test.result" in text
     assert "INHIBIT_EQUAL_APPLY_REQUIRE_GREEN" in text
+    assert "INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK" in text
     assert "inhibit-equal-apply-bot" in Path("scripts/ci_inhibit_equal_apply.py").read_text(
         encoding="utf-8"
     )
+    assert "dual-write-dlq" in Path("rag/cli.py").read_text(encoding="utf-8")
     assert "--diff-inhibit" in Path("rag/cli.py").read_text(encoding="utf-8") or (
         "--apply-equal" in Path("rag/cli.py").read_text(encoding="utf-8")
     )
@@ -220,3 +222,28 @@ def test_build_inhibit_equal_apply_comment() -> None:
         }
     )
     assert "No inhibit diff" in unchanged
+
+
+def test_notify_inhibit_equal_rollback_canary(monkeypatch) -> None:
+    from scripts.ci_inhibit_equal_apply import notify_inhibit_equal_rollback_canary
+
+    report = {
+        "rolled_back": True,
+        "reason": "amtool_regression",
+        "backup": "metadata/bak.yml",
+        "generated": {"equal": ["alertname"]},
+        "diff": {"unified_diff": "+x\n"},
+        "post_check": {"ok": False, "method": "amtool"},
+    }
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", raising=False)
+    skipped = notify_inhibit_equal_rollback_canary(report)
+    assert skipped["skipped"] is True
+
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", "https://hooks.slack.test/x")
+    with patch("rag.judge_alert.post_slack", return_value=True) as post:
+        out = notify_inhibit_equal_rollback_canary(report)
+    assert out["ok"] is True
+    assert out["posted"] is True
+    assert post.called
+    payload = post.call_args[0][1]
+    assert "rolled back" in payload["text"].lower() or "rollback" in payload["text"].lower()

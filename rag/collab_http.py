@@ -55,45 +55,59 @@ def _json_error(code: int, error: str) -> Tuple[int, Dict[str, str], bytes]:
     )
 
 
-def handle_judge_ack_form() -> Tuple[int, Dict[str, str], bytes]:
+def handle_judge_ack_form(
+    *,
+    query: Optional[Dict[str, List[str]]] = None,
+) -> Tuple[int, Dict[str, str], bytes]:
     """GET: Slack deep-link ack formu (token istemci tarafında girilir)."""
-    html = """<!DOCTYPE html>
+    qs = query or {}
+    tenant = ((qs.get("tenant") or qs.get("tenant_id") or [""])[0] or "").strip()
+    tenant_js = json.dumps(tenant)
+    html = f"""<!DOCTYPE html>
 <html lang="tr"><head><meta charset="utf-8"/><title>Judge soft-fail ACK</title>
 <style>
-body{font-family:system-ui,sans-serif;max-width:480px;margin:2rem auto;padding:0 1rem;line-height:1.45}
-label{display:block;margin-top:12px;font-weight:600}
-input,textarea{width:100%;padding:8px;box-sizing:border-box}
-button{margin-top:14px;padding:8px 14px}
-#msg{margin-top:12px;color:#333;white-space:pre-wrap}
+body{{font-family:system-ui,sans-serif;max-width:480px;margin:2rem auto;padding:0 1rem;line-height:1.45}}
+label{{display:block;margin-top:12px;font-weight:600}}
+input,textarea{{width:100%;padding:8px;box-sizing:border-box}}
+button{{margin-top:14px;padding:8px 14px}}
+#msg{{margin-top:12px;color:#333;white-space:pre-wrap}}
+.tenant{{color:#555;font-size:0.9rem}}
 </style></head><body>
 <h1>Judge soft-fail acknowledge</h1>
 <p>Token sunucu env <code>RAG_JUDGE_ACK_TOKEN</code> ile aynı olmalı.</p>
+<p class="tenant" id="tenantLabel"></p>
 <label>Actor <input id="actor" placeholder="oncall"/></label>
 <label>Token <input id="token" type="password" placeholder="ack token"/></label>
 <label>Note <textarea id="note" rows="3" placeholder="inceleme notu"></textarea></label>
+<input type="hidden" id="tenant" value=""/>
 <button id="go" type="button">Acknowledge</button>
 <pre id="msg"></pre>
 <script>
-document.getElementById("go").onclick = async () => {
+const TENANT = {tenant_js};
+document.getElementById("tenant").value = TENANT || "";
+const label = document.getElementById("tenantLabel");
+if (TENANT) {{ label.textContent = "Tenant canvas: " + TENANT; }}
+document.getElementById("go").onclick = async () => {{
   const msg = document.getElementById("msg");
-  try {
-    const body = {
+  try {{
+    const body = {{
       actor: (document.getElementById("actor").value || "").trim(),
       token: (document.getElementById("token").value || "").trim(),
       note: (document.getElementById("note").value || "").trim(),
+      tenant_id: (document.getElementById("tenant").value || "").trim(),
       notify: "1"
-    };
-    const r = await fetch("/judge/ack", {
+    }};
+    const r = await fetch("/judge/ack", {{
       method: "POST",
-      headers: {"Content-Type": "application/json"},
+      headers: {{"Content-Type": "application/json"}},
       body: JSON.stringify(body)
-    });
+    }});
     const data = await r.json();
     msg.textContent = JSON.stringify(data, null, 2);
-  } catch (e) {
+  }} catch (e) {{
     msg.textContent = String(e && e.message ? e.message : e);
-  }
-};
+  }}
+}};
 </script>
 </body></html>
 """
@@ -124,7 +138,8 @@ def handle_judge_ack_export(
         limit = 500
     if limit is None:
         limit = 500
-    report = export_judge_ack_audit(fmt=fmt, limit=limit)
+    tenant = ((qs.get("tenant") or qs.get("tenant_id") or [""])[0] or "").strip() or None
+    report = export_judge_ack_audit(fmt=fmt, limit=limit, tenant_id=tenant)
     text = report.get("text") or ""
     ctype = (
         "text/csv; charset=utf-8"
@@ -132,14 +147,17 @@ def handle_judge_ack_export(
         else "application/x-ndjson; charset=utf-8"
     )
     filename = f"judge_ack_audit.{ 'csv' if fmt == 'csv' else 'jsonl' }"
+    headers = {
+        "Content-Type": ctype,
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-cache",
+        "X-Export-Count": str(report.get("count") or 0),
+    }
+    if tenant:
+        headers["X-Export-Tenant"] = tenant
     return (
         200,
-        {
-            "Content-Type": ctype,
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Cache-Control": "no-cache",
-            "X-Export-Count": str(report.get("count") or 0),
-        },
+        headers,
         text.encode("utf-8"),
     )
 
@@ -299,6 +317,7 @@ def handle_judge_ack(body: bytes, *, headers: Optional[Dict[str, str]] = None) -
         return _json_error(401, "invalid_token")
     actor = str(data.get("actor") or data.get("by") or "").strip()
     note = str(data.get("note") or "")[:500]
+    tenant_id = str(data.get("tenant_id") or data.get("tenant") or "").strip() or None
     state_path = os.environ.get("RAG_JUDGE_ALERT_STATE", "").strip() or None
     notify = str(data.get("notify", "1")).strip().lower() not in {"0", "false", "no", "off"}
     from rag.judge_alert import acknowledge_judge_alert
@@ -308,6 +327,7 @@ def handle_judge_ack(body: bytes, *, headers: Optional[Dict[str, str]] = None) -
         note=note,
         state_path=state_path,
         notify=notify,
+        tenant_id=tenant_id,
     )
     if not result.get("ok") and result.get("error") == "actor_required":
         return _json_error(400, "actor_required")
@@ -544,7 +564,8 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
             )
             return
         if path in {"/judge/ack-form", "/judge/ack-ui"}:
-            self._send(*handle_judge_ack_form())
+            qs = parse_qs(parsed.query or "")
+            self._send(*handle_judge_ack_form(query=qs))
             return
         if path == "/judge/ack-export":
             qs = parse_qs(parsed.query or "")

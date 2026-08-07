@@ -110,6 +110,51 @@ def test_digest_diff_snapshot_delta(tmp_path: Path, monkeypatch) -> None:
     assert "vs last digest" in result["payload"]["text"]
 
 
+def test_ack_heatmap_and_tenant_canvas_urls(tmp_path: Path, monkeypatch) -> None:
+    from rag.judge_alert import (
+        build_ack_heatmap,
+        format_ack_heatmap_mrkdwn,
+        judge_ack_canvas_urls,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_PUBLIC_URL", "http://example.test/judge/ack-form")
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
+    path = str(tmp_path / "ack.jsonl")
+    append_judge_ack_audit("ack", actor="a", path=path, extra={"tenant_id": "acme"})
+    append_judge_ack_audit("unack", actor="b", path=path, extra={"tenant_id": "acme"})
+    append_judge_ack_audit("ack", actor="c", path=path, extra={"tenant_id": "beta"})
+    heat = build_ack_heatmap(path=path, since_hours=24 * 365, tenant_id="acme", bucket="day")
+    assert heat["ok"] is True
+    assert heat["total"] == 2
+    assert "ack" in heat["events"]
+    md = format_ack_heatmap_mrkdwn(heat)
+    assert "Ack heatmap" in md
+    urls = judge_ack_canvas_urls(tenant_id="acme", hours=168)
+    assert "tenant=acme" in urls["form"]
+    assert "tenant=acme" in urls["export"]
+    assert "format=csv" in urls["export_csv"]
+
+    summary = summarize_judge_ack_audit(path=path, since_hours=24 * 365, tenant_id="acme")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_HEATMAP", "1")
+    result = dispatch_judge_ack_digest(summary, dry_run=True, tenant_id="acme")
+    assert result["canvas"]["form"]
+    assert "tenant=acme" in result["canvas"]["form"]
+    assert "Ack heatmap" in result["payload"]["text"]
+    assert "Canvas:" in result["payload"]["text"] or "tenant=acme" in result["payload"]["text"]
+
+
+def test_dual_write_dlq_cli_parser() -> None:
+    from rag.cli import build_parser
+
+    args = build_parser().parse_args(
+        ["dual-write-dlq", "--replay", "--limit", "3", "--dry-run"]
+    )
+    assert args.command == "dual-write-dlq"
+    assert args.replay is True
+    assert args.limit == 3
+    assert args.dry_run is True
+
+
 def test_digest_reexport_interactive_action(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
     monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")

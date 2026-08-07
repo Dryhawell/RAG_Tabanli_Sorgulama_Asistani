@@ -247,6 +247,7 @@ def export_judge_ack_audit(
     since: Optional[str] = None,
     until: Optional[str] = None,
     event: Optional[str] = None,
+    tenant_id: Optional[str] = None,
     include_state: bool = False,
     state_path: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -254,6 +255,13 @@ def export_judge_ack_audit(
     rows = read_judge_ack_audit(
         path=path, limit=limit, since=since, until=until, event=event
     )
+    want_tenant = (tenant_id or "").strip()
+    if want_tenant:
+        rows = [
+            r
+            for r in rows
+            if str(r.get("tenant_id") or "").strip() == want_tenant
+        ]
     if include_state:
         st = load_judge_alert_state(state_path)
         rows = list(rows) + [
@@ -268,6 +276,7 @@ def export_judge_ack_audit(
                 "acknowledged_by": st.get("acknowledged_by"),
                 "acknowledged_at": st.get("acknowledged_at"),
                 "ack_note": st.get("ack_note"),
+                "tenant_id": want_tenant or None,
             }
         ]
     kind = (fmt or "jsonl").strip().lower()
@@ -281,6 +290,7 @@ def export_judge_ack_audit(
             "actor",
             "note",
             "source",
+            "tenant_id",
             "soft_fail",
             "acknowledged",
             "acknowledged_by",
@@ -306,6 +316,7 @@ def export_judge_ack_audit(
         "count": len(rows),
         "output": output,
         "text": text if not output else None,
+        "tenant_id": want_tenant or None,
     }
 
 
@@ -355,6 +366,139 @@ def summarize_judge_ack_audit(
         "actors": sorted(actors),
         "actor_count": len(actors),
         "last_by_event": last_by_event,
+    }
+
+
+def build_ack_heatmap(
+    *,
+    path: Optional[str] = None,
+    since_hours: float = 168.0,
+    tenant_id: Optional[str] = None,
+    bucket: str = "day",
+    max_buckets: int = 14,
+) -> Dict[str, Any]:
+    """Ack audit event × time-bucket heatmap (digest canvas)."""
+    hours = max(0.0, float(since_hours))
+    cutoff = datetime.fromtimestamp(
+        time.time() - hours * 3600.0, tz=timezone.utc
+    ).isoformat()
+    rows = read_judge_ack_audit(path=path, since=cutoff)
+    want = (tenant_id or "").strip()
+    if want:
+        rows = [r for r in rows if str(r.get("tenant_id") or "").strip() == want]
+    kind = (bucket or "day").strip().lower()
+    if kind not in {"day", "hour"}:
+        kind = "day"
+    cells: Dict[str, Dict[str, int]] = {}
+    events: set = set()
+    for row in rows:
+        ts = str(row.get("ts") or "")
+        if not ts:
+            continue
+        try:
+            # Accept both Z and +00:00
+            parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.astimezone(timezone.utc)
+        except Exception:
+            continue
+        if kind == "hour":
+            key = parsed.strftime("%m-%d %H")
+        else:
+            key = parsed.strftime("%Y-%m-%d")
+        ev = str(row.get("event") or "unknown")
+        events.add(ev)
+        cells.setdefault(key, {})
+        cells[key][ev] = cells[key].get(ev, 0) + 1
+    buckets = sorted(cells.keys())
+    if max_buckets and len(buckets) > int(max_buckets):
+        buckets = buckets[-int(max_buckets) :]
+        cells = {b: cells[b] for b in buckets}
+    event_list = sorted(events)
+    matrix = {
+        ev: [int((cells.get(b) or {}).get(ev, 0)) for b in buckets] for ev in event_list
+    }
+    max_val = 0
+    for ev in event_list:
+        for n in matrix[ev]:
+            if n > max_val:
+                max_val = n
+    return {
+        "ok": True,
+        "bucket": kind,
+        "buckets": buckets,
+        "events": event_list,
+        "matrix": matrix,
+        "max": max_val,
+        "total": len(rows),
+        "tenant_id": want or None,
+    }
+
+
+def format_ack_heatmap_mrkdwn(heatmap: Optional[Dict[str, Any]]) -> str:
+    """Slack mrkdwn ascii heatmap (░▒▓█)."""
+    if not heatmap or not heatmap.get("buckets"):
+        return "*Ack heatmap*\n_No activity in window._"
+    blocks = " ░▒▓█"
+    max_v = max(1, int(heatmap.get("max") or 1))
+    lines = [
+        f"*Ack heatmap* ({heatmap.get('bucket')} · last {len(heatmap.get('buckets') or [])} buckets)",
+    ]
+    # Compact header of bucket labels (last 8 chars)
+    labels = [str(b)[-5:] for b in (heatmap.get("buckets") or [])]
+    lines.append("`" + " ".join(f"{lb:>5}" for lb in labels) + "`")
+    for ev in heatmap.get("events") or []:
+        series = (heatmap.get("matrix") or {}).get(ev) or []
+        chars = []
+        for n in series:
+            idx = min(len(blocks) - 1, int(round((int(n) / max_v) * (len(blocks) - 1))))
+            chars.append(blocks[idx] if n else "·")
+        lines.append(f"`{ev[:12]:<12}` {''.join(chars)} ({sum(series)})")
+    return "\n".join(lines)
+
+
+def _append_url_query(url: str, **params: Any) -> str:
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    base = (url or "").strip()
+    if not base:
+        return ""
+    parts = urlsplit(base)
+    q = dict(parse_qsl(parts.query, keep_blank_values=True))
+    for k, v in params.items():
+        if v is None or v == "":
+            continue
+        q[str(k)] = str(v)
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(q), parts.fragment)
+    )
+
+
+def judge_ack_canvas_urls(
+    *,
+    tenant_id: Optional[str] = None,
+    hours: Optional[float] = None,
+) -> Dict[str, str]:
+    """Tenant-scoped canvas deep-links (ack form + export)."""
+    form = judge_ack_public_url()
+    export = judge_ack_export_public_url()
+    tid = (tenant_id or "").strip() or None
+    hrs = None
+    if hours is not None:
+        try:
+            hrs = f"{float(hours):g}"
+        except Exception:
+            hrs = None
+    return {
+        "form": _append_url_query(form, tenant=tid, hours=hrs) if form else "",
+        "export": _append_url_query(export, tenant=tid, hours=hrs) if export else "",
+        "export_csv": _append_url_query(
+            export, tenant=tid, hours=hrs, format="csv"
+        )
+        if export
+        else "",
+        "tenant_id": tid or "",
     }
 
 
@@ -625,8 +769,9 @@ def build_judge_ack_digest_slack_blocks(
     *,
     tenant_id: Optional[str] = None,
     diff: Optional[Dict[str, Any]] = None,
+    heatmap: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """Haftalık ack digest için Slack Block Kit (+ opsiyonel digest-diff canvas)."""
+    """Haftalık ack digest için Slack Block Kit (+ digest-diff + heatmap canvas)."""
     tid = (tenant_id or summary.get("tenant_id") or "").strip() or None
     title = "RAG judge ack audit digest"
     if tid:
@@ -651,6 +796,16 @@ def build_judge_ack_digest_slack_blocks(
             }
         )
         blocks.append({"type": "divider"})
+    if heatmap is not None:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": format_ack_heatmap_mrkdwn(heatmap),
+                },
+            }
+        )
     by_event = summary.get("by_event") or {}
     if by_event:
         parts = [f"`{k}` = *{v}*" for k, v in sorted(by_event.items())]
@@ -728,7 +883,10 @@ def build_judge_ack_digest_slack_blocks(
                 "value": "ack",
             }
         )
-    ack_url = judge_ack_public_url()
+    ack_urls = judge_ack_canvas_urls(
+        tenant_id=tid, hours=summary.get("since_hours")
+    )
+    ack_url = ack_urls.get("form") or judge_ack_public_url()
     if ack_url:
         elements.append(
             {
@@ -739,7 +897,10 @@ def build_judge_ack_digest_slack_blocks(
             }
         )
     # Download link stays as context (actions capped at 5)
-    export_url = judge_ack_export_public_url()
+    export_url = ack_urls.get("export") or judge_ack_export_public_url()
+    export_csv = ack_urls.get("export_csv") or (
+        f"{export_url}?format=csv" if export_url else ""
+    )
     if elements:
         blocks.append(
             {
@@ -750,9 +911,14 @@ def build_judge_ack_digest_slack_blocks(
         )
     ctx_bits = []
     if ack_url:
-        ctx_bits.append(f"Ack form: <{ack_url}|open>")
+        label = "Canvas" if tid else "Ack form"
+        ctx_bits.append(f"{label}: <{ack_url}|open>")
     if export_url:
-        ctx_bits.append(f"Download: <{export_url}|jsonl> · <{export_url}?format=csv|csv>")
+        ctx_bits.append(
+            f"Download: <{export_url}|jsonl> · <{export_csv or export_url}|csv>"
+        )
+    if tid:
+        ctx_bits.append(f"tenant `{tid}`")
     if ctx_bits:
         blocks.append(
             {
@@ -792,6 +958,7 @@ def build_judge_ack_digest_text(
     *,
     tenant_id: Optional[str] = None,
     diff: Optional[Dict[str, Any]] = None,
+    heatmap: Optional[Dict[str, Any]] = None,
 ) -> str:
     tid = (tenant_id or summary.get("tenant_id") or "").strip() or None
     title = "*RAG judge ack audit digest*"
@@ -803,6 +970,11 @@ def build_judge_ack_digest_text(
     ]
     if diff is not None:
         lines.append(format_judge_ack_digest_diff_text(diff))
+    if heatmap is not None:
+        lines.append(format_ack_heatmap_mrkdwn(heatmap))
+    canvas = judge_ack_canvas_urls(tenant_id=tid, hours=summary.get("since_hours"))
+    if canvas.get("form"):
+        lines.append(f"Canvas: {canvas['form']}")
     by_event = summary.get("by_event") or {}
     if by_event:
         parts = [f"`{k}`={v}" for k, v in sorted(by_event.items())]
@@ -893,8 +1065,27 @@ def dispatch_judge_ack_digest(
         prev = load_judge_ack_digest_snapshot(tenant_id=tid, base=base)
         diff = diff_judge_ack_digest(prev, summary)
 
+    heatmap: Optional[Dict[str, Any]] = None
+    if os.environ.get("RAG_JUDGE_ACK_DIGEST_HEATMAP", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        try:
+            heatmap = build_ack_heatmap(
+                since_hours=float(summary.get("since_hours") or 168),
+                tenant_id=tid,
+                bucket=os.environ.get("RAG_JUDGE_ACK_DIGEST_HEATMAP_BUCKET", "day")
+                or "day",
+            )
+        except Exception:
+            heatmap = None
+
     url = resolve_judge_ack_digest_webhook(tid, url=webhook, base=base)
-    text = build_judge_ack_digest_text(summary, tenant_id=tid, diff=diff)
+    text = build_judge_ack_digest_text(
+        summary, tenant_id=tid, diff=diff, heatmap=heatmap
+    )
     use_blocks = block_kit
     if use_blocks is None:
         try:
@@ -906,8 +1097,11 @@ def dispatch_judge_ack_digest(
     payload: Dict[str, Any] = {"text": text}
     if use_blocks:
         payload["blocks"] = build_judge_ack_digest_slack_blocks(
-            summary, tenant_id=tid, diff=diff
+            summary, tenant_id=tid, diff=diff, heatmap=heatmap
         )
+    canvas = judge_ack_canvas_urls(
+        tenant_id=tid, hours=summary.get("since_hours")
+    )
     if dry_run or not url:
         if use_diff and not dry_run:
             # no webhook but still baseline? skip persist on dry_run only
@@ -927,6 +1121,8 @@ def dispatch_judge_ack_digest(
             "tenant_id": tid,
             "block_kit": bool(use_blocks),
             "diff": diff,
+            "heatmap": heatmap,
+            "canvas": canvas,
             "snapshot_path": snapshot_path,
         }
     ok = post_slack(url, payload)
@@ -942,6 +1138,8 @@ def dispatch_judge_ack_digest(
         "tenant_id": tid,
         "block_kit": bool(use_blocks),
         "diff": diff,
+        "heatmap": heatmap,
+        "canvas": canvas,
         "snapshot_path": snapshot_path,
     }
 
@@ -2550,12 +2748,15 @@ def acknowledge_judge_alert(
     state_path: Optional[str] = None,
     notify: bool = True,
     report: Optional[Dict[str, Any]] = None,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Manuel soft-fail acknowledge; state'e yazar, opsiyonel kanal bildirimi."""
     who = (actor or "").strip()
     if not who:
         return {"ok": False, "error": "actor_required"}
     state = load_judge_alert_state(state_path)
+    tid = (tenant_id or "").strip() or None
+    extra = {"tenant_id": tid} if tid else None
     if not state.get("soft_fail"):
         return {
             "ok": False,
@@ -2569,11 +2770,13 @@ def acknowledge_judge_alert(
             note=note or "",
             source=str(state.get("source") or "report"),
             state=state,
+            extra=extra,
         )
         return {
             "ok": True,
             "already": True,
             "state": state,
+            "tenant_id": tid,
             "notify": {"acked": False, "reason": "already_acknowledged"},
         }
     source = str(state.get("source") or "report")
@@ -2588,6 +2791,8 @@ def acknowledge_judge_alert(
         "updated_at": _utcnow_iso(),
         "last_action": "ack",
     }
+    if tid:
+        new_state["tenant_id"] = tid
     save_judge_alert_state(new_state, state_path)
     append_judge_ack_audit(
         "ack",
@@ -2595,6 +2800,7 @@ def acknowledge_judge_alert(
         note=note or "",
         source=source,
         state=new_state,
+        extra=extra,
     )
     notify_result: Dict[str, Any] = {"acked": False, "skipped": True}
     if notify:
@@ -2604,7 +2810,13 @@ def acknowledge_judge_alert(
             actor=who,
             note=note or "",
         )
-    return {"ok": True, "already": False, "state": new_state, "notify": notify_result}
+    return {
+        "ok": True,
+        "already": False,
+        "state": new_state,
+        "tenant_id": tid,
+        "notify": notify_result,
+    }
 
 
 def detect_and_dispatch(

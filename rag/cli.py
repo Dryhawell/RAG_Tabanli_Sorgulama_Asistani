@@ -1298,6 +1298,42 @@ def cmd_judge_ack_purge(args: argparse.Namespace) -> int:
     return 0 if report.get("ok") else 1
 
 
+def cmd_dual_write_dlq(args: argparse.Namespace) -> int:
+    from rag.dual_write_webhook import (
+        dual_write_dlq_depth,
+        read_dual_write_dlq,
+        replay_dual_write_dlq,
+    )
+
+    path = getattr(args, "path", None)
+    if getattr(args, "replay", False):
+        report = replay_dual_write_dlq(
+            path=path,
+            limit=int(getattr(args, "limit", 5) or 5),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            force=not bool(getattr(args, "no_force", False)),
+        )
+    else:
+        rows = read_dual_write_dlq(path=path, limit=getattr(args, "limit", None))
+        report = {
+            "ok": True,
+            "depth": dual_write_dlq_depth(path=path),
+            "count": len(rows),
+            "entries": [
+                {
+                    "ts": r.get("ts"),
+                    "reason": r.get("reason"),
+                    "digest": r.get("payload_digest"),
+                    "alerts": r.get("alerts"),
+                    "planned_actions": r.get("planned_actions"),
+                }
+                for r in rows
+            ],
+        }
+    print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    return 0 if report.get("ok") else 1
+
+
 def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
     from rag.judge_alert import (
         dispatch_judge_ack_digest,
@@ -1735,6 +1771,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Silmeden before/after/removed raporu yaz",
     )
     p_jpurge.set_defaults(func=cmd_judge_ack_purge)
+
+    p_dlq = sub.add_parser(
+        "dual-write-dlq",
+        help="Dual-write Alertmanager webhook DLQ listele / replay",
+    )
+    p_dlq.add_argument(
+        "--path",
+        default=None,
+        help="DLQ JSONL yolu (varsayılan metadata/dual_write_webhook_dlq.jsonl)",
+    )
+    p_dlq.add_argument(
+        "--replay",
+        action="store_true",
+        help="Son N kaydı yeniden işle",
+    )
+    p_dlq.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        help="Liste/replay limiti (varsayılan 5)",
+    )
+    p_dlq.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Replay etmeden plan yaz",
+    )
+    p_dlq.add_argument(
+        "--no-force",
+        action="store_true",
+        help="Replay sırasında cooldown/circuit'e uy",
+    )
+    p_dlq.set_defaults(func=cmd_dual_write_dlq)
 
     p_jdig = sub.add_parser(
         "judge-ack-digest",

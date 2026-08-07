@@ -196,6 +196,73 @@ def post_apply_pr_preview_comment(
     return result
 
 
+def build_inhibit_equal_rollback_canary_payload(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Slack payload for amtool regression rollback canary."""
+    equal = (report.get("generated") or {}).get("equal") or []
+    if not isinstance(equal, list):
+        equal = [str(equal)]
+    diff = str(((report.get("diff") or {}).get("unified_diff") or "")).strip()
+    excerpt = diff[:1200] + ("…" if len(diff) > 1200 else "")
+    post = report.get("post_check") or {}
+    text = (
+        "Inhibit equal apply *rolled back* (amtool regression)\n"
+        f"equal=`{', '.join(equal) or '—'}` · backup=`{report.get('backup')}`"
+    )
+    blocks: list = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": "Inhibit equal apply rollback",
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*reason*: `{report.get('reason')}`\n"
+                    f"*equal*: `{', '.join(equal) or '—'}`\n"
+                    f"*backup*: `{report.get('backup')}`\n"
+                    f"*post_check*: `{post.get('method')}` ok=`{post.get('ok')}`"
+                ),
+            },
+        },
+    ]
+    if excerpt:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"```diff\n{excerpt}\n```"},
+            }
+        )
+    return {"text": text, "blocks": blocks}
+
+
+def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Post canary Slack webhook when apply rolled back."""
+    if not report.get("rolled_back"):
+        return {"ok": True, "skipped": True, "reason": "not_rolled_back"}
+    webhook = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", "").strip()
+    )
+    if not webhook:
+        return {"ok": True, "skipped": True, "reason": "webhook_missing"}
+    if os.environ.get("INHIBIT_EQUAL_CANARY_NOTIFY", "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return {"ok": True, "skipped": True, "reason": "disabled"}
+    from rag.judge_alert import post_slack
+
+    payload = build_inhibit_equal_rollback_canary_payload(report)
+    ok = post_slack(webhook, payload)
+    return {"ok": bool(ok), "skipped": False, "posted": bool(ok)}
+
+
 def main() -> int:
     from rag.alertmanager_ops import apply_inhibit_equal_with_gate
 
@@ -248,6 +315,7 @@ def main() -> int:
             "skipped": True,
             "reason": "rolled_back_amtool_regression",
         }
+        report["canary_notify"] = notify_inhibit_equal_rollback_canary(report)
 
     meta = ROOT / "metadata"
     meta.mkdir(parents=True, exist_ok=True)

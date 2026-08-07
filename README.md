@@ -512,6 +512,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
 - Push: VAPID OIDC / Deploy-key based secret store sync
-- Judge: digest tenant canvas deep-link + ack heatmap
-- Ingest: dual-write webhook DLQ replay CLI schedule
-- Observability: inhibit equal apply canary channel notify on rollback
+- Judge: digest ack heatmap hour zoom + tenant mute
+- Ingest: dual-write DLQ age-based drop + Slack alert
+- Observability: inhibit equal canary escalate to PagerDuty

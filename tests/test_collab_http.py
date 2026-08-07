@@ -66,6 +66,29 @@ def test_handle_judge_ack_form():
     assert b"/judge/ack" in body
     assert b"Acknowledge" in body
 
+    code2, _, body2 = handle_judge_ack_form(query={"tenant": ["acme"]})
+    assert code2 == 200
+    assert b"acme" in body2
+    assert b"tenant_id" in body2
+
+
+def test_handle_judge_ack_export_tenant(tmp_path, monkeypatch):
+    from rag.collab_http import handle_judge_ack_export
+    from rag.judge_alert import append_judge_ack_audit
+
+    path = str(tmp_path / "ack.jsonl")
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", path)
+    append_judge_ack_audit("ack", actor="a", path=path, extra={"tenant_id": "acme"})
+    append_judge_ack_audit("ack", actor="b", path=path, extra={"tenant_id": "beta"})
+    code, headers, body = handle_judge_ack_export(
+        query={"format": ["jsonl"], "tenant": ["acme"]}
+    )
+    assert code == 200
+    assert headers.get("X-Export-Tenant") == "acme"
+    assert headers.get("X-Export-Count") == "1"
+    assert b"acme" in body
+    assert b"beta" not in body
+
 
 def test_handle_judge_slack_interactive(tmp_path, monkeypatch):
     import hashlib
