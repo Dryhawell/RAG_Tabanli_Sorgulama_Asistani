@@ -64,6 +64,164 @@ def save_dual_write_webhook_state(
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
+def dual_write_webhook_dlq_path(base: Optional[str] = None) -> str:
+    env = os.environ.get("RAG_DUAL_WRITE_WEBHOOK_DLQ", "").strip()
+    if env:
+        return env
+    try:
+        from app.config import METADATA_DIR
+    except ImportError:
+        METADATA_DIR = "metadata"
+    root = base or METADATA_DIR
+    return os.path.join(root, "dual_write_webhook_dlq.jsonl")
+
+
+def enqueue_dual_write_dlq(
+    *,
+    payload: Dict[str, Any],
+    report: Dict[str, Any],
+    reason: str = "failed",
+    path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Başarısız webhook tetiklerini JSONL DLQ'ya yaz."""
+    import hashlib
+
+    out = path or dual_write_webhook_dlq_path()
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    entry = {
+        "ts": _utcnow_iso(),
+        "reason": reason,
+        "payload_digest": digest,
+        "alerts": report.get("alerts") or [],
+        "planned_actions": report.get("planned_actions") or [],
+        "results": report.get("results") or [],
+        "ok": report.get("ok"),
+        "payload": payload,
+    }
+    with open(out, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+    return {"ok": True, "path": out, "digest": digest, "reason": reason}
+
+
+def read_dual_write_dlq(
+    *,
+    path: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    p = path or dual_write_webhook_dlq_path()
+    if not os.path.isfile(p):
+        return []
+    rows: List[Dict[str, Any]] = []
+    with open(p, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+    if limit is not None:
+        rows = rows[-max(0, int(limit)) :]
+    return rows
+
+
+def dual_write_dlq_depth(*, path: Optional[str] = None) -> int:
+    return len(read_dual_write_dlq(path=path))
+
+
+def replay_dual_write_dlq(
+    *,
+    path: Optional[str] = None,
+    limit: int = 5,
+    dry_run: bool = False,
+    force: bool = True,
+    state_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """DLQ'daki son N kaydı yeniden işle (başarılı olanları bırakır)."""
+    p = path or dual_write_webhook_dlq_path()
+    rows = read_dual_write_dlq(path=p)
+    if not rows:
+        return {"ok": True, "replayed": 0, "remaining": 0, "results": []}
+    take = rows[-max(1, int(limit)) :]
+    keep = rows[: -len(take)] if len(rows) > len(take) else []
+    results: List[Dict[str, Any]] = []
+    for entry in take:
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        if dry_run:
+            results.append(
+                {
+                    "ok": True,
+                    "dry_run": True,
+                    "digest": entry.get("payload_digest"),
+                    "alerts": entry.get("alerts"),
+                }
+            )
+            continue
+        report = handle_dual_write_alertmanager_webhook(
+            payload,
+            dry_run=False,
+            force=force,
+            state_path=state_path,
+            enqueue_dlq=False,
+        )
+        results.append(
+            {
+                "ok": bool(report.get("ok")),
+                "digest": entry.get("payload_digest"),
+                "report": {
+                    k: report.get(k)
+                    for k in ("ok", "skipped", "reason", "planned_actions", "alerts")
+                },
+            }
+        )
+        if not report.get("ok"):
+            keep.append(entry)
+    if not dry_run:
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            for row in keep:
+                f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+    return {
+        "ok": all(r.get("ok") for r in results) if results else True,
+        "replayed": len(results),
+        "remaining": len(keep) if not dry_run else len(rows),
+        "results": results,
+        "path": p,
+    }
+
+
+def emit_dual_write_webhook_metric(
+    *,
+    result: str,
+    reason: Optional[str] = None,
+    actions: int = 0,
+    circuit_open: bool = False,
+    dlq_enqueued: bool = False,
+    dlq_depth: Optional[int] = None,
+) -> None:
+    try:
+        from rag.metrics import record_metric
+
+        values: Dict[str, Any] = {
+            "result": result,
+            "actions": int(actions),
+            "circuit_open": bool(circuit_open),
+            "dlq_enqueued": bool(dlq_enqueued),
+        }
+        if reason:
+            values["reason"] = reason
+        if dlq_depth is not None:
+            values["dlq_depth"] = int(dlq_depth)
+        record_metric("dual_write_webhook", values=values)
+    except Exception:
+        pass
+
+
 def webhook_cooldown_sec() -> float:
     raw = os.environ.get("RAG_DUAL_WRITE_WEBHOOK_COOLDOWN_SEC", "900").strip()
     try:
@@ -740,10 +898,14 @@ def handle_dual_write_alertmanager_webhook(
     dry_run: bool = False,
     force: bool = False,
     state_path: Optional[str] = None,
+    enqueue_dlq: bool = True,
 ) -> Dict[str, Any]:
     """Firing dual-write alert → catch-up / shadow-compare (debounce'lu)."""
     alerts = extract_firing_dual_write_alerts(payload)
     if not alerts:
+        emit_dual_write_webhook_metric(
+            result="skipped", reason="no_matching_firing_alerts"
+        )
         return {
             "ok": True,
             "skipped": True,
@@ -758,6 +920,13 @@ def handle_dual_write_alertmanager_webhook(
 
     circuit = check_webhook_circuit(state, now=now)
     if not force and circuit.get("open"):
+        emit_dual_write_webhook_metric(
+            result="skipped_circuit",
+            reason="circuit_open",
+            actions=len(actions),
+            circuit_open=True,
+            dlq_depth=dual_write_dlq_depth(),
+        )
         return {
             "ok": True,
             "skipped": True,
@@ -772,6 +941,13 @@ def handle_dual_write_alertmanager_webhook(
     cooldown = webhook_cooldown_sec()
     last = float(state.get("last_trigger_ts") or 0)
     if not force and cooldown > 0 and last and (now - last) < cooldown:
+        emit_dual_write_webhook_metric(
+            result="skipped_cooldown",
+            reason="cooldown",
+            actions=len(actions),
+            circuit_open=False,
+            dlq_depth=dual_write_dlq_depth(),
+        )
         return {
             "ok": True,
             "skipped": True,
@@ -794,6 +970,7 @@ def handle_dual_write_alertmanager_webhook(
         results.append(maybe_github_dispatch_fallback(row))
 
     ok = all(r.get("ok") or (r.get("github_fallback") or {}).get("ok") for r in results) if results else True
+    dlq_info: Optional[Dict[str, Any]] = None
     if not dry_run:
         state.update(
             {
@@ -808,8 +985,31 @@ def handle_dual_write_alertmanager_webhook(
             save_dual_write_webhook_state(state, path=st_path)
         except Exception:
             pass
+        if not ok and enqueue_dlq:
+            report_partial = {
+                "ok": ok,
+                "alerts": [a.get("alertname") for a in alerts],
+                "planned_actions": actions,
+                "results": results,
+            }
+            try:
+                dlq_info = enqueue_dual_write_dlq(
+                    payload=payload, report=report_partial, reason="action_failed"
+                )
+            except Exception as exc:
+                dlq_info = {"ok": False, "error": type(exc).__name__}
 
-    return {
+    depth = dual_write_dlq_depth()
+    emit_dual_write_webhook_metric(
+        result="ok" if ok else "failed",
+        reason=None if ok else "action_failed",
+        actions=len(actions),
+        circuit_open=bool(check_webhook_circuit(state, now=now).get("open")),
+        dlq_enqueued=bool(dlq_info and dlq_info.get("ok")),
+        dlq_depth=depth,
+    )
+
+    out = {
         "ok": ok,
         "skipped": False,
         "dry_run": dry_run,
@@ -818,7 +1018,11 @@ def handle_dual_write_alertmanager_webhook(
         "results": results,
         "last_trigger_ts": now,
         "circuit": check_webhook_circuit(state, now=now),
+        "dlq_depth": depth,
     }
+    if dlq_info is not None:
+        out["dlq"] = dlq_info
+    return out
 
 
 def handle_alertmanager_webhook_http(

@@ -39,6 +39,9 @@ _dual_write_catch_up_sources = None
 _dual_write_catch_up_chunks = None
 _dual_write_catch_up_remaining = None
 _dual_write_shadow_overlap = None
+_dual_write_webhook_total = None
+_dual_write_webhook_dlq_depth = None
+_dual_write_webhook_circuit_open = None
 
 
 def prometheus_available() -> bool:
@@ -64,6 +67,8 @@ def _ensure_metrics():
     global _dual_write_catch_up_sources, _dual_write_catch_up_chunks
     global _dual_write_catch_up_remaining
     global _dual_write_shadow_overlap
+    global _dual_write_webhook_total, _dual_write_webhook_dlq_depth
+    global _dual_write_webhook_circuit_open
     if _events_total is not None:
         return
     if not prometheus_available():
@@ -164,6 +169,19 @@ def _ensure_metrics():
         "rag_vector_dual_write_shadow_overlap",
         "Dual-write shadow-read mean overlap",
         ["secondary_backend"],
+    )
+    _dual_write_webhook_total = Counter(
+        "rag_dual_write_webhook_total",
+        "Alertmanager dual-write webhook sonuçları",
+        ["result"],
+    )
+    _dual_write_webhook_dlq_depth = Gauge(
+        "rag_dual_write_webhook_dlq_depth",
+        "Dual-write webhook dead-letter queue derinliği",
+    )
+    _dual_write_webhook_circuit_open = Gauge(
+        "rag_dual_write_webhook_circuit_open",
+        "Dual-write webhook circuit breaker açık mı (1/0)",
     )
 
 
@@ -332,6 +350,23 @@ def observe_metric(
                     float(vals.get("mean_overlap") or 0)
                 )
             except (TypeError, ValueError):
+                pass
+        elif kind == "dual_write_webhook":
+            assert _dual_write_webhook_total is not None
+            assert _dual_write_webhook_dlq_depth is not None
+            assert _dual_write_webhook_circuit_open is not None
+            result = str(vals.get("result") or "unknown")
+            _dual_write_webhook_total.labels(result=result).inc()
+            if "dlq_depth" in vals:
+                try:
+                    _dual_write_webhook_dlq_depth.set(float(vals.get("dlq_depth") or 0))
+                except (TypeError, ValueError):
+                    pass
+            try:
+                _dual_write_webhook_circuit_open.set(
+                    1.0 if vals.get("circuit_open") else 0.0
+                )
+            except Exception:
                 pass
 
 

@@ -107,7 +107,42 @@ def test_apply_inhibit_equal_writes_when_gate_ok(tmp_path: Path) -> None:
             )
     assert report["ok"] is True
     assert report["applied"] is True
+    assert report.get("rolled_back") is False
     assert "source_matchers:" in out.read_text(encoding="utf-8")
+    assert Path(report["backup"]).is_file()
+
+
+def test_apply_inhibit_equal_rollback_on_amtool_regression(tmp_path: Path) -> None:
+    out = tmp_path / "inhibit.yml"
+    previous = "inhibit_rules: []\n"
+    out.write_text(previous, encoding="utf-8")
+    checks = iter(
+        [
+            {"ok": True, "method": "amtool"},
+            {"ok": False, "method": "amtool", "error": "bad config"},
+        ]
+    )
+    with patch(
+        "rag.alertmanager_ops.check_alertmanager_config",
+        side_effect=lambda *a, **k: next(checks),
+    ):
+        with patch(
+            "rag.alertmanager_ops.render_alertmanager_config",
+            return_value={"ok": True, "output": str(tmp_path / "am.yml")},
+        ):
+            report = apply_inhibit_equal_with_gate(
+                output=str(out),
+                from_live=False,
+                dry_run=False,
+                rollback_on_regression=True,
+                backup_path=str(tmp_path / "bak.yml"),
+            )
+    assert report["ok"] is False
+    assert report["applied"] is False
+    assert report["rolled_back"] is True
+    assert report["reason"] == "amtool_regression"
+    assert out.read_text(encoding="utf-8") == previous
+    assert (tmp_path / "bak.yml").read_text(encoding="utf-8") == previous
 
 
 def test_resolve_dry_run_auto(monkeypatch) -> None:

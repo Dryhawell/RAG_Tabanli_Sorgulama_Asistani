@@ -88,6 +88,18 @@ def test_prometheus_observe_and_dump(monkeypatch):
         },
         enabled=True,
     )
+    observe_metric(
+        "dual_write_webhook",
+        values={
+            "result": "failed",
+            "reason": "action_failed",
+            "actions": 1,
+            "circuit_open": True,
+            "dlq_enqueued": True,
+            "dlq_depth": 3,
+        },
+        enabled=True,
+    )
     body = render_prometheus().decode("utf-8")
     assert "rag_queries_total" in body
     assert "rag_ingest_total" in body
@@ -102,6 +114,9 @@ def test_prometheus_observe_and_dump(monkeypatch):
     assert "rag_vector_dual_write_catch_up_chunks_total" in body
     assert "rag_vector_dual_write_catch_up_remaining" in body
     assert "rag_vector_dual_write_shadow_overlap" in body
+    assert "rag_dual_write_webhook_total" in body
+    assert "rag_dual_write_webhook_dlq_depth" in body
+    assert "rag_dual_write_webhook_circuit_open" in body
 
 
 def test_record_metric_forwards_to_prometheus(tmp_path, monkeypatch):

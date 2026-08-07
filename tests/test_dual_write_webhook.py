@@ -80,6 +80,65 @@ def test_webhook_dry_run_and_cooldown(tmp_path: Path, monkeypatch) -> None:
     assert forced["skipped"] is False
 
 
+def test_dual_write_webhook_dlq_and_metrics(tmp_path: Path, monkeypatch) -> None:
+    from unittest.mock import patch
+
+    from rag.dual_write_webhook import (
+        dual_write_dlq_depth,
+        handle_dual_write_alertmanager_webhook,
+        read_dual_write_dlq,
+        replay_dual_write_dlq,
+    )
+
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("RAG_DUAL_WRITE_GH_DISPATCH", "0")
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_DLQ", str(tmp_path / "dlq.jsonl"))
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_CB_FAILURES", "99")
+    monkeypatch.setattr("rag.metrics.ENABLE_METRICS", True)
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setenv("RAG_METRICS_PATH", str(metrics_path))
+
+    payload = {
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {
+                    "alertname": "RagDualWriteLagHigh",
+                    "service": "rag-ingest",
+                },
+            }
+        ],
+    }
+    with patch(
+        "rag.dual_write_webhook.run_dual_write_catch_up",
+        return_value={"ok": False, "action": "catch_up", "error": "boom"},
+    ):
+        with patch(
+            "rag.dual_write_webhook.emit_dual_write_webhook_metric"
+        ) as emit:
+            report = handle_dual_write_alertmanager_webhook(
+                payload, force=True, state_path=str(tmp_path / "st.json")
+            )
+    assert report["ok"] is False
+    assert report["dlq"]["ok"] is True
+    assert dual_write_dlq_depth() == 1
+    rows = read_dual_write_dlq()
+    assert rows[0]["reason"] == "action_failed"
+    assert emit.called
+
+    with patch(
+        "rag.dual_write_webhook.run_dual_write_catch_up",
+        return_value={"ok": True, "action": "catch_up"},
+    ):
+        replayed = replay_dual_write_dlq(
+            limit=5, force=True, state_path=str(tmp_path / "st2.json")
+        )
+    assert replayed["ok"] is True
+    assert replayed["replayed"] == 1
+    assert dual_write_dlq_depth() == 0
+
+
 def test_webhook_circuit_breaker_and_rate_limit_headers(
     tmp_path: Path, monkeypatch
 ) -> None:

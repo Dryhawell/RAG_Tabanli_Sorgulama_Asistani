@@ -235,13 +235,19 @@ def main() -> int:
         dry_run=dry,
     )
     report["green_gate"] = green
-    if report.get("applied") and not dry:
+    if report.get("applied") and not dry and not report.get("rolled_back"):
         equal = (report.get("generated") or {}).get("equal") or []
         msg = (
             "chore(alertmanager): auto-apply inhibit equal labels "
             f"[{', '.join(equal)}]"
         )
         report["git"] = maybe_commit_and_push(out_path, message=msg)
+    elif report.get("rolled_back"):
+        report["git"] = {
+            "ok": True,
+            "skipped": True,
+            "reason": "rolled_back_amtool_regression",
+        }
 
     meta = ROOT / "metadata"
     meta.mkdir(parents=True, exist_ok=True)

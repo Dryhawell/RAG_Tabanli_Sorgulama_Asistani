@@ -378,6 +378,7 @@ def test_judge_ack_digest_workflow_yaml():
     assert "RAG_JUDGE_ACK_DIGEST_QUIET_HOURS_JSON" in text
     assert "RAG_JUDGE_ACK_AUDIT_RETENTION_DAYS" in text
     assert "RAG_JUDGE_ACK_AUDIT_PRUNE" in text
+    assert "judge_ack_digest_last.json" in text
     assert "schedule:" in text
     assert "0 9 * * 1" in text
     assert "workflow_dispatch" in text

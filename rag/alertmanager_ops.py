@@ -686,9 +686,12 @@ def apply_inhibit_equal_with_gate(
     render_output: Optional[str] = None,
     require_amtool: bool = False,
     dry_run: bool = False,
+    rollback_on_regression: Optional[bool] = None,
+    backup_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Equal tune → inhibit üret → diff → render+check-config gate → opsiyonel yaz.
+    Yazımdan sonra yeniden amtool; regresyonda önceki YAML'a rollback.
     """
     out = output or str(ROOT / "grafana" / "inhibit_rules.generated.yml")
     candidate = str(ROOT / "metadata" / "inhibit_rules.apply.yml")
@@ -710,6 +713,7 @@ def apply_inhibit_equal_with_gate(
         "dry_run": dry_run,
         "output": out,
         "candidate": candidate,
+        "rolled_back": False,
     }
     if not diff.get("changed"):
         result["reason"] = "unchanged"
@@ -754,8 +758,59 @@ def apply_inhibit_equal_with_gate(
         result["reason"] = "dry_run_changed"
         return result
 
+    do_rollback = rollback_on_regression
+    if do_rollback is None:
+        do_rollback = os.environ.get("INHIBIT_EQUAL_ROLLBACK", "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+
+    previous = Path(out).read_text(encoding="utf-8") if Path(out).is_file() else ""
+    bak = backup_path or os.environ.get("INHIBIT_EQUAL_BACKUP_PATH", "").strip()
+    if not bak:
+        bak = str(ROOT / "metadata" / "inhibit_rules.generated.yml.bak")
+    Path(bak).parent.mkdir(parents=True, exist_ok=True)
+    Path(bak).write_text(previous, encoding="utf-8")
+    result["backup"] = bak
+
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_text(new_text, encoding="utf-8")
+
+    # Post-apply regression gate against the written file
+    post_rendered = str(ROOT / "metadata" / "alertmanager.apply.post.yml")
+    post_render = render_alertmanager_config(
+        output=post_rendered,
+        inhibit_path=out,
+        slack_webhook=os.environ.get(
+            "RAG_ALERTMANAGER_SLACK_WEBHOOK",
+            "https://hooks.slack.com/services/T/B/APPLY",
+        ),
+        webhook_url=os.environ.get(
+            "RAG_ALERTMANAGER_WEBHOOK_URL",
+            "http://127.0.0.1/hook",
+        ),
+    )
+    post_check = check_alertmanager_config(post_rendered)
+    result["post_render"] = {
+        "ok": post_render.get("ok"),
+        "output": post_render.get("output"),
+        "error": post_render.get("stderr") or post_render.get("error"),
+    }
+    result["post_check"] = post_check
+
+    regress = (not post_render.get("ok")) or (not post_check.get("ok"))
+    if require_amtool and post_check.get("method") == "structural":
+        regress = True
+    if regress and do_rollback:
+        Path(out).write_text(previous, encoding="utf-8")
+        result["ok"] = False
+        result["applied"] = False
+        result["rolled_back"] = True
+        result["reason"] = "amtool_regression"
+        return result
+
     result["applied"] = True
     result["reason"] = "applied"
     return result

@@ -46,13 +46,19 @@ def test_summarize_filters_by_tenant(tmp_path: Path) -> None:
 def test_dispatch_judge_ack_digest_dry_run(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("RAG_JUDGE_SLACK_INTERACTIVE", "1")
     monkeypatch.setenv("RAG_JUDGE_ACK_PUBLIC_URL", "http://example.test/judge/ack-form")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_DIFF", "1")
+    monkeypatch.setenv(
+        "RAG_JUDGE_ACK_DIGEST_SNAPSHOT", str(tmp_path / "digest_last.json")
+    )
     path = str(tmp_path / "ack.jsonl")
     append_judge_ack_audit("ack", actor="alice", path=path)
     summary = summarize_judge_ack_audit(path=path, since_hours=24 * 365)
-    result = dispatch_judge_ack_digest(summary, dry_run=True)
+    result = dispatch_judge_ack_digest(summary, dry_run=True, base=str(tmp_path))
     assert result["ok"] is True
     assert result["dry_run"] is True
     assert "Total events" in result["payload"]["text"]
+    assert "vs last digest" in result["payload"]["text"]
+    assert result["diff"] is not None
     assert result["block_kit"] is True
     assert isinstance(result["payload"].get("blocks"), list)
     assert result["payload"]["blocks"][0]["type"] == "header"
@@ -65,6 +71,43 @@ def test_dispatch_judge_ack_digest_dry_run(tmp_path: Path, monkeypatch) -> None:
     assert "judge_ack_digest_reexport_csv" in ids
     assert "judge_ack_digest_open" in ids
     assert "judge_ack_interactive" in ids
+
+
+def test_digest_diff_snapshot_delta(tmp_path: Path, monkeypatch) -> None:
+    from rag.judge_alert import (
+        diff_judge_ack_digest,
+        save_judge_ack_digest_snapshot,
+        build_judge_ack_digest_slack_blocks,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_DIFF", "1")
+    path = str(tmp_path / "ack.jsonl")
+    append_judge_ack_audit("ack", actor="alice", path=path)
+    prev = summarize_judge_ack_audit(path=path, since_hours=24 * 365)
+    save_judge_ack_digest_snapshot(prev, base=str(tmp_path))
+    append_judge_ack_audit("unack", actor="bob", path=path)
+    append_judge_ack_audit("ack", actor="carol", path=path)
+    curr = summarize_judge_ack_audit(path=path, since_hours=24 * 365)
+    from rag.judge_alert import load_judge_ack_digest_snapshot
+
+    loaded = load_judge_ack_digest_snapshot(base=str(tmp_path))
+    diff = diff_judge_ack_digest(loaded, curr)
+    assert diff["has_previous"] is True
+    assert diff["delta_total"] == 2
+    assert "unack" in diff["new_events"] or diff["by_event_delta"].get("unack", 0) > 0
+    assert "bob" in diff["actors_added"] or "carol" in diff["actors_added"]
+    blocks = build_judge_ack_digest_slack_blocks(curr, diff=diff)
+    texts = " ".join(
+        str((b.get("text") or {}).get("text") or "") for b in blocks if b.get("type") == "section"
+    )
+    assert "vs last digest" in texts
+    assert "Δ total" in texts or "delta" in texts.lower() or "+" in texts
+
+    result = dispatch_judge_ack_digest(
+        curr, dry_run=True, base=str(tmp_path), include_diff=True
+    )
+    assert result["diff"]["delta_total"] == 2
+    assert "vs last digest" in result["payload"]["text"]
 
 
 def test_digest_reexport_interactive_action(tmp_path: Path, monkeypatch) -> None:

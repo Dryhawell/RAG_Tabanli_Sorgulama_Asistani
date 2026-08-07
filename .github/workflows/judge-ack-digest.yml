@@ -82,4 +82,5 @@ jobs:
           path: |
             metadata/judge_ack_digest.json
             metadata/judge_ack_audit.jsonl
+            metadata/judge_ack_digest_last.json
           if-no-files-found: ignore

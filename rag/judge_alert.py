@@ -358,6 +358,146 @@ def summarize_judge_ack_audit(
     }
 
 
+def judge_ack_digest_snapshot_path(
+    *,
+    tenant_id: Optional[str] = None,
+    base: Optional[str] = None,
+) -> str:
+    """Son digest özeti snapshot yolu (digest-diff için)."""
+    env = os.environ.get("RAG_JUDGE_ACK_DIGEST_SNAPSHOT", "").strip()
+    if env and not tenant_id:
+        return env
+    try:
+        from app.config import METADATA_DIR
+    except ImportError:
+        METADATA_DIR = "metadata"
+    root = base or METADATA_DIR
+    tid = (tenant_id or "").strip()
+    if tid:
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in tid)[:64]
+        return os.path.join(root, f"judge_ack_digest_last_{safe}.json")
+    return os.path.join(root, "judge_ack_digest_last.json")
+
+
+def load_judge_ack_digest_snapshot(
+    *,
+    path: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+    base: Optional[str] = None,
+) -> Dict[str, Any]:
+    p = path or judge_ack_digest_snapshot_path(tenant_id=tenant_id, base=base)
+    if not os.path.isfile(p):
+        return {}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_judge_ack_digest_snapshot(
+    summary: Dict[str, Any],
+    *,
+    path: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+    base: Optional[str] = None,
+    diff: Optional[Dict[str, Any]] = None,
+) -> str:
+    p = path or judge_ack_digest_snapshot_path(tenant_id=tenant_id, base=base)
+    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+    payload = {
+        "saved_at": _utcnow_iso(),
+        "tenant_id": (tenant_id or summary.get("tenant_id") or None),
+        "summary": {
+            "total": summary.get("total"),
+            "since_hours": summary.get("since_hours"),
+            "by_event": summary.get("by_event") or {},
+            "by_tenant": summary.get("by_tenant") or {},
+            "actors": summary.get("actors") or [],
+            "actor_count": summary.get("actor_count"),
+            "last_by_event": summary.get("last_by_event") or {},
+        },
+    }
+    if diff is not None:
+        payload["last_diff"] = diff
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return p
+
+
+def diff_judge_ack_digest(
+    prev: Optional[Dict[str, Any]],
+    curr: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Önceki digest özeti ile güncel özet arasındaki delta."""
+    prev_sum = prev or {}
+    if "summary" in prev_sum and isinstance(prev_sum.get("summary"), dict):
+        prev_sum = prev_sum["summary"]
+    pe = prev_sum.get("by_event") or {}
+    ce = curr.get("by_event") or {}
+    if not isinstance(pe, dict):
+        pe = {}
+    if not isinstance(ce, dict):
+        ce = {}
+    keys = set(pe) | set(ce)
+    by_event_delta = {
+        k: int(ce.get(k, 0) or 0) - int(pe.get(k, 0) or 0) for k in sorted(keys)
+    }
+    prev_actors = set(prev_sum.get("actors") or [])
+    curr_actors = set(curr.get("actors") or [])
+    has_prev = bool(prev_sum.get("total") is not None or pe or prev_actors)
+    return {
+        "ok": True,
+        "has_previous": has_prev,
+        "delta_total": int(curr.get("total") or 0) - int(prev_sum.get("total") or 0),
+        "prev_total": int(prev_sum.get("total") or 0) if has_prev else None,
+        "curr_total": int(curr.get("total") or 0),
+        "new_events": sorted(k for k in ce if k not in pe),
+        "removed_events": sorted(k for k in pe if k not in ce),
+        "by_event_delta": by_event_delta,
+        "actors_added": sorted(curr_actors - prev_actors),
+        "actors_removed": sorted(prev_actors - curr_actors),
+    }
+
+
+def format_judge_ack_digest_diff_text(diff: Optional[Dict[str, Any]]) -> str:
+    """Slack mrkdwn: vs last digest canvas-style özet."""
+    if not diff or not diff.get("has_previous"):
+        return "*vs last digest*\n_No previous snapshot — baseline recorded._"
+    delta = int(diff.get("delta_total") or 0)
+    sign = f"+{delta}" if delta > 0 else str(delta)
+    lines = [
+        "*vs last digest* (scheduled digest-diff)",
+        f"Δ total: *{sign}* · prev `{diff.get('prev_total')}` → curr `{diff.get('curr_total')}`",
+    ]
+    by_delta = diff.get("by_event_delta") or {}
+    nonzero = {k: v for k, v in by_delta.items() if v}
+    if nonzero:
+        parts = [
+            f"`{k}`={'+' if v > 0 else ''}{v}" for k, v in sorted(nonzero.items())
+        ]
+        lines.append("Δ by event: " + " · ".join(parts[:12]))
+    added = diff.get("new_events") or []
+    removed = diff.get("removed_events") or []
+    if added:
+        lines.append("New events: " + ", ".join(f"`{e}`" for e in added[:8]))
+    if removed:
+        lines.append("Removed events: " + ", ".join(f"`{e}`" for e in removed[:8]))
+    actors_added = diff.get("actors_added") or []
+    actors_removed = diff.get("actors_removed") or []
+    if actors_added:
+        lines.append("Actors +: " + ", ".join(f"`{a}`" for a in actors_added[:10]))
+    if actors_removed:
+        lines.append("Actors −: " + ", ".join(f"`{a}`" for a in actors_removed[:10]))
+    return "\n".join(lines)
+
+
+def digest_diff_enabled() -> bool:
+    raw = os.environ.get("RAG_JUDGE_ACK_DIGEST_DIFF", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 def parse_judge_ack_digest_webhooks(
     spec: Optional[str] = None,
     *,
@@ -484,8 +624,9 @@ def build_judge_ack_digest_slack_blocks(
     summary: Dict[str, Any],
     *,
     tenant_id: Optional[str] = None,
+    diff: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """Haftalık ack digest için Slack Block Kit."""
+    """Haftalık ack digest için Slack Block Kit (+ opsiyonel digest-diff canvas)."""
     tid = (tenant_id or summary.get("tenant_id") or "").strip() or None
     title = "RAG judge ack audit digest"
     if tid:
@@ -499,6 +640,17 @@ def build_judge_ack_digest_slack_blocks(
         {"type": "header", "text": {"type": "plain_text", "text": "Judge ack digest"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": header}},
     ]
+    if diff is not None:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": format_judge_ack_digest_diff_text(diff),
+                },
+            }
+        )
+        blocks.append({"type": "divider"})
     by_event = summary.get("by_event") or {}
     if by_event:
         parts = [f"`{k}` = *{v}*" for k, v in sorted(by_event.items())]
@@ -639,6 +791,7 @@ def build_judge_ack_digest_text(
     summary: Dict[str, Any],
     *,
     tenant_id: Optional[str] = None,
+    diff: Optional[Dict[str, Any]] = None,
 ) -> str:
     tid = (tenant_id or summary.get("tenant_id") or "").strip() or None
     title = "*RAG judge ack audit digest*"
@@ -648,6 +801,8 @@ def build_judge_ack_digest_text(
         f"{title} (last {summary.get('since_hours')}h)",
         f"Total events: *{summary.get('total', 0)}* · actors: *{summary.get('actor_count', 0)}*",
     ]
+    if diff is not None:
+        lines.append(format_judge_ack_digest_diff_text(diff))
     by_event = summary.get("by_event") or {}
     if by_event:
         parts = [f"`{k}`={v}" for k, v in sorted(by_event.items())]
@@ -689,8 +844,9 @@ def dispatch_judge_ack_digest(
     timezone_name: Optional[str] = None,
     base: Optional[str] = None,
     block_kit: Optional[bool] = None,
+    include_diff: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Haftalık ack audit özetini Slack webhook'a gönder (Block Kit + quiet hours)."""
+    """Haftalık ack audit özetini Slack webhook'a gönder (Block Kit + quiet hours + digest-diff)."""
     tid = (tenant_id or summary.get("tenant_id") or "").strip() or None
     if not ignore_quiet_hours:
         try:
@@ -730,8 +886,15 @@ def dispatch_judge_ack_digest(
         except Exception:
             pass
 
+    use_diff = digest_diff_enabled() if include_diff is None else bool(include_diff)
+    diff: Optional[Dict[str, Any]] = None
+    snapshot_path = None
+    if use_diff:
+        prev = load_judge_ack_digest_snapshot(tenant_id=tid, base=base)
+        diff = diff_judge_ack_digest(prev, summary)
+
     url = resolve_judge_ack_digest_webhook(tid, url=webhook, base=base)
-    text = build_judge_ack_digest_text(summary, tenant_id=tid)
+    text = build_judge_ack_digest_text(summary, tenant_id=tid, diff=diff)
     use_blocks = block_kit
     if use_blocks is None:
         try:
@@ -743,9 +906,18 @@ def dispatch_judge_ack_digest(
     payload: Dict[str, Any] = {"text": text}
     if use_blocks:
         payload["blocks"] = build_judge_ack_digest_slack_blocks(
-            summary, tenant_id=tid
+            summary, tenant_id=tid, diff=diff
         )
     if dry_run or not url:
+        if use_diff and not dry_run:
+            # no webhook but still baseline? skip persist on dry_run only
+            pass
+        if use_diff and dry_run:
+            snapshot_path = save_judge_ack_digest_snapshot(
+                summary, tenant_id=tid, base=base, diff=diff
+            ) if os.environ.get("RAG_JUDGE_ACK_DIGEST_SNAPSHOT_ON_DRY_RUN", "").strip().lower() in {
+                "1", "true", "yes", "on"
+            } else None
         return {
             "ok": True,
             "dry_run": True,
@@ -754,8 +926,14 @@ def dispatch_judge_ack_digest(
             "configured": bool(url),
             "tenant_id": tid,
             "block_kit": bool(use_blocks),
+            "diff": diff,
+            "snapshot_path": snapshot_path,
         }
     ok = post_slack(url, payload)
+    if ok and use_diff:
+        snapshot_path = save_judge_ack_digest_snapshot(
+            summary, tenant_id=tid, base=base, diff=diff
+        )
     return {
         "ok": ok,
         "dry_run": False,
@@ -763,6 +941,8 @@ def dispatch_judge_ack_digest(
         "payload": payload,
         "tenant_id": tid,
         "block_kit": bool(use_blocks),
+        "diff": diff,
+        "snapshot_path": snapshot_path,
     }
 
 
