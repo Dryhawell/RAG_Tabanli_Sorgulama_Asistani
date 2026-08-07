@@ -1,0 +1,273 @@
+name: CI
+
+on:
+  push:
+    branches: [main, rag_assitant_roadmap_talha]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_slow_eval:
+        description: "Gerçek embedding ile slow eval çalıştır"
+        required: false
+        default: "false"
+        type: boolean
+      run_judge_llm:
+        description: "LLM-as-judge gate (OpenAI/Ollama secrets gerekir)"
+        required: false
+        default: "false"
+        type: boolean
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Fast tests
+        run: pytest -q -m "not slow"
+      - name: Alertmanager check-config
+        run: |
+          mkdir -p metadata
+          python -m rag.cli alertmanager --generate-inhibit \
+            --output metadata/inhibit_rules.ci.yml
+          python -m rag.cli alertmanager --render \
+            --output metadata/alertmanager.ci.yml \
+            --inhibit metadata/inhibit_rules.ci.yml \
+            --slack-webhook 'https://hooks.slack.com/services/T/B/CI' \
+            --webhook-url 'http://127.0.0.1/hook'
+          # ingest webhook placeholder (same as default for structural check)
+          python -m rag.cli alertmanager --check-config --output metadata/alertmanager.ci.yml
+          # merged artifact must carry inhibit_rules when generator produced matchers
+          if grep -q 'source_matchers:' metadata/inhibit_rules.ci.yml; then
+            grep -q 'inhibit_rules:' metadata/alertmanager.ci.yml
+          fi
+          # equal-tune dry-run (static Grafana labels; no live AM in CI)
+          python -m rag.cli alertmanager --tune-equal \
+            | tee metadata/inhibit_equal_tune.json
+      - name: Inhibit equal tune PR comment
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INHIBIT_EQUAL_PR_COMMENT_POST: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+        run: python scripts/ci_inhibit_equal_pr_comment.py || true
+      - name: Inhibit equal diff gate (dry-run + PR preview)
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INHIBIT_EQUAL_APPLY: "dry-run"
+          INHIBIT_EQUAL_GIT_COMMIT: "0"
+          INHIBIT_EQUAL_APPLY_PR_COMMENT_POST: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+        run: python scripts/ci_inhibit_equal_apply.py || true
+      - name: Upload Alertmanager artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alertmanager-inhibit-${{ github.run_id }}
+          path: |
+            metadata/inhibit_equal_tune.json
+            metadata/inhibit_equal_pr_comment.md
+            metadata/inhibit_equal_apply.json
+            metadata/inhibit_equal.diff
+            metadata/inhibit_equal_apply_pr_comment.md
+            metadata/inhibit_rules.ci.yml
+            metadata/alertmanager.ci.yml
+          if-no-files-found: ignore
+      - name: Judge gate (heuristic)
+        env:
+          RAG_JUDGE_MODE: heuristic
+          RAG_JUDGE_MIN_ACCURACY: "1.0"
+          RAG_JUDGE_OUTPUT: metadata/judge_report.json
+          RAG_JUDGE_METRICS_PATH: metadata/metrics.jsonl
+        run: python scripts/ci_judge.py
+      - name: Restore judge alert state
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: metadata/judge_alert_state.json
+          key: judge-alert-state-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            judge-alert-state-${{ github.ref_name }}-
+      - name: Judge soft-fail Slack alert
+        if: always()
+        env:
+          RAG_JUDGE_OUTPUT: metadata/judge_report.json
+          RAG_JUDGE_METRICS_PATH: metadata/metrics.jsonl
+          RAG_JUDGE_ALERT_STATE: metadata/judge_alert_state.json
+          RAG_JUDGE_SOFT_FAIL: ${{ vars.RAG_JUDGE_SOFT_FAIL || '0' }}
+          RAG_JUDGE_SLACK_WEBHOOK: ${{ secrets.RAG_JUDGE_SLACK_WEBHOOK }}
+          RAG_JUDGE_PAGERDUTY_ROUTING_KEY: ${{ secrets.RAG_JUDGE_PAGERDUTY_ROUTING_KEY }}
+          RAG_JUDGE_OPSGENIE_API_KEY: ${{ secrets.RAG_JUDGE_OPSGENIE_API_KEY }}
+        run: python scripts/ci_judge_slack_alert.py
+      - name: Upload judge report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-report-${{ github.run_id }}
+          path: |
+            metadata/judge_report.json
+            metadata/metrics.jsonl
+            metadata/judge_alert_state.json
+          if-no-files-found: ignore
+      - name: LoRA rollback PR status artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LORA_PR_STATUS_POST: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+          LORA_PR_COMMENT_POST: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+          LORA_PR_STATUS_FAIL_ON_ROLLBACK: "0"
+        run: |
+          python scripts/ci_lora_rollback.py || true
+          python scripts/ci_lora_pr_status.py
+      - name: Upload LoRA PR status
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lora-pr-status-${{ github.run_id }}
+          path: |
+            metadata/lora_rollback.json
+            metadata/lora_pr_status.json
+            metadata/lora_pr_comment.md
+          if-no-files-found: ignore
+      - name: Embed pairs smoke
+        run: |
+          python -m rag.cli embed-pipeline --pairs-only \
+            --pairs metadata/embed_pairs.jsonl \
+            --report metadata/embed_pipeline_report.json
+
+  slow-eval:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_slow_eval }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Slow embedding regression
+        env:
+          RUN_SLOW_EVAL: "1"
+          RAG_LORA_DP_EVAL_MIN_ACCURACY: "0.8"
+          RAG_LORA_DP_EVAL_MIN_DELTA: "0.0"
+        run: |
+          pytest -q -m slow
+          python -m rag.cli eval --embedding mini-en --min-accuracy 0.8
+
+  judge-llm:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_judge_llm }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Judge gate (llm)
+        env:
+          RAG_JUDGE_MODE: llm
+          RAG_JUDGE_PROVIDER: ${{ vars.RAG_JUDGE_PROVIDER || 'openai' }}
+          RAG_JUDGE_MODEL: ${{ vars.RAG_JUDGE_MODEL || 'gpt-4o-mini' }}
+          RAG_JUDGE_MIN_ACCURACY: ${{ vars.RAG_JUDGE_MIN_ACCURACY || '1.0' }}
+          RAG_JUDGE_SOFT_FAIL: ${{ vars.RAG_JUDGE_SOFT_FAIL || '1' }}
+          RAG_JUDGE_OUTPUT: metadata/judge_report_llm.json
+          RAG_JUDGE_METRICS_PATH: metadata/metrics.jsonl
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OLLAMA_HOST: ${{ secrets.OLLAMA_HOST }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ] && [ -z "$OLLAMA_HOST" ]; then
+            echo "OPENAI_API_KEY veya OLLAMA_HOST secret gerekli — atlanıyor"
+            exit 0
+          fi
+          python scripts/ci_judge.py
+      - name: Restore judge alert state (llm)
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: metadata/judge_alert_state.json
+          key: judge-alert-state-llm-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            judge-alert-state-llm-${{ github.ref_name }}-
+            judge-alert-state-${{ github.ref_name }}-
+      - name: Judge soft-fail Slack alert (llm)
+        if: always()
+        env:
+          RAG_JUDGE_OUTPUT: metadata/judge_report_llm.json
+          RAG_JUDGE_METRICS_PATH: metadata/metrics.jsonl
+          RAG_JUDGE_ALERT_STATE: metadata/judge_alert_state.json
+          RAG_JUDGE_SOFT_FAIL: ${{ vars.RAG_JUDGE_SOFT_FAIL || '1' }}
+          RAG_JUDGE_SLACK_WEBHOOK: ${{ secrets.RAG_JUDGE_SLACK_WEBHOOK }}
+          RAG_JUDGE_PAGERDUTY_ROUTING_KEY: ${{ secrets.RAG_JUDGE_PAGERDUTY_ROUTING_KEY }}
+          RAG_JUDGE_OPSGENIE_API_KEY: ${{ secrets.RAG_JUDGE_OPSGENIE_API_KEY }}
+        run: python scripts/ci_judge_slack_alert.py
+      - name: Upload LLM judge report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-report-llm-${{ github.run_id }}
+          path: |
+            metadata/judge_report_llm.json
+            metadata/metrics.jsonl
+            metadata/judge_alert_state.json
+          if-no-files-found: ignore
+
+  inhibit-equal-apply:
+    name: Inhibit equal auto-apply (main)
+    needs: [test]
+    if: >
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      needs.test.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Apply inhibit equal (gate + commit)
+        env:
+          INHIBIT_EQUAL_APPLY: "1"
+          INHIBIT_EQUAL_GIT_COMMIT: "1"
+          INHIBIT_EQUAL_APPLY_REQUIRE_GREEN: "1"
+          CI_TEST_RESULT: ${{ needs.test.result }}
+          ALERTMANAGER_URL: ${{ secrets.ALERTMANAGER_URL }}
+          RAG_ALERTMANAGER_URL: ${{ secrets.ALERTMANAGER_URL }}
+          RAG_ALERTMANAGER_SLACK_WEBHOOK: ${{ secrets.RAG_ALERTMANAGER_SLACK_WEBHOOK }}
+          RAG_ALERTMANAGER_WEBHOOK_URL: ${{ secrets.RAG_ALERTMANAGER_WEBHOOK_URL }}
+        run: python scripts/ci_inhibit_equal_apply.py
+      - name: Upload apply artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inhibit-equal-apply-${{ github.run_id }}
+          path: |
+            metadata/inhibit_equal_apply.json
+            metadata/inhibit_equal.diff
+            grafana/inhibit_rules.generated.yml
+          if-no-files-found: ignore

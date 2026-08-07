@@ -1,0 +1,884 @@
+"""Alertmanager webhook → dual-write catch-up / shadow-compare auto-trigger."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+
+
+CATCHUP_ALERTNAMES: Set[str] = {
+    "RagDualWriteLagShadowBurn",
+    "RagDualWriteLagHigh",
+    "RagDualWriteShadowOverlapLow",
+}
+
+WEBHOOK_SIG_VERSION = "v0"
+
+# alertname → actions
+_ALERT_ACTIONS = {
+    "RagDualWriteLagShadowBurn": ("catch_up", "shadow_compare"),
+    "RagDualWriteLagHigh": ("catch_up",),
+    "RagDualWriteShadowOverlapLow": ("shadow_compare",),
+}
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def dual_write_webhook_state_path(base: Optional[str] = None) -> str:
+    env = os.environ.get("RAG_DUAL_WRITE_WEBHOOK_STATE", "").strip()
+    if env:
+        return env
+    try:
+        from app.config import METADATA_DIR
+    except ImportError:
+        METADATA_DIR = "metadata"
+    root = base or METADATA_DIR
+    return os.path.join(root, "dual_write_webhook_state.json")
+
+
+def load_dual_write_webhook_state(path: Optional[str] = None) -> Dict[str, Any]:
+    p = path or dual_write_webhook_state_path()
+    if not os.path.isfile(p):
+        return {}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_dual_write_webhook_state(
+    state: Dict[str, Any], *, path: Optional[str] = None
+) -> None:
+    p = path or dual_write_webhook_state_path()
+    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def webhook_cooldown_sec() -> float:
+    raw = os.environ.get("RAG_DUAL_WRITE_WEBHOOK_COOLDOWN_SEC", "900").strip()
+    try:
+        return max(0.0, float(raw or 900))
+    except Exception:
+        return 900.0
+
+
+def webhook_circuit_failure_threshold() -> int:
+    raw = os.environ.get("RAG_DUAL_WRITE_WEBHOOK_CB_FAILURES", "3").strip()
+    try:
+        return max(1, int(raw or 3))
+    except Exception:
+        return 3
+
+
+def webhook_circuit_open_sec() -> float:
+    raw = os.environ.get("RAG_DUAL_WRITE_WEBHOOK_CB_OPEN_SEC", "1800").strip()
+    try:
+        return max(0.0, float(raw or 1800))
+    except Exception:
+        return 1800.0
+
+
+def webhook_strict_rate_limit() -> bool:
+    return os.environ.get("RAG_DUAL_WRITE_WEBHOOK_STRICT_RL", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def check_webhook_circuit(
+    state: Dict[str, Any],
+    *,
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Circuit breaker: açıkken trigger atlanır."""
+    now_f = float(now if now is not None else time.time())
+    open_until = float(state.get("circuit_open_until") or 0)
+    if open_until and now_f < open_until:
+        return {
+            "open": True,
+            "retry_after_sec": max(0, int(open_until - now_f)),
+            "open_until": open_until,
+            "consecutive_failures": int(state.get("consecutive_failures") or 0),
+        }
+    return {
+        "open": False,
+        "consecutive_failures": int(state.get("consecutive_failures") or 0),
+    }
+
+
+def record_webhook_circuit_result(
+    state: Dict[str, Any],
+    *,
+    ok: bool,
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Başarı/başarısızlığa göre circuit state güncelle."""
+    now_f = float(now if now is not None else time.time())
+    if ok:
+        state["consecutive_failures"] = 0
+        state["circuit_open_until"] = 0
+        state["circuit_opened_at"] = None
+        state["last_ok"] = True
+        return state
+    failures = int(state.get("consecutive_failures") or 0) + 1
+    state["consecutive_failures"] = failures
+    state["last_ok"] = False
+    threshold = webhook_circuit_failure_threshold()
+    open_sec = webhook_circuit_open_sec()
+    if failures >= threshold and open_sec > 0:
+        state["circuit_open_until"] = now_f + open_sec
+        state["circuit_opened_at"] = _utcnow_iso()
+    return state
+
+
+def webhook_rate_limit_headers(
+    *,
+    limit: float,
+    remaining: int,
+    reset_at: float,
+    retry_after: Optional[int] = None,
+    extra: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """IETF-style RateLimit-* (+ optional Retry-After)."""
+    headers: Dict[str, str] = {
+        "Content-Type": "application/json",
+        "RateLimit-Limit": str(int(max(0, limit))),
+        "RateLimit-Remaining": str(max(0, int(remaining))),
+        "RateLimit-Reset": str(int(max(0, reset_at))),
+    }
+    if retry_after is not None:
+        headers["Retry-After"] = str(max(0, int(retry_after)))
+    if extra:
+        headers.update(extra)
+    return headers
+
+
+def build_webhook_http_headers(
+    report: Dict[str, Any],
+    *,
+    now: Optional[float] = None,
+) -> Dict[str, str]:
+    """Cooldown/circuit bilgisinden RateLimit header seti üret."""
+    now_f = float(now if now is not None else time.time())
+    cooldown = webhook_cooldown_sec()
+    reason = str(report.get("reason") or "")
+    retry = report.get("retry_after_sec")
+    retry_i = int(retry) if retry is not None else None
+    if reason in {"cooldown", "circuit_open"} and retry_i is not None:
+        remaining = 0
+        reset_at = now_f + max(0, retry_i)
+    else:
+        remaining = 1
+        last = float(report.get("last_trigger_ts") or 0)
+        if last and cooldown > 0:
+            reset_at = last + cooldown
+            if now_f < reset_at:
+                remaining = 0
+                retry_i = max(0, int(reset_at - now_f))
+            else:
+                reset_at = now_f + cooldown
+        else:
+            reset_at = now_f + cooldown
+    return webhook_rate_limit_headers(
+        limit=1 if cooldown <= 0 else max(1, int(cooldown)),
+        remaining=remaining,
+        reset_at=reset_at,
+        retry_after=retry_i if remaining == 0 else None,
+    )
+
+
+def webhook_signing_secret() -> str:
+    return os.environ.get("RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET", "").strip()
+
+
+def webhook_signature_max_age_sec() -> int:
+    raw = os.environ.get("RAG_ALERTMANAGER_WEBHOOK_MAX_AGE_SEC", "").strip()
+    try:
+        return max(30, int(raw or 300))
+    except Exception:
+        return 300
+
+
+def build_webhook_signature(
+    body: bytes,
+    *,
+    timestamp: str,
+    secret: str,
+) -> str:
+    """Slack-benzeri v0 HMAC-SHA256 imza."""
+    try:
+        raw = body.decode("utf-8")
+    except UnicodeDecodeError:
+        raw = body.decode("utf-8", errors="replace")
+    base = f"{WEBHOOK_SIG_VERSION}:{timestamp}:{raw}"
+    digest = hmac.new(
+        secret.encode("utf-8"), base.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return f"{WEBHOOK_SIG_VERSION}={digest}"
+
+
+def verify_webhook_signature(
+    body: bytes,
+    *,
+    timestamp: str,
+    signature: str,
+    signing_secret: Optional[str] = None,
+    max_age_sec: Optional[int] = None,
+    now: Optional[float] = None,
+) -> bool:
+    """X-Webhook-Timestamp + X-Webhook-Signature doğrulama."""
+    secret = (
+        signing_secret
+        if signing_secret is not None
+        else webhook_signing_secret()
+    )
+    if not secret or not timestamp or not signature:
+        return False
+    try:
+        ts = int(str(timestamp).strip())
+    except (TypeError, ValueError):
+        return False
+    age = abs(int(now if now is not None else time.time()) - ts)
+    limit = int(max_age_sec if max_age_sec is not None else webhook_signature_max_age_sec())
+    if age > limit:
+        return False
+    expected = build_webhook_signature(body, timestamp=str(ts), secret=secret)
+    return hmac.compare_digest(expected, str(signature).strip())
+
+
+def _normalize_headers(headers: Optional[Dict[str, str]]) -> Dict[str, str]:
+    return {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+
+
+def extract_webhook_auth_headers(
+    headers: Optional[Dict[str, str]],
+) -> Dict[str, str]:
+    hdrs = _normalize_headers(headers)
+    nonce = (
+        hdrs.get("x-webhook-nonce")
+        or hdrs.get("x-request-id")
+        or ""
+    ).strip()
+    return {
+        "timestamp": (
+            hdrs.get("x-webhook-timestamp") or hdrs.get("x-timestamp") or ""
+        ).strip(),
+        "signature": (
+            hdrs.get("x-webhook-signature") or hdrs.get("x-signature") or ""
+        ).strip(),
+        "nonce": nonce,
+        "token": (
+            hdrs.get("x-webhook-token")
+            or (
+                hdrs.get("authorization", "")[7:].strip()
+                if hdrs.get("authorization", "").lower().startswith("bearer ")
+                else ""
+            )
+        ).strip(),
+    }
+
+
+def purge_seen_nonces(
+    seen: Dict[str, Any],
+    *,
+    max_age_sec: int,
+    now: Optional[float] = None,
+) -> Dict[str, float]:
+    """Eski nonce kayıtlarını temizle; yalnızca geçerli float ts tut."""
+    cutoff = float(now if now is not None else time.time()) - max(float(max_age_sec), 1.0)
+    out: Dict[str, float] = {}
+    if not isinstance(seen, dict):
+        return out
+    for key, val in seen.items():
+        try:
+            ts = float(val)
+        except (TypeError, ValueError):
+            continue
+        if ts >= cutoff:
+            out[str(key)] = ts
+    return out
+
+
+def check_webhook_replay(
+    *,
+    nonce: str,
+    timestamp: str,
+    state: Optional[Dict[str, Any]] = None,
+    state_path: Optional[str] = None,
+    max_age_sec: Optional[int] = None,
+    now: Optional[float] = None,
+    persist: bool = True,
+) -> Dict[str, Any]:
+    """
+    Nonce + timestamp replay koruması.
+    Aynı nonce yeniden gelirse rejected; başarılı doğrulamada seen_nonces'a yazılır.
+    """
+    n = (nonce or "").strip()
+    if not n:
+        return {"ok": False, "error": "nonce_missing"}
+    try:
+        ts = int(str(timestamp).strip())
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "timestamp_invalid"}
+    limit = int(max_age_sec if max_age_sec is not None else webhook_signature_max_age_sec())
+    now_f = float(now if now is not None else time.time())
+    if abs(now_f - ts) > limit:
+        return {"ok": False, "error": "timestamp_expired", "max_age_sec": limit}
+
+    st_path = state_path or dual_write_webhook_state_path()
+    st = dict(state) if isinstance(state, dict) else load_dual_write_webhook_state(st_path)
+    # Keep nonces a bit longer than signature window to catch delayed replays
+    retain = max(limit * 2, limit + 60)
+    seen = purge_seen_nonces(st.get("seen_nonces") or {}, max_age_sec=retain, now=now_f)
+    if n in seen:
+        return {"ok": False, "error": "replay", "nonce": n}
+    seen[n] = now_f
+    st["seen_nonces"] = seen
+    st["last_nonce"] = n
+    st["last_nonce_at"] = _utcnow_iso()
+    if persist:
+        try:
+            save_dual_write_webhook_state(st, path=st_path)
+        except Exception:
+            pass
+    return {"ok": True, "nonce": n, "seen_count": len(seen), "state": st}
+
+
+def authorize_alertmanager_webhook(
+    body: bytes,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+    state_path: Optional[str] = None,
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Auth sırası:
+    1) Signing secret varsa → HMAC + nonce replay zorunlu
+    2) Shared token varsa → Bearer / X-Webhook-Token
+    3) Hiçbiri yoksa → açık (ok)
+    """
+    auth = extract_webhook_auth_headers(headers)
+    secret = webhook_signing_secret()
+    if secret:
+        if not verify_webhook_signature(
+            body,
+            timestamp=auth["timestamp"],
+            signature=auth["signature"],
+            signing_secret=secret,
+            now=now,
+        ):
+            return {
+                "ok": False,
+                "error": "invalid_signature",
+                "auth": "hmac",
+            }
+        replay = check_webhook_replay(
+            nonce=auth["nonce"],
+            timestamp=auth["timestamp"],
+            state_path=state_path,
+            now=now,
+            persist=True,
+        )
+        if not replay.get("ok"):
+            return {
+                "ok": False,
+                "error": str(replay.get("error") or "replay"),
+                "auth": "hmac",
+                "replay": replay,
+            }
+        return {"ok": True, "auth": "hmac", "replay": replay}
+
+    token = os.environ.get("RAG_ALERTMANAGER_WEBHOOK_TOKEN", "").strip()
+    if token:
+        if auth["token"] != token:
+            return {"ok": False, "error": "unauthorized", "auth": "token"}
+        return {"ok": True, "auth": "token"}
+
+    return {"ok": True, "auth": "none"}
+
+
+def extract_firing_dual_write_alerts(
+    payload: Dict[str, Any],
+    *,
+    alertnames: Optional[Sequence[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Alertmanager webhook body → firing dual-write alerts."""
+    wanted = {a for a in (alertnames or CATCHUP_ALERTNAMES)}
+    out: List[Dict[str, Any]] = []
+    # AM may wrap as {status, alerts:[...]} or send a single alert
+    alerts = payload.get("alerts")
+    if alerts is None and isinstance(payload.get("labels"), dict):
+        alerts = [payload]
+    if not isinstance(alerts, list):
+        return out
+    for item in alerts:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or payload.get("status") or "").lower()
+        if status and status not in {"firing", "active"}:
+            continue
+        labels = item.get("labels") if isinstance(item.get("labels"), dict) else {}
+        name = str(labels.get("alertname") or "").strip()
+        if name not in wanted:
+            continue
+        svc = str(labels.get("service") or "").strip()
+        if svc and svc not in {"rag-ingest", "rag"}:
+            # still allow if alertname matches known set
+            pass
+        out.append(
+            {
+                "alertname": name,
+                "labels": dict(labels),
+                "annotations": item.get("annotations")
+                if isinstance(item.get("annotations"), dict)
+                else {},
+                "status": status or "firing",
+            }
+        )
+    return out
+
+
+def plan_actions_for_alerts(alerts: Sequence[Dict[str, Any]]) -> List[str]:
+    actions: List[str] = []
+    seen = set()
+    for alert in alerts:
+        name = str(alert.get("alertname") or "")
+        for act in _ALERT_ACTIONS.get(name, ()):
+            if act not in seen:
+                seen.add(act)
+                actions.append(act)
+    return actions
+
+
+def run_dual_write_catch_up(*, dry_run: bool = False) -> Dict[str, Any]:
+    if dry_run:
+        return {"ok": True, "dry_run": True, "action": "catch_up"}
+    try:
+        from rag.cli import DOCSTORE_PATH, INDEX_PATH
+        from rag.store import (
+            DualWriteIndex,
+            create_index,
+            dual_write_backend,
+            dual_write_catch_up,
+            load_index,
+        )
+
+        index = load_index(INDEX_PATH, DOCSTORE_PATH)
+        if not isinstance(index, DualWriteIndex):
+            secondary = dual_write_backend() or "qdrant"
+            try:
+                sec = create_index(
+                    dim=getattr(index, "dim", 384),
+                    embedding_model=getattr(index, "embedding_model", None),
+                    backend=secondary,
+                    dual_write="",
+                )
+                index = DualWriteIndex(index, sec, secondary_backend=secondary)
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "action": "catch_up",
+                    "error": "not_dual_write",
+                    "detail": str(exc),
+                }
+        report = dual_write_catch_up(index)
+        report["action"] = "catch_up"
+        return report
+    except Exception as exc:
+        return {
+            "ok": False,
+            "action": "catch_up",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+        }
+
+
+def run_dual_write_shadow_compare(*, dry_run: bool = False) -> Dict[str, Any]:
+    if dry_run:
+        return {"ok": True, "dry_run": True, "action": "shadow_compare"}
+    try:
+        import subprocess
+        import sys
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "rag.cli",
+                "migrate-vector",
+                "--shadow-compare",
+                "--auto-catch-up-on-fail",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=float(os.environ.get("RAG_DUAL_WRITE_WEBHOOK_TIMEOUT_SEC", "120") or 120),
+        )
+        parsed: Any = None
+        try:
+            parsed = json.loads(proc.stdout or "")
+        except Exception:
+            parsed = None
+        err = None
+        if isinstance(parsed, dict) and parsed.get("error") == "not_dual_write":
+            err = "not_dual_write"
+        return {
+            "ok": proc.returncode == 0,
+            "action": "shadow_compare",
+            "returncode": proc.returncode,
+            "report": parsed,
+            "error": err,
+            "stdout": (proc.stdout or "")[:2000],
+            "stderr": (proc.stderr or "")[:500],
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "action": "shadow_compare",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+        }
+
+
+_WORKFLOW_BY_ACTION = {
+    "catch_up": "dual-write-catch-up.yml",
+    "shadow_compare": "dual-write-shadow-compare.yml",
+}
+
+
+def github_dispatch_enabled() -> bool:
+    raw = os.environ.get("RAG_DUAL_WRITE_GH_DISPATCH", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def trigger_github_workflow_dispatch(
+    workflow: str,
+    *,
+    inputs: Optional[Dict[str, Any]] = None,
+    ref: Optional[str] = None,
+    token: Optional[str] = None,
+    repo: Optional[str] = None,
+) -> Dict[str, Any]:
+    """GitHub Actions workflow_dispatch (GH_PAT / GITHUB_TOKEN)."""
+    import subprocess
+    from urllib import error, request
+
+    tok = (
+        (token or "").strip()
+        or os.environ.get("GH_PAT", "").strip()
+        or os.environ.get("GITHUB_TOKEN", "").strip()
+    )
+    if not tok:
+        return {"ok": False, "error": "token_missing"}
+    slug = (repo or os.environ.get("GITHUB_REPOSITORY") or "").strip()
+    if "/" not in slug:
+        return {"ok": False, "error": "repo_missing"}
+    branch = (
+        (ref or "").strip()
+        or os.environ.get("RAG_DUAL_WRITE_GH_REF", "").strip()
+        or os.environ.get("GITHUB_REF_NAME", "").strip()
+        or "main"
+    )
+    wf = (workflow or "").strip()
+    if not wf:
+        return {"ok": False, "error": "workflow_missing"}
+    payload_inputs = inputs or {}
+
+    # Prefer gh CLI
+    env = os.environ.copy()
+    env["GH_TOKEN"] = tok
+    env["GITHUB_TOKEN"] = tok
+    cmd = [
+        "gh",
+        "workflow",
+        "run",
+        wf,
+        "--repo",
+        slug,
+        "--ref",
+        branch,
+    ]
+    for k, v in payload_inputs.items():
+        cmd.extend(["-f", f"{k}={v}"])
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return {
+                "ok": True,
+                "method": "gh",
+                "workflow": wf,
+                "ref": branch,
+                "repo": slug,
+                "inputs": payload_inputs,
+            }
+        gh_err = (proc.stderr or proc.stdout or "").strip()[:500]
+    except FileNotFoundError:
+        gh_err = "gh_not_found"
+    except Exception as exc:
+        gh_err = f"{type(exc).__name__}:{exc}"
+
+    # REST fallback
+    url = (
+        f"https://api.github.com/repos/{slug}/actions/workflows/"
+        f"{wf}/dispatches"
+    )
+    body = json.dumps({"ref": branch, "inputs": payload_inputs}).encode("utf-8")
+    req = request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {tok}",
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with request.urlopen(req, timeout=30) as resp:
+            code = getattr(resp, "status", None) or resp.getcode()
+            return {
+                "ok": 200 <= int(code) < 300,
+                "method": "rest",
+                "status": int(code),
+                "workflow": wf,
+                "ref": branch,
+                "repo": slug,
+                "inputs": payload_inputs,
+                "gh_error": gh_err,
+            }
+    except error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            detail = str(exc)
+        return {
+            "ok": False,
+            "method": "rest",
+            "status": int(exc.code),
+            "error": detail or str(exc),
+            "workflow": wf,
+            "gh_error": gh_err,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "method": "rest",
+            "error": type(exc).__name__,
+            "detail": str(exc),
+            "gh_error": gh_err,
+            "workflow": wf,
+        }
+
+
+def maybe_github_dispatch_fallback(result: Dict[str, Any]) -> Dict[str, Any]:
+    """In-process fail (özellikle not_dual_write) → workflow_dispatch."""
+    if not github_dispatch_enabled():
+        result["github_fallback"] = {"ok": False, "skipped": True, "reason": "disabled"}
+        return result
+    if result.get("dry_run"):
+        result["github_fallback"] = {"ok": True, "skipped": True, "reason": "dry_run"}
+        return result
+    should = (not result.get("ok")) and (
+        result.get("error") == "not_dual_write"
+        or os.environ.get("RAG_DUAL_WRITE_GH_DISPATCH_ON_ANY_FAIL", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    if not should:
+        result["github_fallback"] = {"ok": False, "skipped": True, "reason": "not_needed"}
+        return result
+    action = str(result.get("action") or "")
+    workflow = _WORKFLOW_BY_ACTION.get(action)
+    if not workflow:
+        result["github_fallback"] = {
+            "ok": False,
+            "skipped": True,
+            "reason": "unknown_action",
+        }
+        return result
+    inputs: Dict[str, Any]
+    if action == "catch_up":
+        inputs = {
+            "force_cutover_check": "true",
+            "auto_cutover": "false",
+        }
+    else:
+        inputs = {
+            "sample": "16",
+            "top_k": "6",
+            "min_overlap": os.environ.get("RAG_DUAL_WRITE_SHADOW_MIN_OVERLAP", "1.0"),
+            "auto_catch_up_on_fail": "true",
+        }
+    dispatched = trigger_github_workflow_dispatch(workflow, inputs=inputs)
+    result["github_fallback"] = dispatched
+    return result
+
+
+def handle_dual_write_alertmanager_webhook(
+    payload: Dict[str, Any],
+    *,
+    dry_run: bool = False,
+    force: bool = False,
+    state_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Firing dual-write alert → catch-up / shadow-compare (debounce'lu)."""
+    alerts = extract_firing_dual_write_alerts(payload)
+    if not alerts:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "no_matching_firing_alerts",
+            "alerts": [],
+        }
+
+    actions = plan_actions_for_alerts(alerts)
+    st_path = state_path or dual_write_webhook_state_path()
+    state = load_dual_write_webhook_state(st_path)
+    now = time.time()
+
+    circuit = check_webhook_circuit(state, now=now)
+    if not force and circuit.get("open"):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "circuit_open",
+            "retry_after_sec": circuit.get("retry_after_sec"),
+            "circuit": circuit,
+            "alerts": [a.get("alertname") for a in alerts],
+            "planned_actions": actions,
+            "last_trigger_ts": float(state.get("last_trigger_ts") or 0) or None,
+        }
+
+    cooldown = webhook_cooldown_sec()
+    last = float(state.get("last_trigger_ts") or 0)
+    if not force and cooldown > 0 and last and (now - last) < cooldown:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "cooldown",
+            "retry_after_sec": max(0, int(cooldown - (now - last))),
+            "alerts": [a.get("alertname") for a in alerts],
+            "planned_actions": actions,
+            "last_trigger_ts": last,
+            "circuit": circuit,
+        }
+
+    results: List[Dict[str, Any]] = []
+    for act in actions:
+        if act == "catch_up":
+            row = run_dual_write_catch_up(dry_run=dry_run)
+        elif act == "shadow_compare":
+            row = run_dual_write_shadow_compare(dry_run=dry_run)
+        else:
+            continue
+        results.append(maybe_github_dispatch_fallback(row))
+
+    ok = all(r.get("ok") or (r.get("github_fallback") or {}).get("ok") for r in results) if results else True
+    if not dry_run:
+        state.update(
+            {
+                "last_trigger_ts": now,
+                "last_trigger_at": _utcnow_iso(),
+                "last_alerts": [a.get("alertname") for a in alerts],
+                "last_actions": actions,
+            }
+        )
+        record_webhook_circuit_result(state, ok=ok, now=now)
+        try:
+            save_dual_write_webhook_state(state, path=st_path)
+        except Exception:
+            pass
+
+    return {
+        "ok": ok,
+        "skipped": False,
+        "dry_run": dry_run,
+        "alerts": [a.get("alertname") for a in alerts],
+        "planned_actions": actions,
+        "results": results,
+        "last_trigger_ts": now,
+        "circuit": check_webhook_circuit(state, now=now),
+    }
+
+
+def handle_alertmanager_webhook_http(
+    body: bytes,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+    state_path: Optional[str] = None,
+) -> Tuple[int, Dict[str, str], bytes]:
+    """HTTP adapter for collab_http POST /alertmanager."""
+    try:
+        payload = json.loads(body.decode("utf-8") or "{}")
+    except Exception:
+        return (
+            400,
+            {"Content-Type": "application/json"},
+            json.dumps({"ok": False, "error": "invalid_json"}).encode("utf-8"),
+        )
+    if not isinstance(payload, dict):
+        return (
+            400,
+            {"Content-Type": "application/json"},
+            json.dumps({"ok": False, "error": "payload_not_object"}).encode("utf-8"),
+        )
+
+    auth = authorize_alertmanager_webhook(
+        body, headers=headers, state_path=state_path
+    )
+    if not auth.get("ok"):
+        err = str(auth.get("error") or "unauthorized")
+        code = 401
+        if err == "replay":
+            code = 409
+        elif err in {"timestamp_expired", "timestamp_invalid", "nonce_missing"}:
+            code = 401
+        return (
+            code,
+            {"Content-Type": "application/json"},
+            json.dumps(
+                {"ok": False, "error": err, "auth": auth.get("auth")},
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        )
+
+    dry = os.environ.get("RAG_DUAL_WRITE_WEBHOOK_DRY_RUN", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    report = handle_dual_write_alertmanager_webhook(
+        payload, dry_run=dry, state_path=state_path
+    )
+    report["auth"] = auth.get("auth")
+    status = 200 if report.get("ok") else 500
+    if report.get("skipped") and report.get("reason") in {"cooldown", "circuit_open"}:
+        # Alertmanager prefers 2xx; optional strict mode → 429 + Retry-After
+        status = 429 if webhook_strict_rate_limit() else 200
+    resp_headers = build_webhook_http_headers(report)
+    return (
+        status,
+        resp_headers,
+        json.dumps(report, ensure_ascii=False, default=str).encode("utf-8"),
+    )
