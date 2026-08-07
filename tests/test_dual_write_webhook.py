@@ -170,6 +170,91 @@ def test_prune_dual_write_dlq_by_age(tmp_path: Path, monkeypatch) -> None:
     assert post.called
 
 
+def test_dlq_quarantine_and_replay_budget(tmp_path: Path, monkeypatch) -> None:
+    import json
+
+    from rag.dual_write_webhook import (
+        dual_write_dlq_depth,
+        read_dual_write_dlq,
+        read_dual_write_dlq_quarantine,
+        replay_dual_write_dlq,
+    )
+
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_DLQ", str(tmp_path / "dlq.jsonl"))
+    monkeypatch.setenv(
+        "RAG_DUAL_WRITE_WEBHOOK_DLQ_QUARANTINE", str(tmp_path / "quarantine.jsonl")
+    )
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_STATE", str(tmp_path / "state.json"))
+    monkeypatch.setenv("RAG_DUAL_WRITE_DLQ_QUARANTINE_AFTER", "2")
+    monkeypatch.setenv("RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_RUN", "1")
+    monkeypatch.setenv("RAG_DUAL_WRITE_DLQ_REPLAY_RUN_ID", "run-a")
+    monkeypatch.setenv(
+        "RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_WEBHOOK", "https://hooks.slack.test/q"
+    )
+    monkeypatch.setenv("RAG_DUAL_WRITE_GH_DISPATCH", "0")
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_CB_FAILURES", "99")
+
+    payload = {
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {
+                    "alertname": "RagDualWriteLagHigh",
+                    "service": "rag-ingest",
+                },
+            }
+        ],
+    }
+    entry = {
+        "ts": "2026-01-01T00:00:00+00:00",
+        "payload_digest": "abc",
+        "payload": payload,
+        "attempts": 1,
+        "reason": "failed",
+        "alerts": ["RagDualWriteLagHigh"],
+    }
+    (tmp_path / "dlq.jsonl").write_text(
+        json.dumps(entry) + "\n", encoding="utf-8"
+    )
+
+    with patch(
+        "rag.dual_write_webhook.handle_dual_write_alertmanager_webhook",
+        return_value={"ok": False, "reason": "boom"},
+    ):
+        with patch("rag.judge_alert.post_slack", return_value=True) as post:
+            first = replay_dual_write_dlq(limit=5, dry_run=False, force=True)
+
+    assert first["quarantined"] == 1
+    assert dual_write_dlq_depth() == 0
+    assert len(read_dual_write_dlq_quarantine()) == 1
+    assert post.called
+
+    # Same run id: budget exhausted (1/1 used)
+    entry2 = {**entry, "payload_digest": "def", "attempts": 0}
+    (tmp_path / "dlq.jsonl").write_text(json.dumps(entry2) + "\n", encoding="utf-8")
+    with patch(
+        "rag.dual_write_webhook.handle_dual_write_alertmanager_webhook",
+        return_value={"ok": True},
+    ):
+        budgeted = replay_dual_write_dlq(limit=5, dry_run=False, force=True)
+    assert budgeted.get("skipped") is True
+    assert budgeted.get("reason") == "replay_budget_exhausted"
+    assert dual_write_dlq_depth() == 1
+
+    monkeypatch.setenv("RAG_DUAL_WRITE_DLQ_REPLAY_RUN_ID", "run-b")
+    with patch(
+        "rag.dual_write_webhook.handle_dual_write_alertmanager_webhook",
+        return_value={"ok": True},
+    ):
+        next_run = replay_dual_write_dlq(limit=5, dry_run=False, force=True)
+    assert next_run.get("skipped") is not True
+    assert next_run["replayed"] == 1
+    assert dual_write_dlq_depth() == 0
+    assert len(read_dual_write_dlq()) == 0
+
+
 def test_webhook_circuit_breaker_and_rate_limit_headers(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -376,7 +376,17 @@ def test_dual_write_dlq_replay_workflow_yaml():
     assert "dual_write_dlq_replay.json" in text
     assert "--prune" in text
     assert "dual_write_dlq_prune.json" in text
+    assert "--quarantine" in text
+    assert "dual_write_dlq_quarantine.json" in text
+    assert "RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_RUN" in text
+    assert "RAG_DUAL_WRITE_DLQ_QUARANTINE_AFTER" in text
     assert "workflow_dispatch" in text
+
+
+def test_ci_inhibit_equal_opsgenie_canary_env():
+    text = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY" in text
+    assert "INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY" in text
 
 
 def test_judge_ack_digest_workflow_yaml():

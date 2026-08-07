@@ -1301,9 +1301,11 @@ def cmd_judge_ack_purge(args: argparse.Namespace) -> int:
 def cmd_dual_write_dlq(args: argparse.Namespace) -> int:
     from rag.dual_write_webhook import (
         dual_write_dlq_depth,
+        dual_write_webhook_dlq_quarantine_path,
         maybe_alert_dual_write_dlq,
         prune_dual_write_dlq,
         read_dual_write_dlq,
+        read_dual_write_dlq_quarantine,
         replay_dual_write_dlq,
     )
 
@@ -1319,12 +1321,41 @@ def cmd_dual_write_dlq(args: argparse.Namespace) -> int:
             notify=bool(getattr(args, "notify", False)),
         )
     elif getattr(args, "replay", False):
+        if not os.environ.get("RAG_DUAL_WRITE_DLQ_REPLAY_RUN_ID", "").strip():
+            os.environ["RAG_DUAL_WRITE_DLQ_REPLAY_RUN_ID"] = (
+                os.environ.get("GITHUB_RUN_ID", "").strip()
+                or f"cli-{os.getpid()}"
+            )
         report = replay_dual_write_dlq(
             path=path,
             limit=int(getattr(args, "limit", 5) or 5),
             dry_run=bool(getattr(args, "dry_run", False)),
             force=not bool(getattr(args, "no_force", False)),
+            respect_budget=not bool(getattr(args, "no_budget", False)),
         )
+    elif getattr(args, "quarantine", False):
+        qpath = path or dual_write_webhook_dlq_quarantine_path()
+        rows = read_dual_write_dlq_quarantine(
+            path=qpath, limit=getattr(args, "limit", None)
+        )
+        report = {
+            "ok": True,
+            "quarantine": True,
+            "path": qpath,
+            "depth": len(rows),
+            "count": len(rows),
+            "entries": [
+                {
+                    "ts": r.get("ts"),
+                    "quarantined_at": r.get("quarantined_at"),
+                    "reason": r.get("quarantine_reason") or r.get("reason"),
+                    "digest": r.get("payload_digest"),
+                    "attempts": r.get("attempts"),
+                    "alerts": r.get("alerts"),
+                }
+                for r in rows
+            ],
+        }
     else:
         rows = read_dual_write_dlq(path=path, limit=getattr(args, "limit", None))
         depth = dual_write_dlq_depth(path=path)
@@ -1339,6 +1370,7 @@ def cmd_dual_write_dlq(args: argparse.Namespace) -> int:
                     "digest": r.get("payload_digest"),
                     "alerts": r.get("alerts"),
                     "planned_actions": r.get("planned_actions"),
+                    "attempts": r.get("attempts"),
                 }
                 for r in rows
             ],
@@ -1807,6 +1839,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Yaşa göre eski DLQ kayıtlarını sil",
     )
     p_dlq.add_argument(
+        "--quarantine",
+        action="store_true",
+        help="Quarantine JSONL listele (replay-exhausted entries)",
+    )
+    p_dlq.add_argument(
         "--days",
         type=float,
         default=None,
@@ -1832,6 +1869,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-force",
         action="store_true",
         help="Replay sırasında cooldown/circuit'e uy",
+    )
+    p_dlq.add_argument(
+        "--no-budget",
+        action="store_true",
+        help="Replay bütçesini (per-run/hour) yok say",
     )
     p_dlq.set_defaults(func=cmd_dual_write_dlq)
 

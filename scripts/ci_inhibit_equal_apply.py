@@ -240,7 +240,7 @@ def build_inhibit_equal_rollback_canary_payload(report: Dict[str, Any]) -> Dict[
 
 
 def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, Any]:
-    """Post canary Slack (+ optional PagerDuty) when apply rolled back."""
+    """Post canary Slack (+ optional PagerDuty / Opsgenie) when apply rolled back."""
     if not report.get("rolled_back"):
         return {"ok": True, "skipped": True, "reason": "not_rolled_back"}
     if os.environ.get("INHIBIT_EQUAL_CANARY_NOTIFY", "1").strip().lower() in {
@@ -259,33 +259,38 @@ def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, An
         os.environ.get("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", "").strip()
         or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", "").strip()
     )
-    if not webhook and not pd_key:
+    og_key = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", "").strip()
+    )
+    if not webhook and not pd_key and not og_key:
         return {"ok": True, "skipped": True, "reason": "webhook_missing"}
 
-    from rag.judge_alert import post_pagerduty, post_slack
+    from rag.judge_alert import post_opsgenie, post_pagerduty, post_slack
 
     payload = build_inhibit_equal_rollback_canary_payload(report)
     slack_ok = False
     if webhook:
         slack_ok = bool(post_slack(webhook, payload))
 
+    equal = (report.get("generated") or {}).get("equal") or []
+    pd_report = {
+        "summary": {
+            "ok": False,
+            "mode": "inhibit_equal_rollback",
+            "accuracy": 0.0,
+            "passed": 0,
+            "failed": 1,
+            "total": 1,
+            "equal": equal,
+            "backup": report.get("backup"),
+            "reason": report.get("reason"),
+        },
+        "mode": "inhibit_equal_rollback",
+    }
+
     pd_ok = False
     if pd_key:
-        equal = (report.get("generated") or {}).get("equal") or []
-        pd_report = {
-            "summary": {
-                "ok": False,
-                "mode": "inhibit_equal_rollback",
-                "accuracy": 0.0,
-                "passed": 0,
-                "failed": 1,
-                "total": 1,
-                "equal": equal,
-                "backup": report.get("backup"),
-                "reason": report.get("reason"),
-            },
-            "mode": "inhibit_equal_rollback",
-        }
         pd_ok = bool(
             post_pagerduty(
                 routing_key=pd_key,
@@ -296,13 +301,26 @@ def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, An
             )
         )
 
-    posted = slack_ok or pd_ok
+    og_ok = False
+    if og_key:
+        og_ok = bool(
+            post_opsgenie(
+                api_key=og_key,
+                report=pd_report,
+                source="inhibit-equal-canary",
+                priority=os.environ.get("INHIBIT_EQUAL_CANARY_OPSGENIE_PRIORITY", "P2")
+                or "P2",
+            )
+        )
+
+    posted = slack_ok or pd_ok or og_ok
     return {
-        "ok": posted if (webhook or pd_key) else True,
+        "ok": posted if (webhook or pd_key or og_key) else True,
         "skipped": False,
         "posted": posted,
         "slack": slack_ok if webhook else None,
         "pagerduty": pd_ok if pd_key else None,
+        "opsgenie": og_ok if og_key else None,
     }
 
 

@@ -42,6 +42,13 @@ jobs:
           RAG_ENABLE_PROMETHEUS: "1"
           RAG_DUAL_WRITE_WEBHOOK_DLQ: metadata/dual_write_webhook_dlq.jsonl
           RAG_DUAL_WRITE_WEBHOOK_STATE: metadata/dual_write_webhook_state.json
+          RAG_DUAL_WRITE_WEBHOOK_DLQ_QUARANTINE: metadata/dual_write_webhook_dlq_quarantine.jsonl
+          RAG_DUAL_WRITE_DLQ_QUARANTINE_AFTER: ${{ vars.RAG_DUAL_WRITE_DLQ_QUARANTINE_AFTER || '3' }}
+          RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_RUN: ${{ vars.RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_RUN || '5' }}
+          RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_HOUR: ${{ vars.RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_HOUR || '20' }}
+          RAG_DUAL_WRITE_DLQ_REPLAY_RUN_ID: ${{ github.run_id }}
+          RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_WEBHOOK: ${{ secrets.RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_WEBHOOK }}
+          RAG_DUAL_WRITE_DLQ_SLACK_WEBHOOK: ${{ secrets.RAG_DUAL_WRITE_DLQ_SLACK_WEBHOOK }}
           RAG_VECTOR_BACKEND: ${{ vars.RAG_VECTOR_BACKEND || 'faiss' }}
           RAG_VECTOR_DUAL_WRITE: ${{ vars.RAG_VECTOR_DUAL_WRITE || secrets.RAG_VECTOR_DUAL_WRITE }}
           RAG_QDRANT_URL: ${{ secrets.RAG_QDRANT_URL }}
@@ -63,6 +70,8 @@ jobs:
           # shellcheck disable=SC2086
           python -m rag.cli dual-write-dlq $EXTRA \
             | tee metadata/dual_write_dlq_replay.json
+          python -m rag.cli dual-write-dlq --quarantine --limit 50 \
+            | tee metadata/dual_write_dlq_quarantine.json || true
       - name: Upload DLQ replay report
         if: always()
         uses: actions/upload-artifact@v4
@@ -71,7 +80,9 @@ jobs:
           path: |
             metadata/dual_write_dlq_replay.json
             metadata/dual_write_dlq_prune.json
+            metadata/dual_write_dlq_quarantine.json
             metadata/dual_write_webhook_dlq.jsonl
+            metadata/dual_write_webhook_dlq_quarantine.jsonl
             metadata/dual_write_webhook_state.json
             metadata/metrics.jsonl
           if-no-files-found: ignore

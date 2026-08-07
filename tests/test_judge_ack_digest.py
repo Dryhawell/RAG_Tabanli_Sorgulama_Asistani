@@ -178,9 +178,11 @@ def test_tenant_mute_skips_digest(tmp_path: Path, monkeypatch) -> None:
 def test_heatmap_zoom_interactive(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
     monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_PREFS", str(tmp_path / "prefs.json"))
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
     path = str(tmp_path / "ack.jsonl")
     append_judge_ack_audit("ack", actor="alice", path=path)
-    from rag.judge_alert import handle_slack_interactive_ack
+    from rag.judge_alert import handle_slack_interactive_ack, resolve_heatmap_bucket
 
     with patch("rag.judge_alert.slack_api", return_value={"ok": True}):
         result = handle_slack_interactive_ack(
@@ -198,6 +200,94 @@ def test_heatmap_zoom_interactive(tmp_path: Path, monkeypatch) -> None:
     assert result["bucket"] == "hour"
     assert "Ack heatmap" in result["text"]
     assert result["ephemeral"]["ok"] is True
+    assert result["pref"]["ok"] is True
+    assert resolve_heatmap_bucket(base=str(tmp_path)) == "hour"
+
+    with patch("rag.judge_alert.slack_api", return_value={"ok": True}):
+        tenant = handle_slack_interactive_ack(
+            {
+                "type": "block_actions",
+                "actions": [
+                    {
+                        "action_id": "judge_ack_digest_heatmap_zoom",
+                        "value": "acme|day",
+                    }
+                ],
+                "user": {"id": "U1", "username": "ops"},
+                "channel": {"id": "C1"},
+            }
+        )
+    assert tenant["bucket"] == "day"
+    assert tenant["tenant_id"] == "acme"
+    assert resolve_heatmap_bucket("acme", base=str(tmp_path)) == "day"
+
+
+def test_mute_ui_interactive_and_block_kit(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("RAG_JUDGE_SLACK_INTERACTIVE", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_PUBLIC_URL", "http://example.test/judge/ack-form")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_PREFS", str(tmp_path / "prefs.json"))
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    from rag.judge_alert import (
+        build_judge_ack_digest_slack_blocks,
+        handle_slack_interactive_ack,
+        is_judge_ack_digest_muted,
+        set_heatmap_bucket_pref,
+    )
+
+    set_heatmap_bucket_pref("hour", tenant_id="acme", base=str(tmp_path))
+    summary = {
+        "ok": True,
+        "since_hours": 168,
+        "total": 1,
+        "actor_count": 1,
+        "by_event": {"ack": 1},
+        "actors": ["a"],
+        "tenant_id": "acme",
+    }
+    blocks = build_judge_ack_digest_slack_blocks(
+        summary, tenant_id="acme", base=str(tmp_path)
+    )
+    actions = [b for b in blocks if b.get("type") == "actions"]
+    assert actions
+    els = actions[0]["elements"]
+    assert len(els) <= 5
+    ids = {e.get("action_id") for e in els}
+    assert "judge_ack_digest_mute" in ids
+    assert "judge_ack_digest_heatmap_zoom" in ids
+    zoom = next(e for e in els if e["action_id"] == "judge_ack_digest_heatmap_zoom")
+    assert zoom["value"] == "acme|day"
+    assert "Heatmap day" in zoom["text"]["text"]
+
+    with patch("rag.judge_alert.slack_api", return_value={"ok": True}):
+        muted = handle_slack_interactive_ack(
+            {
+                "type": "block_actions",
+                "actions": [
+                    {"action_id": "judge_ack_digest_mute", "value": "acme"}
+                ],
+                "user": {"id": "U1", "username": "ops"},
+                "channel": {"id": "C1"},
+            }
+        )
+    assert muted["ok"] is True
+    assert muted["mode"] == "digest_mute"
+    assert muted["muted"] is True
+    assert is_judge_ack_digest_muted("acme", base=str(tmp_path))
+
+    with patch("rag.judge_alert.slack_api", return_value={"ok": True}):
+        unmuted = handle_slack_interactive_ack(
+            {
+                "type": "block_actions",
+                "actions": [
+                    {"action_id": "judge_ack_digest_unmute", "value": "acme"}
+                ],
+                "user": {"id": "U1", "username": "ops"},
+                "channel": {"id": "C1"},
+            }
+        )
+    assert unmuted["muted"] is False
+    assert not is_judge_ack_digest_muted("acme", base=str(tmp_path))
 
 
 def test_dual_write_dlq_cli_parser() -> None:
@@ -216,6 +306,11 @@ def test_dual_write_dlq_cli_parser() -> None:
     assert prune_args.prune is True
     assert prune_args.days == 14.0
     assert prune_args.notify is True
+    q_args = build_parser().parse_args(["dual-write-dlq", "--quarantine", "--limit", "10"])
+    assert q_args.quarantine is True
+    assert q_args.limit == 10
+    nb = build_parser().parse_args(["dual-write-dlq", "--replay", "--no-budget"])
+    assert nb.no_budget is True
 
 
 def test_digest_reexport_interactive_action(tmp_path: Path, monkeypatch) -> None:

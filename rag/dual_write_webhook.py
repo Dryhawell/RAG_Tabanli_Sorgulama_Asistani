@@ -76,6 +76,16 @@ def dual_write_webhook_dlq_path(base: Optional[str] = None) -> str:
     return os.path.join(root, "dual_write_webhook_dlq.jsonl")
 
 
+def dual_write_webhook_dlq_quarantine_path(base: Optional[str] = None) -> str:
+    env = os.environ.get("RAG_DUAL_WRITE_WEBHOOK_DLQ_QUARANTINE", "").strip()
+    if env:
+        return env
+    primary = dual_write_webhook_dlq_path(base=base)
+    if primary.endswith(".jsonl"):
+        return primary[:-6] + "_quarantine.jsonl"
+    return primary + ".quarantine.jsonl"
+
+
 def enqueue_dual_write_dlq(
     *,
     payload: Dict[str, Any],
@@ -132,6 +142,183 @@ def read_dual_write_dlq(
 
 def dual_write_dlq_depth(*, path: Optional[str] = None) -> int:
     return len(read_dual_write_dlq(path=path))
+
+
+def read_dual_write_dlq_quarantine(
+    *,
+    path: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    return read_dual_write_dlq(
+        path=path or dual_write_webhook_dlq_quarantine_path(), limit=limit
+    )
+
+
+def _dlq_quarantine_after() -> int:
+    try:
+        return max(1, int(os.environ.get("RAG_DUAL_WRITE_DLQ_QUARANTINE_AFTER", "3") or 3))
+    except Exception:
+        return 3
+
+
+def _dlq_replay_max_per_run() -> Optional[int]:
+    raw = os.environ.get("RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_RUN", "").strip()
+    if not raw:
+        return None
+    try:
+        return max(0, int(raw))
+    except Exception:
+        return None
+
+
+def _dlq_replay_max_per_hour() -> Optional[int]:
+    raw = os.environ.get("RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_HOUR", "").strip()
+    if not raw:
+        return None
+    try:
+        return max(0, int(raw))
+    except Exception:
+        return None
+
+
+def check_dual_write_dlq_replay_budget(
+    *,
+    state_path: Optional[str] = None,
+    want: int = 1,
+) -> Dict[str, Any]:
+    """Enforce per-run / per-hour auto-replay budgets (state-backed)."""
+    max_run = _dlq_replay_max_per_run()
+    max_hour = _dlq_replay_max_per_hour()
+    if max_run is None and max_hour is None:
+        return {
+            "ok": True,
+            "allowed": int(want),
+            "max_per_run": None,
+            "max_per_hour": None,
+            "used_run": 0,
+            "used_hour": 0,
+            "budget_exhausted": False,
+        }
+    st = load_dual_write_webhook_state(path=state_path)
+    budget = (
+        st.get("dlq_replay_budget")
+        if isinstance(st.get("dlq_replay_budget"), dict)
+        else {}
+    )
+    now = time.time()
+    window_start = float(budget.get("hour_window_start") or 0) or 0.0
+    used_hour = int(budget.get("hour_count") or 0)
+    if not window_start or now - window_start >= 3600.0:
+        window_start = now
+        used_hour = 0
+    used_run = int(budget.get("run_count") or 0)
+    run_id = os.environ.get("RAG_DUAL_WRITE_DLQ_REPLAY_RUN_ID", "").strip() or None
+    prev_run = str(budget.get("run_id") or "") or None
+    if run_id is not None and run_id != prev_run:
+        used_run = 0
+        prev_run = run_id
+    allowed = int(want)
+    if max_run is not None:
+        allowed = min(allowed, max(0, max_run - used_run))
+    if max_hour is not None:
+        allowed = min(allowed, max(0, max_hour - used_hour))
+    return {
+        "ok": allowed > 0 or int(want) <= 0,
+        "allowed": allowed,
+        "max_per_run": max_run,
+        "max_per_hour": max_hour,
+        "used_run": used_run,
+        "used_hour": used_hour,
+        "hour_window_start": window_start,
+        "run_id": prev_run,
+        "budget_exhausted": allowed <= 0 and int(want) > 0,
+    }
+
+
+def record_dual_write_dlq_replay_budget(
+    count: int,
+    *,
+    state_path: Optional[str] = None,
+    budget_snapshot: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    n = max(0, int(count))
+    snap = budget_snapshot or check_dual_write_dlq_replay_budget(
+        state_path=state_path, want=n
+    )
+    st = load_dual_write_webhook_state(path=state_path)
+    budget = {
+        "hour_window_start": snap.get("hour_window_start") or time.time(),
+        "hour_count": int(snap.get("used_hour") or 0) + n,
+        "run_count": int(snap.get("used_run") or 0) + n,
+        "run_id": snap.get("run_id"),
+        "updated_at": _utcnow_iso(),
+    }
+    st["dlq_replay_budget"] = budget
+    save_dual_write_webhook_state(st, path=state_path)
+    return budget
+
+
+def maybe_alert_dual_write_dlq_quarantine(
+    *,
+    entry: Optional[Dict[str, Any]] = None,
+    path: Optional[str] = None,
+) -> Dict[str, Any]:
+    webhook = (
+        os.environ.get("RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_WEBHOOK", "").strip()
+        or os.environ.get("RAG_DUAL_WRITE_DLQ_SLACK_WEBHOOK", "").strip()
+    )
+    if not webhook:
+        return {"ok": True, "skipped": True, "reason": "webhook_missing"}
+    row = entry or {}
+    qpath = path or dual_write_webhook_dlq_quarantine_path()
+    depth = len(read_dual_write_dlq_quarantine(path=qpath))
+    text = (
+        "*Dual-write DLQ quarantine*\n"
+        f"digest=`{row.get('payload_digest')}` · attempts=`{row.get('attempts')}`\n"
+        f"reason=`{row.get('quarantine_reason') or row.get('reason')}`\n"
+        f"quarantine depth: *{depth}* · path=`{qpath}`"
+    )
+    try:
+        from rag.judge_alert import post_slack
+
+        ok = post_slack(webhook, {"text": text})
+        return {"ok": bool(ok), "skipped": False, "posted": bool(ok), "depth": depth}
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__, "detail": str(exc)}
+
+
+def enqueue_dual_write_dlq_quarantine(
+    entry: Dict[str, Any],
+    *,
+    path: Optional[str] = None,
+    reason: str = "replay_exhausted",
+) -> Dict[str, Any]:
+    """Append a DLQ entry to quarantine JSONL and Slack-notify channel."""
+    out = path or dual_write_webhook_dlq_quarantine_path()
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    row = dict(entry or {})
+    row["quarantined_at"] = _utcnow_iso()
+    row["quarantine_reason"] = reason
+    row["attempts"] = int(row.get("attempts") or 0)
+    with open(out, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+    notify = maybe_alert_dual_write_dlq_quarantine(entry=row, path=out)
+    try:
+        emit_dual_write_webhook_metric(
+            result="dlq_quarantined",
+            reason=reason,
+            actions=1,
+            dlq_depth=dual_write_dlq_depth(),
+        )
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "path": out,
+        "digest": row.get("payload_digest"),
+        "notify": notify,
+    }
+
 
 
 def _parse_dlq_ts(ts: Any) -> Optional[float]:
@@ -281,15 +468,59 @@ def replay_dual_write_dlq(
     dry_run: bool = False,
     force: bool = True,
     state_path: Optional[str] = None,
+    respect_budget: bool = True,
 ) -> Dict[str, Any]:
-    """DLQ'daki son N kaydı yeniden işle (başarılı olanları bırakır)."""
+    """DLQ'daki son N kaydı yeniden işle (başarılı olanları bırakır).
+
+    Failed-after-N → quarantine JSONL + Slack channel.
+    Optional per-run / per-hour auto-replay budget via env + webhook state.
+    """
     p = path or dual_write_webhook_dlq_path()
     rows = read_dual_write_dlq(path=p)
     if not rows:
-        return {"ok": True, "replayed": 0, "remaining": 0, "results": []}
-    take = rows[-max(1, int(limit)) :]
+        return {
+            "ok": True,
+            "replayed": 0,
+            "remaining": 0,
+            "quarantined": 0,
+            "results": [],
+            "path": p,
+        }
+    want = max(1, int(limit))
+    budget: Dict[str, Any] = {"ok": True, "allowed": want, "budget_exhausted": False}
+    if respect_budget and not dry_run:
+        budget = check_dual_write_dlq_replay_budget(state_path=state_path, want=want)
+        if budget.get("budget_exhausted"):
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "replay_budget_exhausted",
+                "budget": budget,
+                "replayed": 0,
+                "remaining": len(rows),
+                "quarantined": 0,
+                "results": [],
+                "path": p,
+            }
+        want = max(0, int(budget.get("allowed") or 0))
+        if want <= 0:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "replay_budget_exhausted",
+                "budget": budget,
+                "replayed": 0,
+                "remaining": len(rows),
+                "quarantined": 0,
+                "results": [],
+                "path": p,
+            }
+    take = rows[-want:]
     keep = rows[: -len(take)] if len(rows) > len(take) else []
     results: List[Dict[str, Any]] = []
+    quarantined: List[Dict[str, Any]] = []
+    threshold = _dlq_quarantine_after()
+    attempted = 0
     for entry in take:
         payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
         if dry_run:
@@ -299,9 +530,11 @@ def replay_dual_write_dlq(
                     "dry_run": True,
                     "digest": entry.get("payload_digest"),
                     "alerts": entry.get("alerts"),
+                    "attempts": int(entry.get("attempts") or 0),
                 }
             )
             continue
+        attempted += 1
         report = handle_dual_write_alertmanager_webhook(
             payload,
             dry_run=False,
@@ -309,27 +542,54 @@ def replay_dual_write_dlq(
             state_path=state_path,
             enqueue_dlq=False,
         )
-        results.append(
-            {
-                "ok": bool(report.get("ok")),
-                "digest": entry.get("payload_digest"),
-                "report": {
-                    k: report.get(k)
-                    for k in ("ok", "skipped", "reason", "planned_actions", "alerts")
-                },
-            }
-        )
+        row_out = {
+            "ok": bool(report.get("ok")),
+            "digest": entry.get("payload_digest"),
+            "report": {
+                k: report.get(k)
+                for k in ("ok", "skipped", "reason", "planned_actions", "alerts")
+            },
+        }
         if not report.get("ok"):
-            keep.append(entry)
+            attempts = int(entry.get("attempts") or 0) + 1
+            entry = {**entry, "attempts": attempts, "last_error": report.get("reason")}
+            if attempts >= threshold:
+                q = enqueue_dual_write_dlq_quarantine(
+                    entry, reason="replay_exhausted"
+                )
+                row_out["quarantined"] = True
+                row_out["attempts"] = attempts
+                row_out["quarantine"] = {
+                    "ok": q.get("ok"),
+                    "path": q.get("path"),
+                    "notify": q.get("notify"),
+                }
+                quarantined.append(
+                    {"digest": entry.get("payload_digest"), "attempts": attempts}
+                )
+            else:
+                row_out["attempts"] = attempts
+                keep.append(entry)
+        results.append(row_out)
     if not dry_run:
         os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
         with open(p, "w", encoding="utf-8") as f:
             for row in keep:
                 f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        if respect_budget and attempted:
+            record_dual_write_dlq_replay_budget(
+                attempted, state_path=state_path, budget_snapshot=budget
+            )
     return {
-        "ok": all(r.get("ok") for r in results) if results else True,
+        "ok": all(r.get("ok") or r.get("quarantined") for r in results)
+        if results
+        else True,
         "replayed": len(results),
         "remaining": len(keep) if not dry_run else len(rows),
+        "quarantined": len(quarantined),
+        "quarantine_after": threshold,
+        "quarantine_entries": quarantined,
+        "budget": budget,
         "results": results,
         "path": p,
     }

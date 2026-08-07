@@ -261,3 +261,15 @@ def test_notify_inhibit_equal_rollback_canary(monkeypatch) -> None:
     assert pd.called
     assert pd.call_args.kwargs.get("source") == "inhibit-equal-canary"
     assert pd.call_args.kwargs.get("routing_key") == "pd-key"
+
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", raising=False)
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", "og-key")
+    with patch("rag.judge_alert.post_opsgenie", return_value=True) as og:
+        with patch("rag.judge_alert.post_slack", return_value=False):
+            with patch("rag.judge_alert.post_pagerduty", return_value=False):
+                og_out = notify_inhibit_equal_rollback_canary(report)
+    assert og_out["opsgenie"] is True
+    assert og_out["posted"] is True
+    assert og.called
+    assert og.call_args.kwargs.get("source") == "inhibit-equal-canary"
+    assert og.call_args.kwargs.get("api_key") == "og-key"
