@@ -277,6 +277,10 @@ def test_notify_inhibit_equal_rollback_canary(monkeypatch) -> None:
     monkeypatch.delenv("RAG_INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON", raising=False)
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PD_SEVERITY", raising=False)
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PD_SEVERITY_BY_REASON", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("RAG_INHIBIT_EQUAL_CANARY_SLACK_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("RAG_JUDGE_SLACK_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_CHANNEL", raising=False)
     monkeypatch.delenv("CI_TEST_RESULT", raising=False)
     skipped = notify_inhibit_equal_rollback_canary(report)
     assert skipped["skipped"] is True
@@ -367,6 +371,9 @@ def test_notify_inhibit_equal_close_on_green(monkeypatch) -> None:
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON", raising=False)
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", raising=False)
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("RAG_JUDGE_SLACK_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_THREAD_TS", raising=False)
     skipped = notify_inhibit_equal_close_on_green(report)
     assert skipped["skipped"] is True
 
@@ -404,3 +411,75 @@ def test_notify_inhibit_equal_close_on_green(monkeypatch) -> None:
     assert pd_out["pagerduty"] is True
     assert pd.call_args.kwargs.get("event_action") == "resolve"
     assert pd.call_args.kwargs.get("source") == "inhibit-equal-canary"
+
+
+def test_inhibit_equal_canary_slack_thread_reply_on_resolve(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from scripts.ci_inhibit_equal_apply import (
+        notify_inhibit_equal_close_on_green,
+        notify_inhibit_equal_rollback_canary,
+        save_inhibit_equal_canary_slack_state,
+    )
+
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_SLACK_STATE", str(tmp_path / "canary_slack.json"))
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_SLACK_BOT_TOKEN", "xoxb-canary")
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_SLACK_CHANNEL", "C-canary")
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_SLACK_THREAD_REPLY", "1")
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON", raising=False)
+
+    rollback = {
+        "rolled_back": True,
+        "reason": "amtool_regression",
+        "backup": "metadata/bak.yml",
+        "generated": {"equal": ["alertname"]},
+        "diff": {"unified_diff": "+x\n"},
+        "post_check": {"ok": False, "method": "amtool"},
+    }
+    with patch(
+        "rag.judge_alert.post_slack_thread_message",
+        return_value={"ok": True, "ts": "111.1", "channel": "C-canary"},
+    ) as bot_post:
+        rolled = notify_inhibit_equal_rollback_canary(rollback)
+    assert rolled["posted"] is True
+    assert rolled["slack"] is True
+    assert rolled["slack_via"] == "bot"
+    assert rolled["slack_thread_ts"] == "111.1"
+    assert bot_post.called
+    assert bot_post.call_args.kwargs.get("thread_ts") is None
+
+    green = {
+        "applied": True,
+        "rolled_back": False,
+        "generated": {"equal": ["alertname"]},
+        "git": {"ok": True},
+    }
+    with patch(
+        "rag.judge_alert.post_slack_thread_message",
+        return_value={"ok": True, "ts": "111.2", "thread_ts": "111.1"},
+    ) as reply:
+        with patch("rag.judge_alert.post_slack", return_value=False) as webhook:
+            closed = notify_inhibit_equal_close_on_green(green)
+    assert closed["closed"] is True
+    assert closed["slack_thread_reply"] is True
+    assert closed["slack_via"] == "thread"
+    assert closed["slack_thread_ts"] == "111.1"
+    assert reply.called
+    assert reply.call_args.kwargs.get("thread_ts") == "111.1"
+    assert webhook.called is False
+
+    # Explicit env thread_ts wins over state file
+    save_inhibit_equal_canary_slack_state(
+        thread_ts="222.2", channel="C-canary", base=str(tmp_path)
+    )
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_SLACK_THREAD_TS", "333.3")
+    with patch(
+        "rag.judge_alert.post_slack_thread_message",
+        return_value={"ok": True, "ts": "333.4"},
+    ) as reply2:
+        again = notify_inhibit_equal_close_on_green(green)
+    assert again["slack_thread_ts"] == "333.3"
+    assert reply2.call_args.kwargs.get("thread_ts") == "333.3"

@@ -1,6 +1,31 @@
 {
   "annotations": {
-    "list": []
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "enable": true,
+        "expr": "rag_dual_write_webhook_dlq_quarantine_depth >= 1",
+        "iconColor": "semi-dark-orange",
+        "name": "DLQ quarantine depth",
+        "titleFormat": "quarantine depth",
+        "textFormat": "Dual-write DLQ quarantine not empty — replay/prune via CLI"
+      }
+    ]
   },
   "editable": true,
   "fiscalYearStartMonth": 0,

@@ -116,3 +116,55 @@ groups:
           severity: critical
           service: rag-ingest
           team: rag
+      - uid: rag-dual-write-dlq-quarantine-depth
+        title: RAG dual-write DLQ quarantine depth
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: rag_dual_write_webhook_dlq_quarantine_depth
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gte
+                    params: [1]
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: Dual-write DLQ quarantine not empty
+          description: >
+            Quarantine depth ≥ 1. Dashboard: rag-judge (DLQ quarantine panel).
+            Inspect: python -m rag.cli dual-write-dlq --quarantine --notify
+            Replay: python -m rag.cli dual-write-dlq --replay-quarantine
+            Prune: python -m rag.cli dual-write-dlq --prune-quarantine --notify
+        labels:
+          severity: warning
+          service: rag-ingest
+          team: rag

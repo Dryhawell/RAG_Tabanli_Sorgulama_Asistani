@@ -309,6 +309,7 @@ def test_mute_ui_interactive_and_block_kit(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
     monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_PREFS", str(tmp_path / "prefs.json"))
     monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_CATCH_UP_ON_UNMUTE", "0")
     from rag.judge_alert import (
         build_judge_ack_digest_slack_blocks,
         handle_slack_interactive_ack,
@@ -412,6 +413,122 @@ def test_mute_ui_interactive_and_block_kit(tmp_path: Path, monkeypatch) -> None:
     events = [r.get("event") for r in read_judge_ack_audit(path=str(tmp_path / "ack.jsonl"))]
     assert "digest_mute" in events
     assert "digest_unmute" in events
+
+
+def test_unmute_catch_up_digest_button(tmp_path: Path, monkeypatch) -> None:
+    from rag.judge_alert import (
+        build_judge_ack_digest_slack_blocks,
+        handle_slack_interactive_ack,
+        is_judge_ack_digest_muted,
+        set_judge_ack_digest_mute,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_SLACK_INTERACTIVE", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_PUBLIC_URL", "http://example.test/judge/ack-form")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_CATCH_UP_ON_UNMUTE", "0")
+    monkeypatch.setenv("RAG_JUDGE_ACK_RATE_LIMIT_SEC", "0")
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", str(tmp_path / "judge_state.json"))
+    set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path))
+    summary = {
+        "ok": True,
+        "since_hours": 168,
+        "total": 1,
+        "actor_count": 1,
+        "by_event": {"ack": 1},
+        "actors": ["a"],
+        "tenant_id": "acme",
+    }
+    blocks = build_judge_ack_digest_slack_blocks(
+        summary, tenant_id="acme", base=str(tmp_path), muted=True
+    )
+    actions = [b for b in blocks if b.get("type") == "actions"]
+    assert actions
+    ids = {e.get("action_id") for e in actions[0]["elements"]}
+    assert "judge_ack_digest_unmute" in ids
+    assert "judge_ack_digest_catch_up" in ids
+    assert len(actions[0]["elements"]) <= 5
+
+    append_judge_ack_audit("ack", actor="a", path=str(tmp_path / "ack.jsonl"), extra={"tenant_id": "acme"})
+    with patch("rag.judge_alert.slack_api", return_value={"ok": True, "ts": "10.1"}):
+        with patch(
+            "rag.judge_alert.dispatch_judge_ack_digest",
+            return_value={"ok": True, "skipped": False, "configured": True},
+        ) as dispatch:
+            with patch(
+                "rag.judge_alert.post_slack_thread_message",
+                return_value={"ok": True, "ts": "10.2"},
+            ):
+                out = handle_slack_interactive_ack(
+                    {
+                        "type": "block_actions",
+                        "actions": [
+                            {
+                                "action_id": "judge_ack_digest_catch_up",
+                                "value": "acme",
+                            }
+                        ],
+                        "user": {"id": "U1", "username": "ops"},
+                        "channel": {"id": "C1"},
+                        "message": {"ts": "9.9"},
+                    }
+                )
+    assert out["ok"] is True
+    assert out["mode"] == "digest_catch_up"
+    assert out["unmuted"] is True
+    assert out["dispatch"]["ok"] is True
+    assert dispatch.called
+    assert dispatch.call_args.kwargs.get("ignore_quiet_hours") is True
+    assert not is_judge_ack_digest_muted("acme", base=str(tmp_path))
+
+
+def test_unmute_auto_catch_up_digest(tmp_path: Path, monkeypatch) -> None:
+    from rag.judge_alert import (
+        handle_slack_interactive_ack,
+        set_judge_ack_digest_mute,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_CATCH_UP_ON_UNMUTE", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_RATE_LIMIT_SEC", "0")
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", str(tmp_path / "judge_state.json"))
+    set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path))
+    with patch("rag.judge_alert.slack_api", return_value={"ok": True}):
+        with patch(
+            "rag.judge_alert.post_judge_digest_mute_thread_reply",
+            return_value={"ok": True},
+        ):
+            with patch(
+                "rag.judge_alert.dispatch_judge_ack_digest_catch_up",
+                return_value={
+                    "ok": True,
+                    "mode": "digest_catch_up",
+                    "text": "Catch-up digest for tenant `acme`: sent",
+                },
+            ) as catch:
+                out = handle_slack_interactive_ack(
+                    {
+                        "type": "block_actions",
+                        "actions": [
+                            {
+                                "action_id": "judge_ack_digest_unmute",
+                                "value": "acme",
+                            }
+                        ],
+                        "user": {"id": "U2", "username": "ops2"},
+                        "channel": {"id": "C1"},
+                        "message": {"ts": "9.9"},
+                    }
+                )
+    assert out["ok"] is True
+    assert out["muted"] is False
+    assert out.get("catch_up", {}).get("ok") is True
+    assert catch.called
+    assert catch.call_args.kwargs.get("unmute") is False
 
 
 def test_dual_write_dlq_cli_parser() -> None:

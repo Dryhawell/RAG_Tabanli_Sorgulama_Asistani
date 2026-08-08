@@ -85,5 +85,9 @@ groups:
           summary: "Dual-write DLQ quarantine not empty"
           description: >
             Quarantine depth {{ $value | humanize }} ≥ 1.
+            Dashboard: rag-judge (DLQ quarantine panel).
             Inspect: python -m rag.cli dual-write-dlq --quarantine --notify
             Replay: python -m rag.cli dual-write-dlq --replay-quarantine
+            Prune: python -m rag.cli dual-write-dlq --prune-quarantine --notify
+          dashboard_uid: rag-judge
+          panel_id: "dlq-quarantine"

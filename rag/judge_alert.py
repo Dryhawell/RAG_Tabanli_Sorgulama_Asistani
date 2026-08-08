@@ -1321,15 +1321,28 @@ def build_judge_ack_digest_slack_blocks(
                     "value": tid,
                 }
             )
-        elements.append(
-            {
-                "type": "button",
-                "text": {"type": "plain_text", "text": "Export JSONL"},
-                "action_id": "judge_ack_digest_reexport",
-                "value": "jsonl",
-                "style": "primary",
-            }
-        )
+            if is_muted:
+                elements.append(
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Catch-up digest",
+                        },
+                        "action_id": "judge_ack_digest_catch_up",
+                        "value": tid,
+                        "style": "primary",
+                    }
+                )
+        export_btn: Dict[str, Any] = {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "Export JSONL"},
+            "action_id": "judge_ack_digest_reexport",
+            "value": "jsonl",
+        }
+        if not is_muted:
+            export_btn["style"] = "primary"
+        elements.append(export_btn)
         # CSV only when mute button is absent (room under 5-cap with form+zoom).
         if not tid:
             elements.append(
@@ -1364,12 +1377,15 @@ def build_judge_ack_digest_slack_blocks(
     )
     ack_url = ack_urls.get("form") or judge_ack_public_url()
     if ack_url:
-        # Prefer mute/zoom + form: drop CSV if we would exceed 5
+        # Prefer mute/catch-up/zoom + form: drop CSV / export if we would exceed 5
         if len(elements) >= 4:
+            drop_ids = {"judge_ack_digest_reexport_csv"}
+            if any(
+                e.get("action_id") == "judge_ack_digest_catch_up" for e in elements
+            ):
+                drop_ids.add("judge_ack_digest_reexport")
             elements = [
-                e
-                for e in elements
-                if e.get("action_id") != "judge_ack_digest_reexport_csv"
+                e for e in elements if e.get("action_id") not in drop_ids
             ]
         elements.append(
             {
@@ -1502,6 +1518,83 @@ def _judge_ack_digest_quiet_spec(quiet_hours: Optional[str] = None) -> Optional[
 def digest_snapshot_keep_on_mute_enabled() -> bool:
     raw = os.environ.get("RAG_JUDGE_ACK_DIGEST_SNAPSHOT_KEEP_ON_MUTE", "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
+
+
+def digest_catch_up_on_unmute_enabled() -> bool:
+    raw = os.environ.get("RAG_JUDGE_ACK_DIGEST_CATCH_UP_ON_UNMUTE", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def dispatch_judge_ack_digest_catch_up(
+    tenant_id: str,
+    *,
+    base: Optional[str] = None,
+    actor: str = "slack",
+    webhook: Optional[str] = None,
+    channel_id: Optional[str] = None,
+    thread_ts: Optional[str] = None,
+    bot_token: Optional[str] = None,
+    unmute: bool = True,
+) -> Dict[str, Any]:
+    """Force-dispatch a tenant digest (optionally unmute first) for catch-up."""
+    tid = (tenant_id or "").strip()
+    if not tid:
+        return {"ok": False, "error": "tenant_required", "mode": "digest_catch_up"}
+    unmuted = False
+    mute_saved: Optional[Dict[str, Any]] = None
+    if unmute and is_judge_ack_digest_muted(tid, base=base):
+        mute_saved = set_judge_ack_digest_mute(tid, muted=False, base=base)
+        unmuted = bool(mute_saved.get("ok"))
+        if unmuted:
+            append_judge_ack_audit(
+                "digest_unmute",
+                actor=actor,
+                note=f"Tenant `{tid}` unmuted via catch-up digest",
+                source="slack_interactive",
+                extra={"tenant_id": tid, "muted": False, "catch_up": True},
+            )
+    try:
+        hours = float(os.environ.get("RAG_JUDGE_ACK_DIGEST_HOURS", "168") or 168)
+    except Exception:
+        hours = 168.0
+    audit_path = os.environ.get("RAG_JUDGE_ACK_AUDIT", "").strip() or None
+    summary = summarize_judge_ack_audit(
+        path=audit_path, since_hours=hours, tenant_id=tid
+    )
+    summary = {**summary, "tenant_id": tid}
+    dispatched = dispatch_judge_ack_digest(
+        summary,
+        webhook=webhook,
+        tenant_id=tid,
+        base=base,
+        ignore_quiet_hours=True,
+    )
+    text = (
+        f"Catch-up digest for tenant `{tid}`: "
+        f"{'sent' if dispatched.get('ok') and not dispatched.get('skipped') else 'skipped'}"
+    )
+    if dispatched.get("reason"):
+        text += f" · reason=`{dispatched.get('reason')}`"
+    if unmuted:
+        text += " · unmuted"
+    thread_reply = post_slack_thread_message(
+        text=text,
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+        bot_token=bot_token,
+    )
+    return {
+        "ok": bool(dispatched.get("ok")),
+        "mode": "digest_catch_up",
+        "tenant_id": tid,
+        "unmuted": unmuted,
+        "mute": mute_saved,
+        "dispatch": dispatched,
+        "text": text,
+        "thread_reply": thread_reply,
+        "channel_id": channel_id,
+        "message_ts": thread_ts,
+    }
 
 
 def maybe_keep_digest_snapshot_on_mute(
@@ -2475,6 +2568,23 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
                 expires_at=str(saved.get("expires_at") or "") or None,
                 bot_token=bot_token or None,
             )
+        catch_up: Optional[Dict[str, Any]] = None
+        if (
+            saved.get("ok")
+            and (not mute)
+            and digest_catch_up_on_unmute_enabled()
+        ):
+            catch_up = dispatch_judge_ack_digest_catch_up(
+                tid,
+                base=base,
+                actor=actor,
+                channel_id=channel_id,
+                thread_ts=message_ts,
+                bot_token=bot_token or None,
+                unmute=False,
+            )
+            if catch_up.get("text"):
+                text = f"{text}\n{catch_up['text']}"
         return {
             "ok": bool(saved.get("ok")),
             "mode": "digest_mute",
@@ -2493,10 +2603,77 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "error": ephemeral.get("error"),
             },
             "thread_reply": thread_reply,
+            "catch_up": catch_up,
             "channel_id": channel_id,
             "message_ts": message_ts,
             "error": saved.get("error"),
         }
+
+    if "judge_ack_digest_catch_up" in action_ids:
+        tid = ""
+        for act in actions:
+            if not isinstance(act, dict):
+                continue
+            if str(act.get("action_id") or "") == "judge_ack_digest_catch_up":
+                tid = str(act.get("value") or "").strip()
+                break
+        if not tid:
+            return {"ok": False, "error": "tenant_required", "mode": "digest_catch_up"}
+        actor = slack_interactive_actor(payload) or "slack"
+        state_path = os.environ.get("RAG_JUDGE_ALERT_STATE", "").strip() or None
+        rate = check_judge_ack_rate_limit(actor, state_path=state_path)
+        if rate.get("limited"):
+            return {
+                "ok": False,
+                "error": "rate_limited",
+                "mode": "digest_catch_up",
+                "retry_after_sec": rate.get("retry_after_sec"),
+                "tenant_id": tid,
+            }
+        base = os.environ.get("RAG_JUDGE_ACK_DIGEST_BASE", "").strip() or None
+        channel_id = str(
+            ((payload.get("channel") or {}).get("id"))
+            or ((payload.get("container") or {}).get("channel_id"))
+            or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "")
+            or ""
+        ).strip() or None
+        message_ts = str(
+            ((payload.get("message") or {}).get("ts"))
+            or ((payload.get("container") or {}).get("thread_ts"))
+            or ((payload.get("container") or {}).get("message_ts"))
+            or ""
+        ).strip() or None
+        bot_token = os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip() or None
+        out = dispatch_judge_ack_digest_catch_up(
+            tid,
+            base=base,
+            actor=actor,
+            channel_id=channel_id,
+            thread_ts=message_ts,
+            bot_token=bot_token,
+            unmute=True,
+        )
+        if out.get("ok"):
+            record_judge_ack_rate(actor, state_path=state_path)
+        user_id = slack_interactive_user_id(payload)
+        ephemeral: Dict[str, Any] = {"ok": False, "skipped": True}
+        if bot_token and channel_id and user_id:
+            ephemeral = slack_api(
+                "chat.postEphemeral",
+                bot_token=bot_token,
+                json_body={
+                    "channel": channel_id,
+                    "user": user_id,
+                    "text": out.get("text") or f"Catch-up digest for `{tid}`",
+                    "mrkdwn": True,
+                },
+            )
+        out["ephemeral"] = {
+            "ok": bool(ephemeral.get("ok")),
+            "skipped": bool(ephemeral.get("skipped")),
+            "error": ephemeral.get("error"),
+        }
+        return out
 
     if "judge_ack_digest_heatmap_zoom" in action_ids:
         hours = 168.0

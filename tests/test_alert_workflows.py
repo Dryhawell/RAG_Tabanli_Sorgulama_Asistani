@@ -410,18 +410,26 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_keep_on_mute_blockkit_pd():
+def test_readme_sonraki_adaylar_after_catchup_grafana_thread():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
-    assert "unmute catch-up digest button" in text
-    assert "quarantine Grafana alert annotations" in text
-    assert "Slack thread reply on resolve" in text
+    assert "catch-up chat.update unmute" in text
+    assert "quarantine Alertmanager route" in text
+    assert "thread-state CI artifact" in text
     # Completed this round — should not remain as next candidates
-    assert "digest-diff snapshot keep-on-mute" not in text
-    assert "quarantine Slack Block Kit status" not in text
-    assert "PD severity tune from CI" not in text
+    assert "unmute catch-up digest button" not in text
+    assert "quarantine Grafana alert annotations" not in text
+    assert "Slack thread reply on resolve" not in text
+
+
+def test_ci_inhibit_equal_slack_thread_env():
+    text = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "INHIBIT_EQUAL_CANARY_SLACK_BOT_TOKEN" in text
+    assert "INHIBIT_EQUAL_CANARY_SLACK_CHANNEL" in text
+    assert "INHIBIT_EQUAL_CANARY_SLACK_THREAD_REPLY" in text
+    assert "INHIBIT_EQUAL_CANARY_SLACK_THREAD_TS" in text
 
 
 def test_judge_ack_digest_mute_prune_workflow_yaml():
@@ -485,12 +493,22 @@ def test_dual_write_shadow_alert_artifacts():
     )
     assert "rag-dual-write-shadow-overlap-low" in alerting
     assert "rag-dual-write-lag-shadow-burn" in alerting
+    assert "rag-dual-write-dlq-quarantine-depth" in alerting
+    assert "rag_dual_write_webhook_dlq_quarantine_depth" in alerting
+    assert "Dashboard: rag-judge" in alerting
+    assert "--quarantine --notify" in alerting
+    assert "--replay-quarantine" in alerting
     assert "0.95" in alerting
+    rules = Path("grafana/rules/rag_dual_write.yml").read_text(encoding="utf-8")
+    assert "dashboard_uid: rag-judge" in rules
+    assert "Prune: python -m rag.cli dual-write-dlq --prune-quarantine" in rules
     dash = Path("grafana/dashboards/rag_judge.json").read_text(encoding="utf-8")
     assert "rag_vector_dual_write_shadow_overlap" in dash
     assert "rag:dual_write_shadow_overlap:avg1h" in dash
     assert "rag:dual_write_lag:avg1h" in dash
     assert "rag:dual_write_shadow_burn:1h" in dash
+    assert "DLQ quarantine depth" in dash
+    assert "rag_dual_write_webhook_dlq_quarantine_depth >= 1" in dash
 
 
 def test_suggest_equal_labels_and_from_live(tmp_path, monkeypatch):

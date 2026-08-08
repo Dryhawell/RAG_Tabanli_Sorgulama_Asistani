@@ -239,6 +239,38 @@ def handle_judge_slack_interactive(
             json.dumps(resp, ensure_ascii=False).encode("utf-8"),
         )
 
+    if result.get("mode") in {"digest_mute", "digest_catch_up"}:
+        text = str(result.get("text") or result.get("mode") or "Digest mute updated")
+        if result.get("ok"):
+            resp = {
+                "response_type": "ephemeral",
+                "replace_original": False,
+                "text": text[:2900],
+            }
+            return (
+                200,
+                {"Content-Type": "application/json"},
+                json.dumps(resp, ensure_ascii=False).encode("utf-8"),
+            )
+        err = str(result.get("error") or "digest_mute_failed")
+        status = 429 if err == "rate_limited" else 400
+        retry = result.get("retry_after_sec")
+        body: Dict[str, Any] = {
+            "response_type": "ephemeral",
+            "text": text[:2900] if text else f"Digest action failed: {err}",
+            "ok": False,
+            "error": err,
+        }
+        headers_out = {"Content-Type": "application/json"}
+        if err == "rate_limited":
+            headers_out["Retry-After"] = str(int(float(retry or 1)))
+            body["retry_after_sec"] = retry
+        return (
+            status,
+            headers_out,
+            json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        )
+
     if result.get("ok"):
         text = (
             f"Soft-fail acknowledged by {result.get('state', {}).get('acknowledged_by')}"

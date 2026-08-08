@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -295,6 +296,75 @@ def resolve_opsgenie_canary_targets() -> List[Dict[str, str]]:
     return [{"region": r, "api_key": og_key} for r in regions]
 
 
+def inhibit_equal_canary_slack_state_path(base: Optional[str] = None) -> str:
+    env = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_SLACK_STATE", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_SLACK_STATE", "").strip()
+    )
+    if env:
+        return env
+    root = base or str(ROOT / "metadata")
+    return str(Path(root) / "inhibit_equal_canary_slack.json")
+
+
+def load_inhibit_equal_canary_slack_state(
+    *, base: Optional[str] = None
+) -> Dict[str, Any]:
+    path = inhibit_equal_canary_slack_state_path(base=base)
+    if not Path(path).is_file():
+        return {}
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_inhibit_equal_canary_slack_state(
+    *,
+    thread_ts: Optional[str] = None,
+    channel: Optional[str] = None,
+    reason: Optional[str] = None,
+    base: Optional[str] = None,
+) -> Dict[str, Any]:
+    path = Path(inhibit_equal_canary_slack_state_path(base=base))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = load_inhibit_equal_canary_slack_state(base=base)
+    if thread_ts:
+        row["thread_ts"] = str(thread_ts).strip()
+    if channel:
+        row["channel"] = str(channel).strip()
+    if reason:
+        row["reason"] = str(reason).strip()
+    row["updated_at"] = datetime.now(timezone.utc).isoformat()
+    path.write_text(json.dumps(row, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return row
+
+
+def resolve_inhibit_equal_canary_slack_bot_token() -> str:
+    return (
+        os.environ.get("INHIBIT_EQUAL_CANARY_SLACK_BOT_TOKEN", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_SLACK_BOT_TOKEN", "").strip()
+        or os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
+    )
+
+
+def resolve_inhibit_equal_canary_slack_channel() -> str:
+    return (
+        os.environ.get("INHIBIT_EQUAL_CANARY_SLACK_CHANNEL", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_SLACK_CHANNEL", "").strip()
+        or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "").strip()
+    )
+
+
+def inhibit_equal_canary_slack_thread_reply_enabled() -> bool:
+    raw = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_SLACK_THREAD_REPLY", "1").strip().lower()
+        or "1"
+    )
+    return raw not in {"0", "false", "no", "off"}
+
+
 def resolve_inhibit_equal_canary_pd_severity(
     report: Optional[Dict[str, Any]] = None,
 ) -> str:
@@ -365,15 +435,50 @@ def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, An
         or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", "").strip()
     )
     og_targets = resolve_opsgenie_canary_targets()
-    if not webhook and not pd_key and not og_targets:
+    bot_token_early = resolve_inhibit_equal_canary_slack_bot_token()
+    channel_early = resolve_inhibit_equal_canary_slack_channel()
+    if (
+        not webhook
+        and not pd_key
+        and not og_targets
+        and not (bot_token_early and channel_early)
+    ):
         return {"ok": True, "skipped": True, "reason": "webhook_missing"}
 
-    from rag.judge_alert import post_opsgenie, post_pagerduty, post_slack
+    from rag.judge_alert import (
+        post_opsgenie,
+        post_pagerduty,
+        post_slack,
+        post_slack_thread_message,
+    )
 
     payload = build_inhibit_equal_rollback_canary_payload(report)
+    bot_token = resolve_inhibit_equal_canary_slack_bot_token()
+    channel = resolve_inhibit_equal_canary_slack_channel()
     slack_ok = False
-    if webhook:
+    slack_thread_ts: Optional[str] = None
+    slack_via: Optional[str] = None
+    if bot_token and channel:
+        bot_post = post_slack_thread_message(
+            text=str(payload.get("text") or "Inhibit equal apply rolled back"),
+            channel_id=channel,
+            thread_ts=None,
+            bot_token=bot_token,
+        )
+        slack_ok = bool(bot_post.get("ok"))
+        if slack_ok:
+            slack_via = "bot"
+            slack_thread_ts = str(bot_post.get("ts") or "").strip() or None
+            if slack_thread_ts:
+                save_inhibit_equal_canary_slack_state(
+                    thread_ts=slack_thread_ts,
+                    channel=str(bot_post.get("channel") or channel),
+                    reason=str(report.get("reason") or "") or None,
+                )
+    if (not slack_ok) and webhook:
         slack_ok = bool(post_slack(webhook, payload))
+        if slack_ok:
+            slack_via = "webhook"
 
     equal = (report.get("generated") or {}).get("equal") or []
     pd_report = {
@@ -421,12 +526,15 @@ def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, An
         og_by_region[region] = ok
     og_ok = any(og_by_region.values()) if og_by_region else False
 
+    has_slack = bool(webhook or (bot_token and channel))
     posted = slack_ok or pd_ok or og_ok
     return {
-        "ok": posted if (webhook or pd_key or og_targets) else True,
+        "ok": posted if (has_slack or pd_key or og_targets) else True,
         "skipped": False,
         "posted": posted,
-        "slack": slack_ok if webhook else None,
+        "slack": slack_ok if has_slack else None,
+        "slack_via": slack_via,
+        "slack_thread_ts": slack_thread_ts,
         "pagerduty": pd_ok if pd_key else None,
         "pagerduty_severity": pd_severity if pd_key else None,
         "opsgenie": og_ok if og_targets else None,
@@ -495,10 +603,27 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
         or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", "").strip()
     )
     og_targets = resolve_opsgenie_canary_targets()
-    if not webhook and not pd_key and not og_targets:
+    state_early = load_inhibit_equal_canary_slack_state()
+    thread_early = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_SLACK_THREAD_TS", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_SLACK_THREAD_TS", "").strip()
+        or str(state_early.get("thread_ts") or "").strip()
+    )
+    bot_early = resolve_inhibit_equal_canary_slack_bot_token()
+    if (
+        not webhook
+        and not pd_key
+        and not og_targets
+        and not (bot_early and thread_early)
+    ):
         return {"ok": True, "skipped": True, "reason": "targets_missing"}
 
-    from rag.judge_alert import post_opsgenie_close, post_pagerduty, post_slack
+    from rag.judge_alert import (
+        post_opsgenie_close,
+        post_pagerduty,
+        post_slack,
+        post_slack_thread_message,
+    )
 
     equal = (report.get("generated") or {}).get("equal") or []
     pd_report = {
@@ -514,11 +639,40 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
         "mode": "inhibit_equal_apply",
     }
 
+    resolve_payload = build_inhibit_equal_resolve_canary_payload(report)
+    bot_token = resolve_inhibit_equal_canary_slack_bot_token()
+    state = load_inhibit_equal_canary_slack_state()
+    thread_ts = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_SLACK_THREAD_TS", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_SLACK_THREAD_TS", "").strip()
+        or str(state.get("thread_ts") or "").strip()
+    )
+    channel = (
+        resolve_inhibit_equal_canary_slack_channel()
+        or str(state.get("channel") or "").strip()
+    )
     slack_ok = False
-    if webhook:
-        slack_ok = bool(
-            post_slack(webhook, build_inhibit_equal_resolve_canary_payload(report))
+    slack_thread_reply = False
+    slack_via: Optional[str] = None
+    if (
+        inhibit_equal_canary_slack_thread_reply_enabled()
+        and bot_token
+        and thread_ts
+    ):
+        reply = post_slack_thread_message(
+            text=str(resolve_payload.get("text") or "Inhibit equal apply resolved"),
+            channel_id=channel or None,
+            thread_ts=thread_ts,
+            bot_token=bot_token,
         )
+        slack_ok = bool(reply.get("ok"))
+        if slack_ok:
+            slack_thread_reply = True
+            slack_via = "thread"
+    if (not slack_ok) and webhook:
+        slack_ok = bool(post_slack(webhook, resolve_payload))
+        if slack_ok:
+            slack_via = "webhook"
 
     pd_ok = False
     if pd_key:
@@ -543,12 +697,16 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
         )
         og_by_region[region] = ok
     og_ok = any(og_by_region.values()) if og_by_region else False
+    has_slack = bool(webhook or slack_thread_reply or (bot_token and thread_ts))
     closed = slack_ok or pd_ok or og_ok
     return {
-        "ok": closed if (webhook or pd_key or og_targets) else True,
+        "ok": closed if (has_slack or pd_key or og_targets) else True,
         "skipped": False,
         "closed": closed,
-        "slack": slack_ok if webhook else None,
+        "slack": slack_ok if has_slack else None,
+        "slack_via": slack_via,
+        "slack_thread_reply": slack_thread_reply,
+        "slack_thread_ts": thread_ts or None,
         "pagerduty": pd_ok if pd_key else None,
         "opsgenie": og_ok if og_targets else None,
         "opsgenie_regions": og_by_region or None,
