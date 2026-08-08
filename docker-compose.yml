@@ -1,0 +1,139 @@
+services:
+  rag-ui:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./indexes:/app/indexes
+      - ./metadata:/app/metadata
+    environment:
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - RAG_EMBEDDING_MODEL=${RAG_EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+      - RAG_VECTOR_BACKEND=${RAG_VECTOR_BACKEND:-faiss}
+      - RAG_QDRANT_URL=${RAG_QDRANT_URL:-}
+      - RAG_UI_LANG=${RAG_UI_LANG:-tr}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.2
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    profiles:
+      - qdrant
+
+  # Observability stack (opsiyonel): docker compose --profile obs up -d
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: ["obs"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./grafana/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./grafana/rules:/etc/prometheus/rules:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --enable-feature=exemplar-storage
+      - --web.enable-remote-write-receiver
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - alertmanager
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    profiles: ["obs"]
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./grafana/alertmanager.yml.template:/etc/alertmanager/alertmanager.yml.template:ro
+      - ./grafana:/grafana:ro
+      - ./scripts/render_alertmanager_config.sh:/render.sh:ro
+      - alertmanager_cfg:/etc/alertmanager
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache gettext >/dev/null 2>&1 || true
+        TEMPLATE=/etc/alertmanager/alertmanager.yml.template \
+        OUTPUT=/etc/alertmanager/alertmanager.yml \
+        ALERTMANAGER_TEMPLATE=/etc/alertmanager/alertmanager.yml.template \
+        ALERTMANAGER_OUTPUT=/etc/alertmanager/alertmanager.yml \
+        ALERTMANAGER_INHIBIT=/grafana/inhibit_rules.generated.yml \
+        /render.sh
+        exec /bin/alertmanager \
+          --config.file=/etc/alertmanager/alertmanager.yml \
+          --storage.path=/alertmanager
+    environment:
+      RAG_ALERTMANAGER_SLACK_WEBHOOK: ${RAG_ALERTMANAGER_SLACK_WEBHOOK:-}
+      RAG_ALERTMANAGER_WEBHOOK_URL: ${RAG_ALERTMANAGER_WEBHOOK_URL:-http://host.docker.internal:9999/alertmanager-default}
+      ALERTMANAGER_RELOAD_URL: ${ALERTMANAGER_RELOAD_URL:-http://127.0.0.1:9093/-/reload}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    profiles: ["obs"]
+    command: ["-config.file=/etc/tempo.yaml"]
+    ports:
+      - "3200:3200"
+      - "4317:4317"
+      - "4318:4318"
+    volumes:
+      - ./grafana/tempo.yaml:/etc/tempo.yaml:ro
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    profiles: ["obs"]
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - tempo
+      - alertmanager
+
+  # Alertmanager cannot attach X-Webhook-* HMAC headers; point quarantine
+  # receiver at this sidecar (e.g. https://webhook-signing-sidecar:8777/ with mTLS).
+  webhook-signing-sidecar:
+    build: .
+    profiles: ["obs"]
+    ports:
+      - "8777:8777"
+    environment:
+      RAG_WEBHOOK_SIGNING_SIDECAR_HOST: "0.0.0.0"
+      RAG_WEBHOOK_SIGNING_SIDECAR_PORT: "8777"
+      RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM: ${RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM:-http://host.docker.internal:8766/hooks/dual-write-dlq-quarantine}
+      RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET: ${RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET:-}
+      RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET: ${RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET:-}
+      RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT: ${RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT:-}
+      RAG_WEBHOOK_SIGNING_SIDECAR_TLS_KEY: ${RAG_WEBHOOK_SIGNING_SIDECAR_TLS_KEY:-}
+      RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CA: ${RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CA:-}
+      RAG_WEBHOOK_SIGNING_SIDECAR_MTLS: ${RAG_WEBHOOK_SIGNING_SIDECAR_MTLS:-}
+    volumes:
+      - ${RAG_WEBHOOK_SIGNING_SIDECAR_TLS_DIR:-./metadata/sidecar-tls}:/tls:ro
+    command:
+      - python
+      - -m
+      - rag.cli
+      - webhook-signing-sidecar
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8777"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  qdrant_data:
+  alertmanager_cfg:
