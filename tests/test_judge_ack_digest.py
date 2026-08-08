@@ -484,6 +484,103 @@ def test_unmute_catch_up_digest_button(tmp_path: Path, monkeypatch) -> None:
     assert not is_judge_ack_digest_muted("acme", base=str(tmp_path))
 
 
+def test_mute_unmute_chat_update_refreshes_actions(tmp_path: Path, monkeypatch) -> None:
+    from rag.judge_alert import (
+        build_judge_ack_digest_slack_blocks,
+        handle_slack_interactive_ack,
+        set_judge_ack_digest_mute,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_SLACK_INTERACTIVE", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_PUBLIC_URL", "http://example.test/judge/ack-form")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_CATCH_UP_ON_UNMUTE", "0")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_CHAT_UPDATE", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_RATE_LIMIT_SEC", "0")
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", str(tmp_path / "judge_state.json"))
+
+    summary = {
+        "ok": True,
+        "since_hours": 168,
+        "total": 1,
+        "actor_count": 1,
+        "by_event": {"ack": 1},
+        "actors": ["a"],
+        "tenant_id": "acme",
+    }
+    blocks = build_judge_ack_digest_slack_blocks(
+        summary, tenant_id="acme", base=str(tmp_path), muted=False
+    )
+    calls: list[dict] = []
+
+    def _fake_api(method, *, bot_token, json_body=None, params=None):
+        calls.append({"method": method, "body": json_body or {}})
+        return {"ok": True, "ts": "9.9"}
+
+    with patch("rag.judge_alert.slack_api", side_effect=_fake_api):
+        with patch(
+            "rag.judge_alert.post_judge_digest_mute_thread_reply",
+            return_value={"ok": True},
+        ):
+            muted = handle_slack_interactive_ack(
+                {
+                    "type": "block_actions",
+                    "actions": [
+                        {"action_id": "judge_ack_digest_mute", "value": "acme"}
+                    ],
+                    "user": {"id": "U1", "username": "ops"},
+                    "channel": {"id": "C1"},
+                    "message": {"ts": "9.9", "text": "digest", "blocks": blocks},
+                }
+            )
+    assert muted["ok"] is True
+    assert muted["message_update"]["ok"] is True
+    update_calls = [c for c in calls if c["method"] == "chat.update"]
+    assert update_calls
+    updated_blocks = update_calls[0]["body"]["blocks"]
+    actions = next(b for b in updated_blocks if b.get("type") == "actions")
+    ids = {e.get("action_id") for e in actions["elements"]}
+    assert "judge_ack_digest_unmute" in ids
+    assert "judge_ack_digest_catch_up" in ids
+
+    import rag.judge_alert as ja
+
+    ja._ACK_RATE.clear()
+    calls.clear()
+    set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path))
+    muted_blocks = build_judge_ack_digest_slack_blocks(
+        summary, tenant_id="acme", base=str(tmp_path), muted=True
+    )
+    with patch("rag.judge_alert.slack_api", side_effect=_fake_api):
+        with patch(
+            "rag.judge_alert.post_judge_digest_mute_thread_reply",
+            return_value={"ok": True},
+        ):
+            unmuted = handle_slack_interactive_ack(
+                {
+                    "type": "block_actions",
+                    "actions": [
+                        {"action_id": "judge_ack_digest_unmute", "value": "acme"}
+                    ],
+                    "user": {"id": "U2", "username": "ops2"},
+                    "channel": {"id": "C1"},
+                    "message": {"ts": "9.9", "text": "digest", "blocks": muted_blocks},
+                }
+            )
+    assert unmuted["muted"] is False
+    assert unmuted["message_update"]["ok"] is True
+    update_calls = [c for c in calls if c["method"] == "chat.update"]
+    assert update_calls
+    actions = next(
+        b for b in update_calls[0]["body"]["blocks"] if b.get("type") == "actions"
+    )
+    ids = {e.get("action_id") for e in actions["elements"]}
+    assert "judge_ack_digest_mute" in ids
+    assert "judge_ack_digest_catch_up" not in ids
+
+
 def test_unmute_auto_catch_up_digest(tmp_path: Path, monkeypatch) -> None:
     from rag.judge_alert import (
         handle_slack_interactive_ack,

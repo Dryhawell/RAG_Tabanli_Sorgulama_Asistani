@@ -12,6 +12,11 @@ route:
         - service = rag-judge
       receiver: judge-webhook
       continue: true
+    # Quarantine before broad ingest catch-up route
+    - matchers:
+        - alertname = RagDualWriteDlqQuarantineDepthHigh
+      receiver: ingest-dlq-quarantine-webhook
+      continue: true
     - matchers:
         - service = rag-ingest
       receiver: ingest-webhook
@@ -31,6 +36,11 @@ receivers:
   - name: judge-webhook
     webhook_configs:
       - url: http://host.docker.internal:9999/alertmanager-judge
+        send_resolved: true
+
+  - name: ingest-dlq-quarantine-webhook
+    webhook_configs:
+      - url: http://host.docker.internal:8766/hooks/dual-write-dlq-quarantine
         send_resolved: true
 
   - name: ingest-webhook

@@ -622,6 +622,7 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
                         "/judge/alert",
                         "/alertmanager",
                         "/hooks/dual-write-catch-up",
+                        "/hooks/dual-write-dlq-quarantine",
                     ],
                 }
             ).encode("utf-8")
@@ -644,6 +645,16 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
         if path in {"/judge/slack-interactive", "/slack/interactive"}:
             hdrs = {k: v for k, v in self.headers.items()}
             self._send(*handle_judge_slack_interactive(raw, headers=hdrs))
+            return
+        if path in {"/hooks/dual-write-dlq-quarantine"}:
+            from rag.dual_write_webhook import handle_alertmanager_webhook_http
+
+            hdrs = {k: v for k, v in self.headers.items()}
+            self._send(
+                *handle_alertmanager_webhook_http(
+                    raw, headers=hdrs, mode="dlq_quarantine"
+                )
+            )
             return
         if path in {"/alertmanager", "/hooks/dual-write-catch-up", "/hooks/alertmanager"}:
             from rag.dual_write_webhook import handle_alertmanager_webhook_http

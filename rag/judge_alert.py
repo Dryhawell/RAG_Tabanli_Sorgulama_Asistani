@@ -2585,6 +2585,15 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             )
             if catch_up.get("text"):
                 text = f"{text}\n{catch_up['text']}"
+        message_update: Dict[str, Any] = {"ok": False, "skipped": True}
+        if saved.get("ok"):
+            message_update = refresh_judge_ack_digest_message_actions(
+                payload,
+                muted=bool(mute),
+                tenant_id=tid,
+                base=base,
+                bot_token=bot_token or None,
+            )
         return {
             "ok": bool(saved.get("ok")),
             "mode": "digest_mute",
@@ -2604,6 +2613,7 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             },
             "thread_reply": thread_reply,
             "catch_up": catch_up,
+            "message_update": message_update,
             "channel_id": channel_id,
             "message_ts": message_ts,
             "error": saved.get("error"),
@@ -2673,6 +2683,14 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             "skipped": bool(ephemeral.get("skipped")),
             "error": ephemeral.get("error"),
         }
+        # Catch-up unmutes → refresh actions to Mute (no Catch-up button).
+        out["message_update"] = refresh_judge_ack_digest_message_actions(
+            payload,
+            muted=is_judge_ack_digest_muted(tid, base=base),
+            tenant_id=tid,
+            base=base,
+            bot_token=bot_token,
+        )
         return out
 
     if "judge_ack_digest_heatmap_zoom" in action_ids:
@@ -3242,6 +3260,156 @@ def post_judge_digest_mute_thread_reply(
         thread_ts=thread_ts,
         bot_token=bot_token,
     )
+
+
+def digest_chat_update_enabled() -> bool:
+    raw = os.environ.get("RAG_JUDGE_ACK_DIGEST_CHAT_UPDATE", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def refresh_judge_ack_digest_message_actions(
+    payload: Dict[str, Any],
+    *,
+    muted: bool,
+    tenant_id: str,
+    base: Optional[str] = None,
+    bot_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """chat.update original digest so Mute/Unmute/Catch-up match mute state."""
+    if not digest_chat_update_enabled():
+        return {"ok": True, "skipped": True, "reason": "chat_update_disabled"}
+    token = (
+        (bot_token or "").strip()
+        or os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
+    )
+    if not token:
+        return {"ok": False, "skipped": True, "error": "bot_token_missing"}
+    msg = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+    channel_id = str(
+        ((payload.get("channel") or {}).get("id"))
+        or ((payload.get("container") or {}).get("channel_id"))
+        or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "")
+        or ""
+    ).strip()
+    message_ts = str(
+        (msg.get("ts") if isinstance(msg, dict) else None)
+        or ((payload.get("container") or {}).get("message_ts"))
+        or ((payload.get("container") or {}).get("thread_ts"))
+        or ""
+    ).strip()
+    if not channel_id:
+        return {"ok": False, "skipped": True, "error": "channel_missing"}
+    if not message_ts:
+        return {"ok": False, "skipped": True, "error": "message_ts_missing"}
+    tid = (tenant_id or "").strip()
+    if not tid:
+        return {"ok": False, "skipped": True, "error": "tenant_required"}
+    old_blocks = list(msg.get("blocks") or []) if isinstance(msg, dict) else []
+    text = str((msg.get("text") if isinstance(msg, dict) else None) or "").strip()
+    try:
+        hours = float(os.environ.get("RAG_JUDGE_ACK_DIGEST_HOURS", "168") or 168)
+    except Exception:
+        hours = 168.0
+    summary = {
+        "ok": True,
+        "since_hours": hours,
+        "total": 0,
+        "actor_count": 0,
+        "by_event": {},
+        "actors": [],
+        "tenant_id": tid,
+    }
+    fresh = build_judge_ack_digest_slack_blocks(
+        summary, tenant_id=tid, muted=bool(muted), base=base
+    )
+    fresh_actions = next(
+        (
+            b
+            for b in fresh
+            if b.get("type") == "actions"
+            and b.get("block_id") == "judge_ack_digest_actions"
+        ),
+        None,
+    )
+    if not fresh_actions:
+        return {"ok": False, "skipped": True, "error": "actions_missing"}
+    fresh_header_section = next(
+        (b for b in fresh if b.get("type") == "section"), None
+    )
+    new_blocks: List[Dict[str, Any]] = []
+    replaced_actions = False
+    replaced_header = False
+    for b in old_blocks:
+        if (
+            isinstance(b, dict)
+            and b.get("type") == "actions"
+            and b.get("block_id") == "judge_ack_digest_actions"
+        ):
+            new_blocks.append(fresh_actions)
+            replaced_actions = True
+            continue
+        if (
+            not replaced_header
+            and isinstance(b, dict)
+            and b.get("type") == "section"
+            and fresh_header_section is not None
+        ):
+            body = str(((b.get("text") or {}).get("text")) or "")
+            if "ack audit digest" in body.lower() or "MUTED" in body or (
+                tid and f"tenant `{tid}`" in body
+            ):
+                new_blocks.append(fresh_header_section)
+                replaced_header = True
+                continue
+        new_blocks.append(b)
+    if not replaced_actions:
+        new_blocks.append(fresh_actions)
+    if not text:
+        text = f"Judge ack digest · tenant `{tid}`" + (
+            " · MUTED" if muted else ""
+        )
+    try:
+        data = slack_api(
+            "chat.update",
+            bot_token=token,
+            json_body={
+                "channel": channel_id,
+                "ts": message_ts,
+                "text": text[:3900],
+                "blocks": new_blocks,
+            },
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": type(exc).__name__,
+            "detail": str(exc),
+            "channel_id": channel_id,
+            "message_ts": message_ts,
+        }
+    if not data.get("ok"):
+        return {
+            "ok": False,
+            "error": str(data.get("error") or "chat_update_failed"),
+            "response": data,
+            "channel_id": channel_id,
+            "message_ts": message_ts,
+        }
+    action_ids = [
+        str(e.get("action_id") or "")
+        for e in (fresh_actions.get("elements") or [])
+        if isinstance(e, dict)
+    ]
+    return {
+        "ok": True,
+        "skipped": False,
+        "channel_id": channel_id,
+        "message_ts": message_ts,
+        "muted": bool(muted),
+        "action_ids": action_ids,
+        "replaced_actions": replaced_actions,
+        "replaced_header": replaced_header,
+    }
 
 
 def post_slack_thread_message(

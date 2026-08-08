@@ -81,6 +81,7 @@ jobs:
             metadata/inhibit_equal_apply.json
             metadata/inhibit_equal.diff
             metadata/inhibit_equal_apply_pr_comment.md
+            metadata/inhibit_equal_canary_slack.json
             metadata/inhibit_rules.ci.yml
             metadata/alertmanager.ci.yml
           if-no-files-found: ignore
@@ -282,5 +283,6 @@ jobs:
           path: |
             metadata/inhibit_equal_apply.json
             metadata/inhibit_equal.diff
+            metadata/inhibit_equal_canary_slack.json
             grafana/inhibit_rules.generated.yml
           if-no-files-found: ignore

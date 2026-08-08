@@ -732,6 +732,10 @@ def main() -> int:
             json.dumps(out, ensure_ascii=False, indent=2, default=str) + "\n",
             encoding="utf-8",
         )
+        canary_state_path = Path(inhibit_equal_canary_slack_state_path(base=str(meta)))
+        if not canary_state_path.is_file():
+            canary_state_path.write_text("{}\n", encoding="utf-8")
+        out["canary_slack_state_path"] = str(canary_state_path)
         print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
         return 1
 
@@ -776,6 +780,14 @@ def main() -> int:
     )
     diff_text = (report.get("diff") or {}).get("unified_diff") or ""
     (meta / "inhibit_equal.diff").write_text(diff_text, encoding="utf-8")
+
+    # Always emit canary Slack thread-state artifact (empty {} when unused).
+    canary_state_path = Path(inhibit_equal_canary_slack_state_path(base=str(meta)))
+    if not canary_state_path.is_file():
+        canary_state_path.parent.mkdir(parents=True, exist_ok=True)
+        canary_state_path.write_text("{}\n", encoding="utf-8")
+    report["canary_slack_state_path"] = str(canary_state_path)
+    report["canary_slack_state"] = load_inhibit_equal_canary_slack_state(base=str(meta))
 
     preview = write_apply_preview_artifacts(report, base=str(meta))
     report["pr_preview"] = post_apply_pr_preview_comment(

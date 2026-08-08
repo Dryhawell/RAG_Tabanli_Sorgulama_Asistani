@@ -17,6 +17,10 @@ CATCHUP_ALERTNAMES: Set[str] = {
     "RagDualWriteShadowOverlapLow",
 }
 
+QUARANTINE_ALERTNAMES: Set[str] = {
+    "RagDualWriteDlqQuarantineDepthHigh",
+}
+
 WEBHOOK_SIG_VERSION = "v0"
 
 # alertname → actions
@@ -1787,13 +1791,146 @@ def handle_dual_write_alertmanager_webhook(
     return out
 
 
+def maybe_github_dispatch_quarantine_fallback(
+    result: Dict[str, Any],
+    *,
+    limit: int = 5,
+) -> Dict[str, Any]:
+    """Quarantine remaining/failed → dual-write-dlq-replay workflow_dispatch."""
+    if not github_dispatch_enabled():
+        return result
+    remaining = int(result.get("remaining") or 0)
+    if result.get("ok") and remaining <= 0 and not result.get("skipped"):
+        return result
+    if remaining <= 0 and result.get("ok") and result.get("skipped"):
+        # empty quarantine / budget — still allow optional force dispatch via env
+        if os.environ.get("RAG_DUAL_WRITE_QUARANTINE_GH_ALWAYS", "").strip().lower() not in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            return result
+    dispatched = trigger_github_workflow_dispatch(
+        "dual-write-dlq-replay.yml",
+        inputs={
+            "replay_quarantine": "true",
+            "limit": str(max(1, int(limit))),
+            "force": "true",
+            "requeue": "false",
+            "dry_run": "false",
+        },
+    )
+    result = dict(result)
+    result["github_fallback"] = dispatched
+    return result
+
+
+def handle_dual_write_dlq_quarantine_webhook(
+    payload: Dict[str, Any],
+    *,
+    dry_run: bool = False,
+    force: bool = False,
+    state_path: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Firing quarantine-depth alert → replay quarantine (+ optional GH dispatch)."""
+    alerts = extract_firing_dual_write_alerts(
+        payload, alertnames=sorted(QUARANTINE_ALERTNAMES)
+    )
+    if not alerts:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "no_matching_firing_alerts",
+            "mode": "dlq_quarantine",
+            "alerts": [],
+        }
+
+    st_path = state_path or dual_write_webhook_state_path()
+    state = load_dual_write_webhook_state(st_path)
+    now = time.time()
+    circuit = check_webhook_circuit(state, now=now)
+    if not force and circuit.get("open"):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "circuit_open",
+            "mode": "dlq_quarantine",
+            "retry_after_sec": circuit.get("retry_after_sec"),
+            "circuit": circuit,
+            "alerts": [a.get("alertname") for a in alerts],
+        }
+
+    cooldown = webhook_cooldown_sec()
+    last = float(state.get("last_quarantine_trigger_ts") or 0)
+    if not force and cooldown > 0 and last and (now - last) < cooldown:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "cooldown",
+            "mode": "dlq_quarantine",
+            "retry_after_sec": max(0, int(cooldown - (now - last))),
+            "alerts": [a.get("alertname") for a in alerts],
+            "last_quarantine_trigger_ts": last,
+        }
+
+    try:
+        lim = int(
+            limit
+            if limit is not None
+            else os.environ.get("RAG_DUAL_WRITE_DLQ_QUARANTINE_REPLAY_LIMIT", "5")
+            or 5
+        )
+    except Exception:
+        lim = 5
+    requeue = os.environ.get(
+        "RAG_DUAL_WRITE_DLQ_QUARANTINE_AUTO_REQUEUE", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+    row = replay_dual_write_dlq_quarantine(
+        limit=max(1, lim),
+        dry_run=dry_run,
+        force=True,
+        state_path=st_path,
+        requeue=requeue,
+    )
+    row = maybe_github_dispatch_quarantine_fallback(row, limit=max(1, lim))
+    ok = bool(row.get("ok")) or bool((row.get("github_fallback") or {}).get("ok"))
+    if not dry_run:
+        state.update(
+            {
+                "last_quarantine_trigger_ts": now,
+                "last_quarantine_trigger_at": _utcnow_iso(),
+                "last_quarantine_alerts": [a.get("alertname") for a in alerts],
+            }
+        )
+        record_webhook_circuit_result(state, ok=ok, now=now)
+        try:
+            save_dual_write_webhook_state(state, path=st_path)
+        except Exception:
+            pass
+    return {
+        "ok": ok,
+        "skipped": bool(row.get("skipped")),
+        "reason": row.get("reason"),
+        "mode": "dlq_quarantine",
+        "dry_run": dry_run,
+        "alerts": [a.get("alertname") for a in alerts],
+        "replay": row,
+        "last_quarantine_trigger_ts": now,
+        "circuit": check_webhook_circuit(state, now=now),
+    }
+
+
 def handle_alertmanager_webhook_http(
     body: bytes,
     *,
     headers: Optional[Dict[str, str]] = None,
     state_path: Optional[str] = None,
+    mode: str = "catch_up",
 ) -> Tuple[int, Dict[str, str], bytes]:
-    """HTTP adapter for collab_http POST /alertmanager."""
+    """HTTP adapter for collab_http POST /alertmanager (or quarantine hook)."""
     try:
         payload = json.loads(body.decode("utf-8") or "{}")
     except Exception:
@@ -1834,9 +1971,14 @@ def handle_alertmanager_webhook_http(
         "yes",
         "on",
     }
-    report = handle_dual_write_alertmanager_webhook(
-        payload, dry_run=dry, state_path=state_path
-    )
+    if mode == "dlq_quarantine":
+        report = handle_dual_write_dlq_quarantine_webhook(
+            payload, dry_run=dry, state_path=state_path
+        )
+    else:
+        report = handle_dual_write_alertmanager_webhook(
+            payload, dry_run=dry, state_path=state_path
+        )
     report["auth"] = auth.get("auth")
     status = 200 if report.get("ok") else 500
     if report.get("skipped") and report.get("reason") in {"cooldown", "circuit_open"}:

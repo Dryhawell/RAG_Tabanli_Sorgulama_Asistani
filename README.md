@@ -512,6 +512,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
 - Push: VAPID OIDC / Deploy-key based secret store sync
-- Judge: digest catch-up chat.update unmute action refresh
-- Ingest: dual-write DLQ quarantine Alertmanager route
-- Observability: inhibit equal canary thread-state CI artifact
+- Judge: digest mute fan-out chat.update sync
+- Ingest: dual-write DLQ quarantine webhook HMAC auth
+- Observability: inhibit equal canary thread resolve Prometheus metric

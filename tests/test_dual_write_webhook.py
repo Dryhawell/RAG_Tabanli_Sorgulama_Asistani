@@ -618,6 +618,101 @@ def test_webhook_hmac_and_replay(tmp_path: Path, monkeypatch) -> None:
     )["error"] == "replay"
 
 
+def test_quarantine_alertmanager_webhook_replay(monkeypatch, tmp_path: Path) -> None:
+    import json
+    from unittest.mock import patch
+
+    from rag.dual_write_webhook import handle_dual_write_dlq_quarantine_webhook
+
+    monkeypatch.setenv(
+        "RAG_DUAL_WRITE_WEBHOOK_DLQ_QUARANTINE", str(tmp_path / "quarantine.jsonl")
+    )
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_STATE", str(tmp_path / "state.json"))
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("RAG_DUAL_WRITE_GH_DISPATCH", "1")
+    monkeypatch.setenv("GH_PAT", "ghp_test")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "acme/rag")
+
+    skipped = handle_dual_write_dlq_quarantine_webhook(
+        {
+            "status": "firing",
+            "alerts": [
+                {
+                    "status": "firing",
+                    "labels": {
+                        "alertname": "RagDualWriteLagHigh",
+                        "service": "rag-ingest",
+                    },
+                }
+            ],
+        },
+        force=True,
+        state_path=str(tmp_path / "state.json"),
+    )
+    assert skipped.get("skipped") is True
+    assert skipped.get("reason") == "no_matching_firing_alerts"
+
+    (tmp_path / "quarantine.jsonl").write_text(
+        json.dumps(
+            {
+                "payload_digest": "q1",
+                "attempts": 3,
+                "payload": {
+                    "status": "firing",
+                    "alerts": [
+                        {
+                            "status": "firing",
+                            "labels": {
+                                "alertname": "RagDualWriteLagHigh",
+                                "service": "rag-ingest",
+                            },
+                        }
+                    ],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with patch(
+        "rag.dual_write_webhook.replay_dual_write_dlq_quarantine",
+        return_value={
+            "ok": True,
+            "replayed": 0,
+            "remaining": 1,
+            "skipped": False,
+            "results": [],
+        },
+    ) as replay:
+        with patch(
+            "rag.dual_write_webhook.trigger_github_workflow_dispatch",
+            return_value={"ok": True, "method": "rest", "workflow": "dual-write-dlq-replay.yml"},
+        ) as dispatch:
+            out = handle_dual_write_dlq_quarantine_webhook(
+                {
+                    "status": "firing",
+                    "alerts": [
+                        {
+                            "status": "firing",
+                            "labels": {
+                                "alertname": "RagDualWriteDlqQuarantineDepthHigh",
+                                "service": "rag-ingest",
+                            },
+                        }
+                    ],
+                },
+                force=True,
+                state_path=str(tmp_path / "state.json"),
+            )
+    assert out.get("mode") == "dlq_quarantine"
+    assert out.get("ok") is True
+    assert replay.called
+    assert dispatch.called
+    assert dispatch.call_args[0][0] == "dual-write-dlq-replay.yml"
+    assert dispatch.call_args.kwargs["inputs"]["replay_quarantine"] == "true"
+    assert "RagDualWriteDlqQuarantineDepthHigh" in out.get("alerts", [])
+
+
 def test_github_dispatch_fallback_on_not_dual_write(monkeypatch, tmp_path: Path) -> None:
     from unittest.mock import patch
 

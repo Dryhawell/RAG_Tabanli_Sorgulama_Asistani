@@ -413,6 +413,35 @@ def test_notify_inhibit_equal_close_on_green(monkeypatch) -> None:
     assert pd.call_args.kwargs.get("source") == "inhibit-equal-canary"
 
 
+def test_inhibit_equal_canary_slack_state_artifact_ensured(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from scripts.ci_inhibit_equal_apply import (
+        inhibit_equal_canary_slack_state_path,
+        load_inhibit_equal_canary_slack_state,
+        save_inhibit_equal_canary_slack_state,
+    )
+
+    monkeypatch.setenv(
+        "INHIBIT_EQUAL_CANARY_SLACK_STATE", str(tmp_path / "inhibit_equal_canary_slack.json")
+    )
+    path = Path(inhibit_equal_canary_slack_state_path())
+    assert not path.is_file()
+    # Simulate main() ensure-write
+    if not path.is_file():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n", encoding="utf-8")
+    assert path.is_file()
+    assert load_inhibit_equal_canary_slack_state() == {}
+    save_inhibit_equal_canary_slack_state(
+        thread_ts="1.2", channel="C9", reason="amtool_regression"
+    )
+    loaded = load_inhibit_equal_canary_slack_state()
+    assert loaded.get("thread_ts") == "1.2"
+    assert loaded.get("channel") == "C9"
+    assert "updated_at" in loaded
+
+
 def test_inhibit_equal_canary_slack_thread_reply_on_resolve(
     tmp_path: Path, monkeypatch
 ) -> None:

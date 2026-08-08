@@ -12,6 +12,11 @@ route:
         - service = rag-judge
       receiver: judge-slack
       continue: true
+    # Quarantine before broad ingest catch-up route
+    - matchers:
+        - alertname = RagDualWriteDlqQuarantineDepthHigh
+      receiver: ingest-dlq-quarantine-webhook
+      continue: true
     - matchers:
         - service = rag-ingest
       receiver: ingest-webhook
@@ -39,6 +44,11 @@ receivers:
           *{{ .Annotations.summary }}*
           {{ .Annotations.description }}
           {{ end }}
+
+  - name: ingest-dlq-quarantine-webhook
+    webhook_configs:
+      - url: ${RAG_ALERTMANAGER_INGEST_DLQ_QUARANTINE_WEBHOOK_URL}
+        send_resolved: true
 
   - name: ingest-webhook
     webhook_configs:

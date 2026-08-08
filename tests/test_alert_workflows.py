@@ -54,10 +54,15 @@ def test_alertmanager_and_llm_cost_rules():
     assert "${RAG_ALERTMANAGER_SLACK_WEBHOOK}" in tmpl
     assert "${RAG_ALERTMANAGER_WEBHOOK_URL}" in tmpl
     assert "${RAG_ALERTMANAGER_INGEST_WEBHOOK_URL}" in tmpl
+    assert "${RAG_ALERTMANAGER_INGEST_DLQ_QUARANTINE_WEBHOOK_URL}" in tmpl
     assert "ingest-webhook" in tmpl
+    assert "ingest-dlq-quarantine-webhook" in tmpl
+    assert "RagDualWriteDlqQuarantineDepthHigh" in tmpl
     assert "service = rag-ingest" in tmpl
     assert "judge-slack" in tmpl
     assert Path("scripts/render_alertmanager_config.sh").is_file()
+    render_sh = Path("scripts/render_alertmanager_config.sh").read_text(encoding="utf-8")
+    assert "RAG_ALERTMANAGER_INGEST_DLQ_QUARANTINE_WEBHOOK_URL" in render_sh
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
     assert "alertmanager:" in compose
     assert "alertmanager.yml.template" in compose
@@ -67,8 +72,11 @@ def test_alertmanager_and_llm_cost_rules():
     assert "rag:llm_cost_usd_1h" in dash
     am = Path("grafana/alertmanager.yml").read_text(encoding="utf-8")
     assert "ingest-webhook" in am
+    assert "ingest-dlq-quarantine-webhook" in am
     assert "rag-ingest" in am
     assert "dual-write-catch-up" in am
+    assert "dual-write-dlq-quarantine" in am
+    assert "RagDualWriteDlqQuarantineDepthHigh" in am
 
 
 def test_render_alertmanager_config_script(tmp_path, monkeypatch):
@@ -79,6 +87,9 @@ def test_render_alertmanager_config_script(tmp_path, monkeypatch):
     env = os.environ.copy()
     env["RAG_ALERTMANAGER_SLACK_WEBHOOK"] = "https://hooks.slack.test/T/B/xxx"
     env["RAG_ALERTMANAGER_WEBHOOK_URL"] = "http://example.test/hook"
+    env["RAG_ALERTMANAGER_INGEST_DLQ_QUARANTINE_WEBHOOK_URL"] = (
+        "http://example.test/hooks/dual-write-dlq-quarantine"
+    )
     env["ALERTMANAGER_OUTPUT"] = str(out)
     # no inhibit file → no merge noise
     env["ALERTMANAGER_INHIBIT"] = str(tmp_path / "missing_inhibit.yml")
@@ -93,6 +104,8 @@ def test_render_alertmanager_config_script(tmp_path, monkeypatch):
     text = out.read_text(encoding="utf-8")
     assert "https://hooks.slack.test/T/B/xxx" in text
     assert "http://example.test/hook" in text
+    assert "dual-write-dlq-quarantine" in text
+    assert "ingest-dlq-quarantine-webhook" in text
     assert "${RAG_" not in text
 
 
@@ -410,18 +423,18 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_catchup_grafana_thread():
+def test_readme_sonraki_adaylar_after_chatupdate_am_route_artifact():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
-    assert "catch-up chat.update unmute" in text
-    assert "quarantine Alertmanager route" in text
-    assert "thread-state CI artifact" in text
+    assert "mute fan-out chat.update sync" in text
+    assert "quarantine webhook HMAC auth" in text
+    assert "thread resolve Prometheus metric" in text
     # Completed this round — should not remain as next candidates
-    assert "unmute catch-up digest button" not in text
-    assert "quarantine Grafana alert annotations" not in text
-    assert "Slack thread reply on resolve" not in text
+    assert "catch-up chat.update unmute action refresh" not in text
+    assert "quarantine Alertmanager route" not in text
+    assert "thread-state CI artifact" not in text
 
 
 def test_ci_inhibit_equal_slack_thread_env():
@@ -430,6 +443,7 @@ def test_ci_inhibit_equal_slack_thread_env():
     assert "INHIBIT_EQUAL_CANARY_SLACK_CHANNEL" in text
     assert "INHIBIT_EQUAL_CANARY_SLACK_THREAD_REPLY" in text
     assert "INHIBIT_EQUAL_CANARY_SLACK_THREAD_TS" in text
+    assert "metadata/inhibit_equal_canary_slack.json" in text
 
 
 def test_judge_ack_digest_mute_prune_workflow_yaml():
