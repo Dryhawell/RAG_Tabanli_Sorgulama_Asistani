@@ -12,7 +12,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -239,8 +239,64 @@ def build_inhibit_equal_rollback_canary_payload(report: Dict[str, Any]) -> Dict[
     return {"text": text, "blocks": blocks}
 
 
+def resolve_opsgenie_canary_targets() -> List[Dict[str, str]]:
+    """Multi-region Opsgenie targets for inhibit-equal canary.
+
+    Precedence:
+    1. ``INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON`` → ``{"us":"k1","eu":"k2"}``
+    2. Single key + ``INHIBIT_EQUAL_CANARY_OPSGENIE_REGIONS`` CSV (same key fan-out)
+    3. Single ``INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY`` (+ optional region)
+    """
+    targets: List[Dict[str, str]] = []
+    raw_json = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON", "").strip()
+    )
+    if raw_json:
+        try:
+            data = json.loads(raw_json)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            for region, key in data.items():
+                k = str(key or "").strip()
+                if k:
+                    targets.append({"region": str(region).strip().lower() or "us", "api_key": k})
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    k = str(item.get("api_key") or item.get("key") or "").strip()
+                    if k:
+                        targets.append(
+                            {
+                                "region": str(item.get("region") or "us").strip().lower(),
+                                "api_key": k,
+                            }
+                        )
+    if targets:
+        return targets
+
+    og_key = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", "").strip()
+    )
+    if not og_key:
+        return []
+    regions_raw = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_OPSGENIE_REGIONS", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_OPSGENIE_REGIONS", "").strip()
+        or os.environ.get("INHIBIT_EQUAL_CANARY_OPSGENIE_REGION", "").strip()
+        or os.environ.get("RAG_OPSGENIE_REGION", "").strip()
+        or "us"
+    )
+    regions = [p.strip().lower() for p in regions_raw.replace(";", ",").split(",") if p.strip()]
+    if not regions:
+        regions = ["us"]
+    return [{"region": r, "api_key": og_key} for r in regions]
+
+
 def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, Any]:
-    """Post canary Slack (+ optional PagerDuty / Opsgenie) when apply rolled back."""
+    """Post canary Slack (+ optional PagerDuty / multi-region Opsgenie) on rollback."""
     if not report.get("rolled_back"):
         return {"ok": True, "skipped": True, "reason": "not_rolled_back"}
     if os.environ.get("INHIBIT_EQUAL_CANARY_NOTIFY", "1").strip().lower() in {
@@ -259,11 +315,8 @@ def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, An
         os.environ.get("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", "").strip()
         or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", "").strip()
     )
-    og_key = (
-        os.environ.get("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", "").strip()
-        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", "").strip()
-    )
-    if not webhook and not pd_key and not og_key:
+    og_targets = resolve_opsgenie_canary_targets()
+    if not webhook and not pd_key and not og_targets:
         return {"ok": True, "skipped": True, "reason": "webhook_missing"}
 
     from rag.judge_alert import post_opsgenie, post_pagerduty, post_slack
@@ -301,26 +354,33 @@ def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, An
             )
         )
 
-    og_ok = False
-    if og_key:
-        og_ok = bool(
+    og_by_region: Dict[str, bool] = {}
+    priority = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_OPSGENIE_PRIORITY", "P2") or "P2"
+    )
+    for t in og_targets:
+        region = t.get("region") or "us"
+        ok = bool(
             post_opsgenie(
-                api_key=og_key,
+                api_key=t["api_key"],
                 report=pd_report,
                 source="inhibit-equal-canary",
-                priority=os.environ.get("INHIBIT_EQUAL_CANARY_OPSGENIE_PRIORITY", "P2")
-                or "P2",
+                priority=priority,
+                region=region,
             )
         )
+        og_by_region[region] = ok
+    og_ok = any(og_by_region.values()) if og_by_region else False
 
     posted = slack_ok or pd_ok or og_ok
     return {
-        "ok": posted if (webhook or pd_key or og_key) else True,
+        "ok": posted if (webhook or pd_key or og_targets) else True,
         "skipped": False,
         "posted": posted,
         "slack": slack_ok if webhook else None,
         "pagerduty": pd_ok if pd_key else None,
-        "opsgenie": og_ok if og_key else None,
+        "opsgenie": og_ok if og_targets else None,
+        "opsgenie_regions": og_by_region or None,
     }
 
 

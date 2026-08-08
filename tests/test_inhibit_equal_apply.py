@@ -238,6 +238,10 @@ def test_notify_inhibit_equal_rollback_canary(monkeypatch) -> None:
     }
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", raising=False)
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_REGIONS", raising=False)
+    monkeypatch.delenv("RAG_INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON", raising=False)
     skipped = notify_inhibit_equal_rollback_canary(report)
     assert skipped["skipped"] is True
 
@@ -264,6 +268,7 @@ def test_notify_inhibit_equal_rollback_canary(monkeypatch) -> None:
 
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", raising=False)
     monkeypatch.setenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", "og-key")
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_OPSGENIE_REGIONS", "us")
     with patch("rag.judge_alert.post_opsgenie", return_value=True) as og:
         with patch("rag.judge_alert.post_slack", return_value=False):
             with patch("rag.judge_alert.post_pagerduty", return_value=False):
@@ -273,3 +278,28 @@ def test_notify_inhibit_equal_rollback_canary(monkeypatch) -> None:
     assert og.called
     assert og.call_args.kwargs.get("source") == "inhibit-equal-canary"
     assert og.call_args.kwargs.get("api_key") == "og-key"
+    assert og.call_args.kwargs.get("region") == "us"
+
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", raising=False)
+    monkeypatch.setenv(
+        "INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON",
+        '{"us":"k-us","eu":"k-eu"}',
+    )
+    with patch("rag.judge_alert.post_opsgenie", return_value=True) as og_multi:
+        with patch("rag.judge_alert.post_slack", return_value=False):
+            with patch("rag.judge_alert.post_pagerduty", return_value=False):
+                multi = notify_inhibit_equal_rollback_canary(report)
+    assert multi["opsgenie"] is True
+    assert multi["opsgenie_regions"]["us"] is True
+    assert multi["opsgenie_regions"]["eu"] is True
+    assert og_multi.call_count == 2
+    regions = {c.kwargs.get("region") for c in og_multi.call_args_list}
+    assert regions == {"us", "eu"}
+
+
+def test_opsgenie_api_base_regions() -> None:
+    from rag.judge_alert import opsgenie_api_base
+
+    assert opsgenie_api_base(region="us").endswith("api.opsgenie.com")
+    assert "eu.api.opsgenie.com" in opsgenie_api_base(region="eu")
+    assert opsgenie_api_base(base_url="https://example.test/og") == "https://example.test/og"

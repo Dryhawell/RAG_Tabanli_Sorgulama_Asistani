@@ -25,3 +25,6 @@ def test_rag_judge_grafana_dashboard_json():
     assert "rag_vector_dual_write_shadow_overlap" in joined
     assert "rag:dual_write_lag:avg1h" in joined
     assert "rag:dual_write_shadow_burn:1h" in joined
+    assert "rag_dual_write_webhook_dlq_depth" in joined
+    assert "rag_dual_write_webhook_dlq_quarantine_depth" in joined
+    assert any("DLQ" in (t or "") for t in titles)

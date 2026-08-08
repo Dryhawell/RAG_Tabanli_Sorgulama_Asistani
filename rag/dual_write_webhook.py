@@ -154,6 +154,10 @@ def read_dual_write_dlq_quarantine(
     )
 
 
+def dual_write_dlq_quarantine_depth(*, path: Optional[str] = None) -> int:
+    return len(read_dual_write_dlq_quarantine(path=path))
+
+
 def _dlq_quarantine_after() -> int:
     try:
         return max(1, int(os.environ.get("RAG_DUAL_WRITE_DLQ_QUARANTINE_AFTER", "3") or 3))
@@ -309,6 +313,7 @@ def enqueue_dual_write_dlq_quarantine(
             reason=reason,
             actions=1,
             dlq_depth=dual_write_dlq_depth(),
+            dlq_quarantine_depth=dual_write_dlq_quarantine_depth(path=out),
         )
     except Exception:
         pass
@@ -595,6 +600,127 @@ def replay_dual_write_dlq(
     }
 
 
+def replay_dual_write_dlq_quarantine(
+    *,
+    path: Optional[str] = None,
+    limit: int = 5,
+    dry_run: bool = False,
+    force: bool = True,
+    state_path: Optional[str] = None,
+    respect_budget: bool = True,
+    requeue: bool = False,
+) -> Dict[str, Any]:
+    """Quarantine JSONL'den yeniden dene; başarıda düşür, fail'de tut / requeue."""
+    p = path or dual_write_webhook_dlq_quarantine_path()
+    rows = read_dual_write_dlq_quarantine(path=p)
+    if not rows:
+        return {
+            "ok": True,
+            "replayed": 0,
+            "remaining": 0,
+            "requeued": 0,
+            "results": [],
+            "path": p,
+        }
+    want = max(1, int(limit))
+    budget: Dict[str, Any] = {"ok": True, "allowed": want, "budget_exhausted": False}
+    if respect_budget and not dry_run:
+        budget = check_dual_write_dlq_replay_budget(state_path=state_path, want=want)
+        if budget.get("budget_exhausted") or int(budget.get("allowed") or 0) <= 0:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "replay_budget_exhausted",
+                "budget": budget,
+                "replayed": 0,
+                "remaining": len(rows),
+                "requeued": 0,
+                "results": [],
+                "path": p,
+            }
+        want = max(0, int(budget.get("allowed") or 0))
+    take = rows[-want:]
+    keep = rows[: -len(take)] if len(rows) > len(take) else []
+    results: List[Dict[str, Any]] = []
+    requeued: List[Dict[str, Any]] = []
+    attempted = 0
+    for entry in take:
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        if dry_run:
+            results.append(
+                {
+                    "ok": True,
+                    "dry_run": True,
+                    "digest": entry.get("payload_digest"),
+                    "attempts": int(entry.get("attempts") or 0),
+                    "requeue": bool(requeue),
+                }
+            )
+            continue
+        attempted += 1
+        report = handle_dual_write_alertmanager_webhook(
+            payload,
+            dry_run=False,
+            force=force,
+            state_path=state_path,
+            enqueue_dlq=False,
+        )
+        row_out: Dict[str, Any] = {
+            "ok": bool(report.get("ok")),
+            "digest": entry.get("payload_digest"),
+            "report": {
+                k: report.get(k)
+                for k in ("ok", "skipped", "reason", "planned_actions", "alerts")
+            },
+        }
+        if report.get("ok"):
+            results.append(row_out)
+            continue
+        attempts = int(entry.get("attempts") or 0) + 1
+        entry = {**entry, "attempts": attempts, "last_error": report.get("reason")}
+        row_out["attempts"] = attempts
+        if requeue:
+            dlq_path = dual_write_webhook_dlq_path()
+            os.makedirs(os.path.dirname(dlq_path) or ".", exist_ok=True)
+            with open(dlq_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+            row_out["requeued"] = True
+            requeued.append({"digest": entry.get("payload_digest"), "attempts": attempts})
+        else:
+            keep.append(entry)
+        results.append(row_out)
+    if not dry_run:
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            for row in keep:
+                f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        if respect_budget and attempted:
+            record_dual_write_dlq_replay_budget(
+                attempted, state_path=state_path, budget_snapshot=budget
+            )
+        try:
+            emit_dual_write_webhook_metric(
+                result="dlq_quarantine_replayed",
+                reason="requeue" if requeue else "retry",
+                actions=attempted,
+                dlq_depth=dual_write_dlq_depth(),
+                dlq_quarantine_depth=len(keep),
+            )
+        except Exception:
+            pass
+    return {
+        "ok": all(r.get("ok") or r.get("requeued") for r in results) if results else True,
+        "replayed": len(results),
+        "remaining": len(keep) if not dry_run else len(rows),
+        "requeued": len(requeued),
+        "requeue_entries": requeued,
+        "budget": budget,
+        "results": results,
+        "path": p,
+    }
+
+
+
 def emit_dual_write_webhook_metric(
     *,
     result: str,
@@ -603,6 +729,7 @@ def emit_dual_write_webhook_metric(
     circuit_open: bool = False,
     dlq_enqueued: bool = False,
     dlq_depth: Optional[int] = None,
+    dlq_quarantine_depth: Optional[int] = None,
 ) -> None:
     try:
         from rag.metrics import record_metric
@@ -617,6 +744,8 @@ def emit_dual_write_webhook_metric(
             values["reason"] = reason
         if dlq_depth is not None:
             values["dlq_depth"] = int(dlq_depth)
+        if dlq_quarantine_depth is not None:
+            values["dlq_quarantine_depth"] = int(dlq_quarantine_depth)
         record_metric("dual_write_webhook", values=values)
     except Exception:
         pass

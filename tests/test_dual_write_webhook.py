@@ -255,6 +255,70 @@ def test_dlq_quarantine_and_replay_budget(tmp_path: Path, monkeypatch) -> None:
     assert len(read_dual_write_dlq()) == 0
 
 
+def test_replay_dual_write_dlq_quarantine(tmp_path: Path, monkeypatch) -> None:
+    import json
+
+    from rag.dual_write_webhook import (
+        dual_write_dlq_depth,
+        dual_write_dlq_quarantine_depth,
+        read_dual_write_dlq,
+        read_dual_write_dlq_quarantine,
+        replay_dual_write_dlq_quarantine,
+    )
+
+    monkeypatch.setenv(
+        "RAG_DUAL_WRITE_WEBHOOK_DLQ_QUARANTINE", str(tmp_path / "quarantine.jsonl")
+    )
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_DLQ", str(tmp_path / "dlq.jsonl"))
+    monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_STATE", str(tmp_path / "state.json"))
+    monkeypatch.setenv("RAG_DUAL_WRITE_DLQ_REPLAY_RUN_ID", "q-run")
+    monkeypatch.delenv("RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_RUN", raising=False)
+    monkeypatch.delenv("RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_HOUR", raising=False)
+
+    payload = {
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {"alertname": "RagDualWriteLagHigh", "service": "rag-ingest"},
+            }
+        ],
+    }
+    entry = {
+        "ts": "2026-01-01T00:00:00+00:00",
+        "payload_digest": "q1",
+        "payload": payload,
+        "attempts": 3,
+        "quarantine_reason": "replay_exhausted",
+    }
+    (tmp_path / "quarantine.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+    with patch(
+        "rag.dual_write_webhook.handle_dual_write_alertmanager_webhook",
+        return_value={"ok": True},
+    ):
+        ok = replay_dual_write_dlq_quarantine(limit=5, dry_run=False, force=True)
+    assert ok["replayed"] == 1
+    assert ok["remaining"] == 0
+    assert dual_write_dlq_quarantine_depth() == 0
+
+    (tmp_path / "quarantine.jsonl").write_text(
+        json.dumps({**entry, "payload_digest": "q2"}) + "\n", encoding="utf-8"
+    )
+    with patch(
+        "rag.dual_write_webhook.handle_dual_write_alertmanager_webhook",
+        return_value={"ok": False, "reason": "still_bad"},
+    ):
+        rq = replay_dual_write_dlq_quarantine(
+            limit=5, dry_run=False, force=True, requeue=True
+        )
+    assert rq["requeued"] == 1
+    assert dual_write_dlq_quarantine_depth() == 0
+    assert dual_write_dlq_depth() == 1
+    assert read_dual_write_dlq()[0]["payload_digest"] == "q2"
+    assert len(read_dual_write_dlq_quarantine()) == 0
+
+
 def test_webhook_circuit_breaker_and_rate_limit_headers(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -97,6 +97,7 @@ def test_prometheus_observe_and_dump(monkeypatch):
             "circuit_open": True,
             "dlq_enqueued": True,
             "dlq_depth": 3,
+            "dlq_quarantine_depth": 2,
         },
         enabled=True,
     )
@@ -116,6 +117,7 @@ def test_prometheus_observe_and_dump(monkeypatch):
     assert "rag_vector_dual_write_shadow_overlap" in body
     assert "rag_dual_write_webhook_total" in body
     assert "rag_dual_write_webhook_dlq_depth" in body
+    assert "rag_dual_write_webhook_dlq_quarantine_depth" in body
     assert "rag_dual_write_webhook_circuit_open" in body
 
 

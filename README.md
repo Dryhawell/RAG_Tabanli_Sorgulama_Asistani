@@ -512,6 +512,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
 - Push: VAPID OIDC / Deploy-key based secret store sync
-- Judge: digest mute UI retention + Redis-backed prefs
-- Ingest: dual-write DLQ quarantine replay CLI + metrics panel
-- Observability: inhibit equal canary multi-region Opsgenie
+- Judge: digest mute audit trail + Slack unmute confirmation thread
+- Ingest: dual-write DLQ quarantine aging alerts + Prom rules
+- Observability: inhibit equal canary Opsgenie close-on-green

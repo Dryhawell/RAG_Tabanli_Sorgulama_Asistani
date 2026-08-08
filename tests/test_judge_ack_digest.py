@@ -311,6 +311,61 @@ def test_dual_write_dlq_cli_parser() -> None:
     assert q_args.limit == 10
     nb = build_parser().parse_args(["dual-write-dlq", "--replay", "--no-budget"])
     assert nb.no_budget is True
+    rq = build_parser().parse_args(
+        ["dual-write-dlq", "--replay-quarantine", "--requeue", "--limit", "2"]
+    )
+    assert rq.replay_quarantine is True
+    assert rq.requeue is True
+    assert rq.limit == 2
+    pm = build_parser().parse_args(["judge-ack-digest", "--prune-mutes", "--dry-run"])
+    assert pm.prune_mutes is True
+
+
+def test_mute_ttl_retention_and_prune(tmp_path: Path, monkeypatch) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from rag.judge_alert import (
+        is_judge_ack_digest_muted,
+        maybe_prune_judge_ack_digest_mutes,
+        prune_judge_ack_digest_mutes,
+        set_judge_ack_digest_mute,
+        set_heatmap_bucket_pref,
+        prune_judge_ack_digest_prefs,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_TTL_DAYS", "7")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_PREFS", str(tmp_path / "prefs.json"))
+    saved = set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path), ttl_days=7)
+    assert saved["ok"] is True
+    assert saved["expires_at"]
+    assert is_judge_ack_digest_muted("acme", base=str(tmp_path))
+
+    # Force expired entry
+    import json
+
+    path = tmp_path / "judge_ack_digest_mutes.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["acme"]["expires_at"] = (
+        datetime.now(timezone.utc) - timedelta(days=1)
+    ).isoformat()
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert not is_judge_ack_digest_muted("acme", base=str(tmp_path))
+    pruned = prune_judge_ack_digest_mutes(base=str(tmp_path), dry_run=False)
+    assert pruned["removed"] == 1
+    assert "acme" in pruned["removed_tenants"]
+
+    set_heatmap_bucket_pref("hour", tenant_id="old", base=str(tmp_path))
+    prefs_path = tmp_path / "prefs.json"
+    prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+    prefs["tenants"]["old"]["updated_at"] = (
+        datetime.now(timezone.utc) - timedelta(days=120)
+    ).isoformat()
+    prefs_path.write_text(json.dumps(prefs), encoding="utf-8")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_PREFS_RETENTION_DAYS", "30")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_PRUNE", "1")
+    report = maybe_prune_judge_ack_digest_mutes(base=str(tmp_path), dry_run=False)
+    assert report["ok"] is True
+    assert report["prefs"]["removed"] == 1
 
 
 def test_digest_reexport_interactive_action(tmp_path: Path, monkeypatch) -> None:

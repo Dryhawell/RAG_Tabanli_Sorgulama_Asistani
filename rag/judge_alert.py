@@ -745,6 +745,38 @@ def parse_judge_ack_digest_quiet_hours(
     return mapping
 
 
+def _mute_value_active(value: Any, *, now_ts: Optional[float] = None) -> bool:
+    """True if mute entry is active (supports bool/str and {muted, expires_at})."""
+    if isinstance(value, dict):
+        flag = value.get("muted", value.get("mute", True))
+        if flag in {False, 0, "0", "false", "no", "off"}:
+            return False
+        if flag not in {True, 1, "1", "true", "yes", "on", "mute", "muted", None}:
+            if not bool(flag):
+                return False
+        exp = value.get("expires_at")
+        if not exp:
+            return True
+        try:
+            exp_ts = datetime.fromisoformat(str(exp).replace("Z", "+00:00")).timestamp()
+        except Exception:
+            return True
+        now = now_ts if now_ts is not None else time.time()
+        return exp_ts > now
+    if value in {True, 1, "1", "true", "yes", "on", "mute", "muted"}:
+        return True
+    if isinstance(value, str) and value.strip().lower() in {
+        "mute",
+        "muted",
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return True
+    return False
+
+
 def parse_judge_ack_digest_mutes(
     spec: Optional[str] = None,
     *,
@@ -756,6 +788,7 @@ def parse_judge_ack_digest_mutes(
     except ImportError:
         METADATA_DIR = "metadata"
     muted: Set[str] = set()
+    now_ts = time.time()
     raw = (
         spec
         if spec is not None
@@ -770,17 +803,9 @@ def parse_judge_ack_digest_mutes(
                     muted.update(str(x).strip() for x in data if str(x).strip())
                 elif isinstance(data, dict):
                     for k, v in data.items():
-                        if v in {True, 1, "1", "true", "yes", "on", "mute", "muted"}:
-                            tid = str(k).strip()
-                            if tid:
-                                muted.add(tid)
-                        elif isinstance(v, str) and v.strip().lower() in {
-                            "mute",
-                            "muted",
-                            "1",
-                            "true",
-                        }:
-                            muted.add(str(k).strip())
+                        tid = str(k).strip()
+                        if tid and _mute_value_active(v, now_ts=now_ts):
+                            muted.add(tid)
             except json.JSONDecodeError:
                 pass
         if not muted:
@@ -799,10 +824,9 @@ def parse_judge_ack_digest_mutes(
                 muted.update(str(x).strip() for x in data if str(x).strip())
             elif isinstance(data, dict):
                 for k, v in data.items():
-                    if v in {True, 1, "1", "true", "yes", "on", "mute", "muted"}:
-                        tid = str(k).strip()
-                        if tid:
-                            muted.add(tid)
+                    tid = str(k).strip()
+                    if tid and _mute_value_active(v, now_ts=now_ts):
+                        muted.add(tid)
         except Exception:
             pass
     return muted
@@ -903,6 +927,7 @@ def set_heatmap_bucket_pref(
         tenants = prefs.get("tenants") if isinstance(prefs.get("tenants"), dict) else {}
         row = dict(tenants.get(tid) or {}) if isinstance(tenants.get(tid), dict) else {}
         row["heatmap_bucket"] = b
+        row["updated_at"] = _utcnow_iso()
         tenants[tid] = row
         prefs["tenants"] = tenants
     else:
@@ -911,13 +936,29 @@ def set_heatmap_bucket_pref(
     return {"ok": True, "bucket": b, "tenant_id": tid or None, "path": path}
 
 
+def _mute_ttl_days() -> Optional[float]:
+    raw = os.environ.get("RAG_JUDGE_ACK_DIGEST_MUTE_TTL_DAYS", "").strip()
+    if not raw:
+        return None
+    try:
+        days = float(raw)
+        return days if days > 0 else None
+    except Exception:
+        return None
+
+
 def set_judge_ack_digest_mute(
     tenant_id: str,
     *,
     muted: bool = True,
     base: Optional[str] = None,
+    ttl_days: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Persist mute flag to metadata JSON (dict form). Env mute still overrides reads."""
+    """Persist mute flag to metadata JSON (dict form with optional TTL).
+
+    Env mute still overrides reads. File entries may be bool or
+    ``{muted, muted_at, expires_at}``.
+    """
     tid = (tenant_id or "").strip()
     if not tid:
         return {"ok": False, "error": "tenant_required"}
@@ -934,21 +975,183 @@ def set_judge_ack_digest_mute(
         except Exception:
             data = {}
     if muted:
-        data[tid] = True
+        ttl = ttl_days if ttl_days is not None else _mute_ttl_days()
+        entry: Dict[str, Any] = {
+            "muted": True,
+            "muted_at": _utcnow_iso(),
+        }
+        if ttl is not None and float(ttl) > 0:
+            exp = datetime.now(timezone.utc).timestamp() + float(ttl) * 86400.0
+            entry["expires_at"] = datetime.fromtimestamp(
+                exp, tz=timezone.utc
+            ).isoformat()
+            entry["ttl_days"] = float(ttl)
+        data[tid] = entry
     else:
         data.pop(tid, None)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    active = sorted(
+        k for k, v in data.items() if _mute_value_active(v)
+    )
     return {
         "ok": True,
         "tenant_id": tid,
         "muted": bool(muted),
         "path": path,
-        "muted_tenants": sorted(
-            k for k, v in data.items() if v in {True, 1, "1", "true", "yes", "on", "mute", "muted"}
-        ),
+        "muted_tenants": active,
+        "expires_at": (data.get(tid) or {}).get("expires_at")
+        if muted and isinstance(data.get(tid), dict)
+        else None,
     }
+
+
+def prune_judge_ack_digest_mutes(
+    *,
+    base: Optional[str] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Drop expired mute entries from the JSON store."""
+    path = judge_ack_digest_mutes_path(base=base)
+    if not os.path.isfile(path):
+        return {
+            "ok": True,
+            "path": path,
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "dry_run": bool(dry_run),
+            "missing": True,
+        }
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception:
+        return {"ok": False, "error": "read_failed", "path": path}
+    if isinstance(raw, list):
+        data = {str(x).strip(): True for x in raw if str(x).strip()}
+    elif isinstance(raw, dict):
+        data = dict(raw)
+    else:
+        return {"ok": False, "error": "invalid_format", "path": path}
+    now_ts = time.time()
+    kept: Dict[str, Any] = {}
+    removed: List[str] = []
+    for k, v in data.items():
+        tid = str(k).strip()
+        if not tid:
+            continue
+        if _mute_value_active(v, now_ts=now_ts):
+            kept[tid] = v
+        else:
+            removed.append(tid)
+    if not dry_run and removed:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(kept, f, ensure_ascii=False, indent=2)
+    return {
+        "ok": True,
+        "path": path,
+        "before": len(data),
+        "after": len(kept),
+        "removed": len(removed),
+        "removed_tenants": sorted(removed),
+        "dry_run": bool(dry_run),
+    }
+
+
+def prune_judge_ack_digest_prefs(
+    *,
+    base: Optional[str] = None,
+    days: Optional[float] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Remove stale per-tenant prefs older than ``days`` (updated_at)."""
+    path = judge_ack_digest_prefs_path(base=base)
+    if days is None:
+        raw = os.environ.get("RAG_JUDGE_ACK_DIGEST_PREFS_RETENTION_DAYS", "").strip()
+        if raw:
+            try:
+                days = float(raw)
+            except Exception:
+                return {"ok": False, "error": "days_invalid", "path": path}
+    if days is None or float(days) < 0:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "days_not_configured",
+            "path": path,
+            "dry_run": bool(dry_run),
+        }
+    prefs = load_judge_ack_digest_prefs(base=base)
+    tenants = prefs.get("tenants") if isinstance(prefs.get("tenants"), dict) else {}
+    if not tenants:
+        return {
+            "ok": True,
+            "path": path,
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "dry_run": bool(dry_run),
+        }
+    cutoff = time.time() - float(days) * 86400.0
+    kept: Dict[str, Any] = {}
+    removed: List[str] = []
+    for tid, row in tenants.items():
+        if not isinstance(row, dict):
+            kept[tid] = row
+            continue
+        ts_raw = row.get("updated_at") or row.get("muted_at") or ""
+        try:
+            ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00")).timestamp()
+        except Exception:
+            kept[tid] = row
+            continue
+        if ts < cutoff:
+            removed.append(str(tid))
+        else:
+            kept[tid] = row
+    if not dry_run and removed:
+        prefs["tenants"] = kept
+        save_judge_ack_digest_prefs(prefs, base=base)
+    return {
+        "ok": True,
+        "path": path,
+        "days": float(days),
+        "before": len(tenants),
+        "after": len(kept) if not dry_run or not removed else len(tenants) - len(removed),
+        "removed": len(removed),
+        "removed_tenants": sorted(removed),
+        "dry_run": bool(dry_run),
+    }
+
+
+def maybe_prune_judge_ack_digest_mutes(
+    *,
+    base: Optional[str] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Env-gated mute/prefs retention (RAG_JUDGE_ACK_DIGEST_MUTE_PRUNE)."""
+    flag = os.environ.get("RAG_JUDGE_ACK_DIGEST_MUTE_PRUNE", "").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "prune_disabled"}
+    # Auto when TTL configured or explicit prune=1
+    ttl = _mute_ttl_days()
+    prefs_days_raw = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_PREFS_RETENTION_DAYS", ""
+    ).strip()
+    if flag not in {"1", "true", "yes", "on"} and ttl is None and not prefs_days_raw:
+        return {"ok": True, "skipped": True, "reason": "retention_not_configured"}
+    mute_report = prune_judge_ack_digest_mutes(base=base, dry_run=dry_run)
+    prefs_report = prune_judge_ack_digest_prefs(base=base, dry_run=dry_run)
+    return {
+        "ok": bool(mute_report.get("ok") and prefs_report.get("ok")),
+        "mutes": mute_report,
+        "prefs": prefs_report,
+        "dry_run": bool(dry_run),
+    }
+
 
 
 def resolve_judge_ack_digest_quiet_hours(
@@ -2907,12 +3110,35 @@ def post_pagerduty(
         return False
 
 
+def opsgenie_api_base(
+    *,
+    region: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> str:
+    """Resolve Opsgenie API host (us / eu / custom URL)."""
+    explicit = (base_url or os.environ.get("RAG_OPSGENIE_API_URL", "")).strip()
+    if explicit:
+        return explicit.rstrip("/")
+    reg = (
+        (region or os.environ.get("RAG_OPSGENIE_REGION", "") or "us")
+        .strip()
+        .lower()
+    )
+    if reg in {"eu", "europe"}:
+        return "https://eu.api.opsgenie.com"
+    if reg.startswith("http://") or reg.startswith("https://"):
+        return reg.rstrip("/")
+    return "https://api.opsgenie.com"
+
+
 def post_opsgenie(
     *,
     api_key: str,
     report: Dict[str, Any],
     source: str,
     priority: str = "P3",
+    region: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> bool:
     key = (api_key or "").strip()
     if not key:
@@ -2920,18 +3146,23 @@ def post_opsgenie(
     text = _summary_text(report, source=source)
     summary = report.get("summary") or {}
     pri = priority if priority in {"P1", "P2", "P3", "P4", "P5"} else "P3"
+    host = opsgenie_api_base(region=region, base_url=base_url)
+    tags = ["rag", "judge", "soft-fail", source]
+    if region:
+        tags.append(f"region:{region}")
     body = {
         "message": text[:130],
         "alias": f"rag-judge-soft-fail/{source}",
         "description": text,
         "priority": pri,
-        "tags": ["rag", "judge", "soft-fail", source],
+        "tags": tags,
         "details": {
             "accuracy": str(summary.get("accuracy")),
             "passed": str(summary.get("passed")),
             "failed": str(summary.get("failed")),
             "total": str(summary.get("total")),
             "mode": str(summary.get("mode") or report.get("mode") or ""),
+            "region": str(region or ""),
         },
         "entity": "rag-judge",
         "source": "rag-ci",
@@ -2940,7 +3171,7 @@ def post_opsgenie(
         import requests
 
         r = requests.post(
-            "https://api.opsgenie.com/v2/alerts",
+            f"{host}/v2/alerts",
             headers={
                 "Authorization": f"GenieKey {key}",
                 "Content-Type": "application/json",
@@ -2953,17 +3184,24 @@ def post_opsgenie(
         return False
 
 
-def post_opsgenie_close(*, api_key: str, source: str) -> bool:
+def post_opsgenie_close(
+    *,
+    api_key: str,
+    source: str,
+    region: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> bool:
     key = (api_key or "").strip()
     if not key:
         return False
     alias = f"rag-judge-soft-fail/{source}"
+    host = opsgenie_api_base(region=region, base_url=base_url)
     try:
         import requests
         from urllib.parse import quote
 
         r = requests.post(
-            f"https://api.opsgenie.com/v2/alerts/{quote(alias, safe='')}/close",
+            f"{host}/v2/alerts/{quote(alias, safe='')}/close",
             params={"identifierType": "alias"},
             headers={
                 "Authorization": f"GenieKey {key}",
@@ -3102,11 +3340,19 @@ def build_slack_ack_payload(
     return {"text": text, "blocks": blocks}
 
 
-def post_opsgenie_ack(*, api_key: str, source: str, note: str = "") -> bool:
+def post_opsgenie_ack(
+    *,
+    api_key: str,
+    source: str,
+    note: str = "",
+    region: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> bool:
     key = (api_key or "").strip()
     if not key:
         return False
     alias = f"rag-judge-soft-fail/{source}"
+    host = opsgenie_api_base(region=region, base_url=base_url)
     body: Dict[str, Any] = {"user": "rag-ci"}
     if note:
         body["note"] = note[:15000]
@@ -3115,7 +3361,7 @@ def post_opsgenie_ack(*, api_key: str, source: str, note: str = "") -> bool:
         from urllib.parse import quote
 
         r = requests.post(
-            f"https://api.opsgenie.com/v2/alerts/{quote(alias, safe='')}/acknowledge",
+            f"{host}/v2/alerts/{quote(alias, safe='')}/acknowledge",
             params={"identifierType": "alias"},
             headers={
                 "Authorization": f"GenieKey {key}",

@@ -41,6 +41,7 @@ _dual_write_catch_up_remaining = None
 _dual_write_shadow_overlap = None
 _dual_write_webhook_total = None
 _dual_write_webhook_dlq_depth = None
+_dual_write_webhook_dlq_quarantine_depth = None
 _dual_write_webhook_circuit_open = None
 
 
@@ -68,6 +69,7 @@ def _ensure_metrics():
     global _dual_write_catch_up_remaining
     global _dual_write_shadow_overlap
     global _dual_write_webhook_total, _dual_write_webhook_dlq_depth
+    global _dual_write_webhook_dlq_quarantine_depth
     global _dual_write_webhook_circuit_open
     if _events_total is not None:
         return
@@ -178,6 +180,10 @@ def _ensure_metrics():
     _dual_write_webhook_dlq_depth = Gauge(
         "rag_dual_write_webhook_dlq_depth",
         "Dual-write webhook dead-letter queue derinliği",
+    )
+    _dual_write_webhook_dlq_quarantine_depth = Gauge(
+        "rag_dual_write_webhook_dlq_quarantine_depth",
+        "Dual-write webhook DLQ quarantine derinliği",
     )
     _dual_write_webhook_circuit_open = Gauge(
         "rag_dual_write_webhook_circuit_open",
@@ -354,12 +360,20 @@ def observe_metric(
         elif kind == "dual_write_webhook":
             assert _dual_write_webhook_total is not None
             assert _dual_write_webhook_dlq_depth is not None
+            assert _dual_write_webhook_dlq_quarantine_depth is not None
             assert _dual_write_webhook_circuit_open is not None
             result = str(vals.get("result") or "unknown")
             _dual_write_webhook_total.labels(result=result).inc()
             if "dlq_depth" in vals:
                 try:
                     _dual_write_webhook_dlq_depth.set(float(vals.get("dlq_depth") or 0))
+                except (TypeError, ValueError):
+                    pass
+            if "dlq_quarantine_depth" in vals:
+                try:
+                    _dual_write_webhook_dlq_quarantine_depth.set(
+                        float(vals.get("dlq_quarantine_depth") or 0)
+                    )
                 except (TypeError, ValueError):
                     pass
             try:

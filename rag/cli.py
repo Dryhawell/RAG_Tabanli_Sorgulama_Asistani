@@ -1301,12 +1301,14 @@ def cmd_judge_ack_purge(args: argparse.Namespace) -> int:
 def cmd_dual_write_dlq(args: argparse.Namespace) -> int:
     from rag.dual_write_webhook import (
         dual_write_dlq_depth,
+        dual_write_dlq_quarantine_depth,
         dual_write_webhook_dlq_quarantine_path,
         maybe_alert_dual_write_dlq,
         prune_dual_write_dlq,
         read_dual_write_dlq,
         read_dual_write_dlq_quarantine,
         replay_dual_write_dlq,
+        replay_dual_write_dlq_quarantine,
     )
 
     path = getattr(args, "path", None)
@@ -1319,6 +1321,20 @@ def cmd_dual_write_dlq(args: argparse.Namespace) -> int:
             days=float(days),
             dry_run=bool(getattr(args, "dry_run", False)),
             notify=bool(getattr(args, "notify", False)),
+        )
+    elif getattr(args, "replay_quarantine", False):
+        if not os.environ.get("RAG_DUAL_WRITE_DLQ_REPLAY_RUN_ID", "").strip():
+            os.environ["RAG_DUAL_WRITE_DLQ_REPLAY_RUN_ID"] = (
+                os.environ.get("GITHUB_RUN_ID", "").strip()
+                or f"cli-{os.getpid()}"
+            )
+        report = replay_dual_write_dlq_quarantine(
+            path=path,
+            limit=int(getattr(args, "limit", 5) or 5),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            force=not bool(getattr(args, "no_force", False)),
+            respect_budget=not bool(getattr(args, "no_budget", False)),
+            requeue=bool(getattr(args, "requeue", False)),
         )
     elif getattr(args, "replay", False):
         if not os.environ.get("RAG_DUAL_WRITE_DLQ_REPLAY_RUN_ID", "").strip():
@@ -1342,7 +1358,7 @@ def cmd_dual_write_dlq(args: argparse.Namespace) -> int:
             "ok": True,
             "quarantine": True,
             "path": qpath,
-            "depth": len(rows),
+            "depth": dual_write_dlq_quarantine_depth(path=qpath),
             "count": len(rows),
             "entries": [
                 {
@@ -1385,6 +1401,7 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
     from rag.judge_alert import (
         dispatch_judge_ack_digest,
         dispatch_judge_ack_digest_fanout,
+        maybe_prune_judge_ack_digest_mutes,
         maybe_purge_judge_ack_audit,
         summarize_judge_ack_audit,
     )
@@ -1402,6 +1419,20 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
         block_kit = True
 
     purge = maybe_purge_judge_ack_audit(path=audit, dry_run=dry_run)
+    mute_prune = maybe_prune_judge_ack_digest_mutes(dry_run=dry_run)
+    if getattr(args, "prune_mutes", False):
+        from rag.judge_alert import (
+            prune_judge_ack_digest_mutes,
+            prune_judge_ack_digest_prefs,
+        )
+
+        mute_prune = {
+            "ok": True,
+            "mutes": prune_judge_ack_digest_mutes(dry_run=dry_run),
+            "prefs": prune_judge_ack_digest_prefs(dry_run=dry_run),
+            "forced": True,
+            "dry_run": dry_run,
+        }
 
     if getattr(args, "fan_out", False):
         report = dispatch_judge_ack_digest_fanout(
@@ -1415,6 +1446,7 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
             block_kit=block_kit,
         )
         report["retention_purge"] = purge
+        report["mute_prune"] = mute_prune
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("ok") else 1
 
@@ -1439,6 +1471,7 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
                 "summary": summary,
                 "dispatch": dispatched,
                 "retention_purge": purge,
+                "mute_prune": mute_prune,
             },
             ensure_ascii=False,
             indent=2,
@@ -1844,6 +1877,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Quarantine JSONL listele (replay-exhausted entries)",
     )
     p_dlq.add_argument(
+        "--replay-quarantine",
+        action="store_true",
+        help="Quarantine kayıtlarını yeniden dene",
+    )
+    p_dlq.add_argument(
+        "--requeue",
+        action="store_true",
+        help="Quarantine replay fail olursa ana DLQ'ya geri koy",
+    )
+    p_dlq.add_argument(
         "--days",
         type=float,
         default=None,
@@ -1932,6 +1975,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Webhook göndermeden özet yazdır",
+    )
+    p_jdig.add_argument(
+        "--prune-mutes",
+        action="store_true",
+        help="Expired mute + stale prefs temizliği (TTL/retention)",
     )
     p_jdig.set_defaults(func=cmd_judge_ack_digest)
 

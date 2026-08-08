@@ -1,5 +1,7 @@
 {
-  "annotations": { "list": [] },
+  "annotations": {
+    "list": []
+  },
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -9,7 +11,12 @@
     {
       "type": "stat",
       "title": "Judge accuracy (latest)",
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
       "id": 1,
       "targets": [
         {
@@ -26,19 +33,39 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 0.8 },
-              { "color": "green", "value": 0.95 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.8
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
             ]
           }
         }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     },
     {
       "type": "stat",
       "title": "Soft-fail rate (1h)",
-      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
       "id": 2,
       "targets": [
         {
@@ -55,19 +82,39 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.1 },
-              { "color": "red", "value": 0.3 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.1
+              },
+              {
+                "color": "red",
+                "value": 0.3
+              }
             ]
           }
         }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Judge runs by outcome",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
       "id": 3,
       "targets": [
         {
@@ -76,12 +123,21 @@
           "refId": "A"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "ops" } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Judge accuracy over time",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
       "id": 4,
       "targets": [
         {
@@ -91,13 +147,22 @@
         }
       ],
       "fieldConfig": {
-        "defaults": { "unit": "percentunit", "min": 0, "max": 1 }
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        }
       }
     },
     {
       "type": "timeseries",
       "title": "Soft-fail events",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
       "id": 5,
       "targets": [
         {
@@ -111,7 +176,12 @@
       "type": "timeseries",
       "title": "LLM tokens (rate)",
       "description": "rag_llm_tokens_total by token_type. Enable Tempo/Jaeger datasource for exemplar→trace links from query latency panels.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
       "id": 6,
       "targets": [
         {
@@ -120,14 +190,26 @@
           "refId": "A"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "ops" } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Query latency (exemplars)",
       "description": "Histogram exemplars attach OTel trace_id/span_id when available. Prometheus→Tempo via provisioning exemplarTraceIdDestinations.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
       "id": 7,
       "targets": [
         {
@@ -135,17 +217,32 @@
           "legendFormat": "p95",
           "refId": "A",
           "exemplar": true,
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "s" } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
     },
     {
       "type": "stat",
       "title": "LLM cost est. (1h USD)",
       "description": "Recording rule rag:llm_cost_usd_1h (grafana/rules/rag_llm_cost.yml).",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 24 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 24
+      },
       "id": 8,
       "targets": [
         {
@@ -160,14 +257,28 @@
           "decimals": 4
         }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "LLM cost rate (USD/h est.)",
       "description": "Recording rule rag:llm_cost_usd_per_hour (see grafana/rules/rag_llm_cost.yml).",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 18, "x": 6, "y": 24 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 18,
+        "x": 6,
+        "y": 24
+      },
       "id": 9,
       "targets": [
         {
@@ -176,13 +287,23 @@
           "refId": "A"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 5 } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 5
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Judge ack audit (rate by event)",
       "description": "rag_judge_ack_audit_total — soft-fail ack/alert/resolve audit trail",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 30 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
       "id": 10,
       "targets": [
         {
@@ -195,7 +316,12 @@
     {
       "type": "stat",
       "title": "Ack audit events (7d)",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 30 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
       "id": 11,
       "targets": [
         {
@@ -204,13 +330,22 @@
           "refId": "A"
         }
       ],
-      "fieldConfig": { "defaults": { "decimals": 0 } }
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Dual-write shadow overlap",
       "description": "rag_vector_dual_write_shadow_overlap + 1h avg (see grafana/rules/rag_dual_write.yml)",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 37 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 37
+      },
       "id": 12,
       "targets": [
         {
@@ -232,9 +367,18 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 0.9 },
-              { "color": "green", "value": 0.95 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.9
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
             ]
           }
         }
@@ -243,7 +387,12 @@
     {
       "type": "stat",
       "title": "Shadow overlap (last)",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 37 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 37
+      },
       "id": 13,
       "targets": [
         {
@@ -260,20 +409,40 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 0.9 },
-              { "color": "green", "value": 0.95 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.9
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
             ]
           }
         }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Dual-write lag + shadow burn",
       "description": "rag:dual_write_lag:avg1h and rag:dual_write_shadow_burn:1h (RagDualWriteLagShadowBurn)",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 44 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 44
+      },
       "id": 14,
       "targets": [
         {
@@ -291,7 +460,12 @@
     {
       "type": "stat",
       "title": "Dual-write lag (last)",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 44 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
       "id": 15,
       "targets": [
         {
@@ -300,14 +474,101 @@
           "refId": "A"
         }
       ],
-      "fieldConfig": { "defaults": { "decimals": 0 } },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Dual-write DLQ depth",
+      "description": "rag_dual_write_webhook_dlq_depth + quarantine depth + webhook results",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 51
+      },
+      "id": 16,
+      "targets": [
+        {
+          "expr": "rag_dual_write_webhook_dlq_depth",
+          "legendFormat": "dlq depth",
+          "refId": "A"
+        },
+        {
+          "expr": "rag_dual_write_webhook_dlq_quarantine_depth",
+          "legendFormat": "quarantine depth",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Dual-write DLQ quarantine (last)",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 51
+      },
+      "id": 17,
+      "targets": [
+        {
+          "expr": "rag_dual_write_webhook_dlq_quarantine_depth",
+          "legendFormat": "quarantine",
+          "refId": "A"
+        },
+        {
+          "expr": "rag_dual_write_webhook_dlq_depth",
+          "legendFormat": "dlq",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     }
   ],
   "schemaVersion": 39,
-  "tags": ["rag", "judge", "soft-fail", "llm", "otel", "tempo", "ack-audit", "dual-write", "shadow", "burn-rate"],
-  "templating": { "list": [] },
-  "time": { "from": "now-6h", "to": "now" },
+  "tags": [
+    "ack-audit",
+    "burn-rate",
+    "dlq",
+    "dual-write",
+    "judge",
+    "llm",
+    "otel",
+    "quarantine",
+    "rag",
+    "shadow",
+    "soft-fail",
+    "tempo"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
   "timezone": "browser",
   "title": "RAG Judge soft-fail",
   "uid": "rag-judge-soft-fail",

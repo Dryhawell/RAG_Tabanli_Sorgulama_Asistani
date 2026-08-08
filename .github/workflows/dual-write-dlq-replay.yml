@@ -18,9 +18,19 @@ on:
         default: false
         type: boolean
       force:
-        description: "Cooldownoldown/circuit'i yok say"
+        description: "Cooldown/circuit'i yok say"
         required: false
         default: true
+        type: boolean
+      replay_quarantine:
+        description: "Quarantine kayıtlarını da yeniden dene"
+        required: false
+        default: false
+        type: boolean
+      requeue:
+        description: "Quarantine fail → ana DLQ'ya geri koy"
+        required: false
+        default: false
         type: boolean
 
 jobs:
@@ -70,6 +80,21 @@ jobs:
           # shellcheck disable=SC2086
           python -m rag.cli dual-write-dlq $EXTRA \
             | tee metadata/dual_write_dlq_replay.json
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.replay_quarantine }}" = "true" ]; then
+            QEXTRA="--replay-quarantine --limit $LIMIT"
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              QEXTRA="$QEXTRA --dry-run"
+            fi
+            if [ "${{ inputs.force }}" = "false" ]; then
+              QEXTRA="$QEXTRA --no-force"
+            fi
+            if [ "${{ inputs.requeue }}" = "true" ]; then
+              QEXTRA="$QEXTRA --requeue"
+            fi
+            # shellcheck disable=SC2086
+            python -m rag.cli dual-write-dlq $QEXTRA \
+              | tee metadata/dual_write_dlq_quarantine_replay.json || true
+          fi
           python -m rag.cli dual-write-dlq --quarantine --limit 50 \
             | tee metadata/dual_write_dlq_quarantine.json || true
       - name: Upload DLQ replay report
@@ -81,6 +106,7 @@ jobs:
             metadata/dual_write_dlq_replay.json
             metadata/dual_write_dlq_prune.json
             metadata/dual_write_dlq_quarantine.json
+            metadata/dual_write_dlq_quarantine_replay.json
             metadata/dual_write_webhook_dlq.jsonl
             metadata/dual_write_webhook_dlq_quarantine.jsonl
             metadata/dual_write_webhook_state.json
