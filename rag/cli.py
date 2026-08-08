@@ -1264,6 +1264,63 @@ def cmd_prometheus(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_webhook_signing_sidecar(args: argparse.Namespace) -> int:
+    from rag.webhook_signing_sidecar import (
+        build_signed_webhook_headers,
+        run_webhook_signing_sidecar,
+        sidecar_listen_host,
+        sidecar_listen_port,
+        sidecar_upstream_url,
+    )
+    from rag.dual_write_webhook import webhook_signing_secret
+
+    if getattr(args, "upstream", None):
+        os.environ["RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM"] = str(args.upstream)
+
+    if getattr(args, "sign_once", False):
+        body = sys.stdin.buffer.read() or b"{}"
+        mode = str(getattr(args, "mode", None) or "dlq_quarantine")
+        secret = webhook_signing_secret(mode=mode)
+        if not secret:
+            print(
+                json.dumps(
+                    {"ok": False, "error": "signing_secret_missing", "mode": mode},
+                    ensure_ascii=False,
+                )
+            )
+            return 1
+        headers = build_signed_webhook_headers(body, secret=secret)
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mode": mode,
+                    "upstream": sidecar_upstream_url(mode=mode),
+                    "headers": headers,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    host = args.host or sidecar_listen_host()
+    port = args.port if args.port is not None else sidecar_listen_port()
+    server = run_webhook_signing_sidecar(host=host, port=port)
+    print(
+        f"Webhook signing sidecar: http://{host}:{port}/ "
+        f"(quarantine→{sidecar_upstream_url(mode='dlq_quarantine')})"
+    )
+    print("Durdurmak için Ctrl+C")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nKapatıldı.")
+    finally:
+        server.server_close()
+    return 0
+
+
 def cmd_judge_ack_export(args: argparse.Namespace) -> int:
     from rag.judge_alert import export_judge_ack_audit
 
@@ -1445,16 +1502,34 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
     mute_prune = maybe_prune_judge_ack_digest_mutes(dry_run=dry_run)
     if getattr(args, "prune_mutes", False):
         from rag.judge_alert import (
+            maybe_reconcile_judge_ack_digest_message_refs,
             prune_judge_ack_digest_messages,
             prune_judge_ack_digest_mutes,
             prune_judge_ack_digest_prefs,
+            reconcile_judge_ack_digest_message_refs,
         )
 
+        recon = (
+            reconcile_judge_ack_digest_message_refs(dry_run=dry_run)
+            if getattr(args, "reconcile_messages", False)
+            else maybe_reconcile_judge_ack_digest_message_refs(dry_run=dry_run)
+        )
         mute_prune = {
             "ok": True,
             "mutes": prune_judge_ack_digest_mutes(dry_run=dry_run),
             "prefs": prune_judge_ack_digest_prefs(dry_run=dry_run),
             "messages": prune_judge_ack_digest_messages(dry_run=dry_run),
+            "reconcile": recon,
+            "forced": True,
+            "dry_run": dry_run,
+        }
+    elif getattr(args, "reconcile_messages", False):
+        from rag.judge_alert import reconcile_judge_ack_digest_message_refs
+
+        recon = reconcile_judge_ack_digest_message_refs(dry_run=dry_run)
+        mute_prune = {
+            "ok": bool(recon.get("ok")),
+            "reconcile": recon,
             "forced": True,
             "dry_run": dry_run,
         }
@@ -2016,7 +2091,45 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Expired mute + stale prefs temizliği (TTL/retention)",
     )
+    p_jdig.add_argument(
+        "--reconcile-messages",
+        action="store_true",
+        help="Slack history ile digest message-ref doğrula/onar/düşür",
+    )
     p_jdig.set_defaults(func=cmd_judge_ack_digest)
+
+    p_wss = sub.add_parser(
+        "webhook-signing-sidecar",
+        help="Alertmanager → RAG HMAC signing proxy (quarantine/catch-up)",
+    )
+    p_wss.add_argument(
+        "--host",
+        default=None,
+        help="Bind host (varsayılan RAG_WEBHOOK_SIGNING_SIDECAR_HOST / 0.0.0.0)",
+    )
+    p_wss.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Port (varsayılan RAG_WEBHOOK_SIGNING_SIDECAR_PORT / 8777)",
+    )
+    p_wss.add_argument(
+        "--upstream",
+        default=None,
+        help="Forward URL (varsayılan RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM)",
+    )
+    p_wss.add_argument(
+        "--sign-once",
+        action="store_true",
+        help="stdin body'yi imzala, forward etmeden headers JSON yaz",
+    )
+    p_wss.add_argument(
+        "--mode",
+        default="dlq_quarantine",
+        choices=["dlq_quarantine", "catch_up"],
+        help="Signing secret mode (--sign-once)",
+    )
+    p_wss.set_defaults(func=cmd_webhook_signing_sidecar)
 
     p_stats = sub.add_parser("stats", help="Metrik özeti (JSONL)")
     p_stats.add_argument("--path", default=None, help=f"metrics.jsonl yolu (varsayılan: {METRICS_PATH})")

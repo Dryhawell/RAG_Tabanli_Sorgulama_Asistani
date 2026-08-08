@@ -50,7 +50,10 @@ receivers:
       - url: ${RAG_ALERTMANAGER_INGEST_DLQ_QUARANTINE_WEBHOOK_URL}
         send_resolved: true
         # Token: RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_TOKEN (or shared RAG_ALERTMANAGER_WEBHOOK_TOKEN)
-        # HMAC: RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET (+ proxy for X-Webhook-* headers)
+        # HMAC: point URL at signing sidecar (docker compose --profile obs
+        #   webhook-signing-sidecar → :8777) +
+        #   RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET
+        #   or shared RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET
         # Optional: http_config.authorization.type=Bearer + credentials=<token>
 
   - name: ingest-webhook

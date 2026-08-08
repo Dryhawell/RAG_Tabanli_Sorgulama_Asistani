@@ -40,9 +40,12 @@ receivers:
 
   - name: ingest-dlq-quarantine-webhook
     webhook_configs:
+      # Direct (token) or HMAC via signing sidecar:
+      #   url: http://webhook-signing-sidecar:8777/
+      #   python -m rag.cli webhook-signing-sidecar
       - url: http://host.docker.internal:8766/hooks/dual-write-dlq-quarantine
         send_resolved: true
-        # Token auth (Alertmanager native Bearer). HMAC needs a signing proxy:
+        # Token auth (Alertmanager native Bearer). HMAC: signing sidecar +
         #   RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET
         #   or shared RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET
         # Optional: http_config.authorization.type=Bearer + credentials=<token>

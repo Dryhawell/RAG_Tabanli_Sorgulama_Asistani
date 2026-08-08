@@ -1375,6 +1375,160 @@ def prune_judge_ack_digest_messages(
     }
 
 
+def digest_history_reconcile_enabled() -> bool:
+    raw = os.environ.get("RAG_JUDGE_ACK_DIGEST_HISTORY_RECONCILE", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def reconcile_judge_ack_digest_message_refs(
+    *,
+    tenant_id: Optional[str] = None,
+    base: Optional[str] = None,
+    bot_token: Optional[str] = None,
+    dry_run: bool = False,
+    drop_missing: bool = True,
+    repair_channel: bool = True,
+) -> Dict[str, Any]:
+    """Slack conversations.history ile digest message-ref'leri doğrula / onar / düşür."""
+    path = judge_ack_digest_messages_path(base=base)
+    data = load_judge_ack_digest_messages(base=base)
+    tenants = {
+        k: v
+        for k, v in data.items()
+        if k != "updated_at" and isinstance(v, dict)
+    }
+    want = (tenant_id or "").strip()
+    if want:
+        tenants = {want: tenants[want]} if want in tenants else {}
+    details: List[Dict[str, Any]] = []
+    checked = 0
+    kept = 0
+    dropped = 0
+    repaired = 0
+    errors = 0
+    new_data: Dict[str, Any] = {
+        k: v
+        for k, v in data.items()
+        if k == "updated_at" or (isinstance(v, dict) and k not in tenants)
+    }
+    for tid, row in tenants.items():
+        refs = list_judge_ack_digest_message_refs(tid, base=base)
+        kept_msgs: List[Dict[str, Any]] = []
+        # Preserve updated_at from store when available
+        store_msgs = (
+            list(row.get("messages") or [])
+            if isinstance(row.get("messages"), list)
+            else []
+        )
+        meta_by_ts = {
+            str(m.get("message_ts") or "").strip(): m
+            for m in store_msgs
+            if isinstance(m, dict) and str(m.get("message_ts") or "").strip()
+        }
+        for ref in refs:
+            checked += 1
+            ch = str(ref.get("channel_id") or "").strip()
+            ts = str(ref.get("message_ts") or "").strip()
+            meta = dict(meta_by_ts.get(ts) or {"channel_id": ch, "message_ts": ts})
+            fetched = fetch_slack_message_by_ts(
+                channel_id=ch, message_ts=ts, bot_token=bot_token
+            )
+            action = "keep"
+            err = None
+            if fetched.get("ok"):
+                kept += 1
+                kept_msgs.append(meta)
+            elif fetched.get("error") == "message_not_found" and repair_channel:
+                looked = lookup_slack_channel_for_ts(
+                    thread_ts=ts, bot_token=bot_token, channel_hint=ch
+                )
+                if looked.get("ok") and looked.get("channel"):
+                    new_ch = str(looked.get("channel") or "").strip()
+                    meta = dict(meta)
+                    meta["channel_id"] = new_ch
+                    meta["updated_at"] = _utcnow_iso()
+                    meta["repaired_from"] = ch
+                    kept_msgs.append(meta)
+                    repaired += 1
+                    kept += 1
+                    action = "repaired"
+                elif drop_missing:
+                    dropped += 1
+                    action = "dropped"
+                    err = "message_not_found"
+                else:
+                    kept += 1
+                    kept_msgs.append(meta)
+                    action = "keep_missing"
+                    err = "message_not_found"
+            elif fetched.get("error") == "message_not_found" and drop_missing:
+                dropped += 1
+                action = "dropped"
+                err = "message_not_found"
+            elif fetched.get("error") in {"bot_token_missing", "ref_incomplete"}:
+                # Don't mutate store when we can't talk to Slack
+                errors += 1
+                kept += 1
+                kept_msgs.append(meta)
+                action = "keep_error"
+                err = str(fetched.get("error"))
+            else:
+                # Transient API errors — keep
+                errors += 1
+                kept += 1
+                kept_msgs.append(meta)
+                action = "keep_error"
+                err = str(fetched.get("error") or "history_failed")
+            details.append(
+                {
+                    "tenant_id": tid,
+                    "channel_id": ch,
+                    "message_ts": ts,
+                    "action": action,
+                    "error": err,
+                }
+            )
+        if kept_msgs:
+            new_row = dict(row)
+            new_row["messages"] = kept_msgs
+            new_row["channel_id"] = str(kept_msgs[0].get("channel_id") or "").strip()
+            new_row["message_ts"] = str(kept_msgs[0].get("message_ts") or "").strip()
+            new_row["updated_at"] = kept_msgs[0].get("updated_at") or row.get(
+                "updated_at"
+            )
+            new_data[tid] = new_row
+        # else: tenant dropped entirely (all refs missing)
+    mutated = repaired > 0 or dropped > 0
+    if not dry_run and mutated:
+        save_judge_ack_digest_messages(new_data, base=base)
+    return {
+        "ok": True,
+        "path": path,
+        "dry_run": bool(dry_run),
+        "checked": checked,
+        "kept": kept,
+        "dropped": dropped,
+        "repaired": repaired,
+        "errors": errors,
+        "tenants": len(tenants),
+        "details": details,
+    }
+
+
+def maybe_reconcile_judge_ack_digest_message_refs(
+    *,
+    base: Optional[str] = None,
+    dry_run: bool = False,
+    bot_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Env-gated history reconcile (RAG_JUDGE_ACK_DIGEST_HISTORY_RECONCILE)."""
+    if not digest_history_reconcile_enabled():
+        return {"ok": True, "skipped": True, "reason": "reconcile_disabled"}
+    return reconcile_judge_ack_digest_message_refs(
+        base=base, dry_run=dry_run, bot_token=bot_token
+    )
+
+
 def maybe_prune_judge_ack_digest_mutes(
     *,
     base: Optional[str] = None,
@@ -1383,7 +1537,11 @@ def maybe_prune_judge_ack_digest_mutes(
     """Env-gated mute/prefs/messages retention (RAG_JUDGE_ACK_DIGEST_MUTE_PRUNE)."""
     flag = os.environ.get("RAG_JUDGE_ACK_DIGEST_MUTE_PRUNE", "").strip().lower()
     msg_flag = os.environ.get("RAG_JUDGE_ACK_DIGEST_MESSAGES_PRUNE", "").strip().lower()
-    if flag in {"0", "false", "no", "off"} and msg_flag in {"0", "false", "no", "off"}:
+    if (
+        flag in {"0", "false", "no", "off"}
+        and msg_flag in {"0", "false", "no", "off"}
+        and not digest_history_reconcile_enabled()
+    ):
         return {"ok": True, "skipped": True, "reason": "prune_disabled"}
     # Auto when TTL configured or explicit prune=1
     ttl = _mute_ttl_days()
@@ -1397,25 +1555,32 @@ def maybe_prune_judge_ack_digest_mutes(
         "yes",
         "on",
     }
+    recon_on = digest_history_reconcile_enabled()
     if (
         not explicit
         and ttl is None
         and not prefs_days_raw
         and messages_ttl is None
+        and not recon_on
     ):
         return {"ok": True, "skipped": True, "reason": "retention_not_configured"}
     mute_report = prune_judge_ack_digest_mutes(base=base, dry_run=dry_run)
     prefs_report = prune_judge_ack_digest_prefs(base=base, dry_run=dry_run)
     messages_report = prune_judge_ack_digest_messages(base=base, dry_run=dry_run)
+    reconcile_report = maybe_reconcile_judge_ack_digest_message_refs(
+        base=base, dry_run=dry_run
+    )
     return {
         "ok": bool(
             mute_report.get("ok")
             and prefs_report.get("ok")
             and messages_report.get("ok")
+            and reconcile_report.get("ok")
         ),
         "mutes": mute_report,
         "prefs": prefs_report,
         "messages": messages_report,
+        "reconcile": reconcile_report,
         "dry_run": bool(dry_run),
     }
 

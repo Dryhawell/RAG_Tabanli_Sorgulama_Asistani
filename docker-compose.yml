@@ -103,6 +103,31 @@ services:
       - tempo
       - alertmanager
 
+  # Alertmanager cannot attach X-Webhook-* HMAC headers; point quarantine
+  # receiver at this sidecar (e.g. http://webhook-signing-sidecar:8777/).
+  webhook-signing-sidecar:
+    build: .
+    profiles: ["obs"]
+    ports:
+      - "8777:8777"
+    environment:
+      RAG_WEBHOOK_SIGNING_SIDECAR_HOST: "0.0.0.0"
+      RAG_WEBHOOK_SIGNING_SIDECAR_PORT: "8777"
+      RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM: ${RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM:-http://host.docker.internal:8766/hooks/dual-write-dlq-quarantine}
+      RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET: ${RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET:-}
+      RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET: ${RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET:-}
+    command:
+      - python
+      - -m
+      - rag.cli
+      - webhook-signing-sidecar
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8777"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 volumes:
   qdrant_data:
   alertmanager_cfg:

@@ -787,6 +787,84 @@ def test_dual_write_dlq_cli_parser() -> None:
     assert pm.prune_mutes is True
 
 
+def test_digest_message_ref_history_reconcile(tmp_path: Path, monkeypatch) -> None:
+    from unittest.mock import patch
+
+    from rag.judge_alert import (
+        list_judge_ack_digest_message_refs,
+        maybe_reconcile_judge_ack_digest_message_refs,
+        reconcile_judge_ack_digest_message_refs,
+        save_judge_ack_digest_message,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MESSAGES", str(tmp_path / "msgs.json"))
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.delenv("RAG_JUDGE_ACK_DIGEST_HISTORY_RECONCILE", raising=False)
+
+    save_judge_ack_digest_message(
+        "acme", channel_id="C-wrong", message_ts="1.1", base=str(tmp_path)
+    )
+    save_judge_ack_digest_message(
+        "acme", channel_id="C-gone", message_ts="2.2", base=str(tmp_path)
+    )
+    save_judge_ack_digest_message(
+        "acme", channel_id="C-ok", message_ts="3.3", base=str(tmp_path)
+    )
+
+    def _fake_api(method, *, bot_token, json_body=None, params=None):
+        if method == "conversations.history":
+            ch = (json_body or {}).get("channel")
+            ts = (json_body or {}).get("latest")
+            if ch == "C-ok" and ts == "3.3":
+                return {"ok": True, "messages": [{"ts": "3.3", "text": "ok"}]}
+            if ch == "C-fixed" and ts == "1.1":
+                return {"ok": True, "messages": [{"ts": "1.1", "text": "fixed"}]}
+            return {"ok": True, "messages": []}
+        if method == "conversations.list":
+            return {
+                "ok": True,
+                "channels": [{"id": "C-fixed"}, {"id": "C-ok"}],
+                "response_metadata": {},
+            }
+        return {"ok": True}
+
+    skipped = maybe_reconcile_judge_ack_digest_message_refs(base=str(tmp_path))
+    assert skipped.get("skipped") is True
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_HISTORY_RECONCILE", "1")
+    with patch("rag.judge_alert.slack_api", side_effect=_fake_api):
+        dry = reconcile_judge_ack_digest_message_refs(
+            base=str(tmp_path), dry_run=True
+        )
+        assert dry["checked"] == 3
+        assert dry["repaired"] >= 1
+        assert dry["dropped"] >= 1
+        # dry-run must not mutate
+        assert any(
+            r["channel_id"] == "C-wrong"
+            for r in list_judge_ack_digest_message_refs("acme", base=str(tmp_path))
+        )
+
+        out = reconcile_judge_ack_digest_message_refs(
+            base=str(tmp_path), dry_run=False
+        )
+        assert out["ok"] is True
+        assert out["repaired"] >= 1
+        assert out["dropped"] >= 1
+        refs = list_judge_ack_digest_message_refs("acme", base=str(tmp_path))
+        assert len(refs) == 2
+        assert {r["message_ts"] for r in refs} == {"1.1", "3.3"}
+        assert any(r["channel_id"] == "C-fixed" and r["message_ts"] == "1.1" for r in refs)
+        assert not any(r["message_ts"] == "2.2" for r in refs)
+
+    from rag.cli import build_parser
+
+    args = build_parser().parse_args(
+        ["judge-ack-digest", "--reconcile-messages", "--dry-run"]
+    )
+    assert args.reconcile_messages is True
+
+
 def test_digest_message_ref_prune_ttl(tmp_path: Path, monkeypatch) -> None:
     import json
     from datetime import datetime, timedelta, timezone

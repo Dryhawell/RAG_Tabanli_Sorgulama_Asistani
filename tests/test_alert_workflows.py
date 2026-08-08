@@ -423,18 +423,21 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_prune_require_auth_panel():
+def test_readme_sonraki_adaylar_after_history_sidecar_canary_alert():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
-    assert "message-ref Slack history reconcile" in text
-    assert "webhook signing sidecar" in text
-    assert "canary resolve alert rule" in text
+    assert "message-ref reconcile metrics/Grafana" in text
+    assert "signing sidecar mTLS" in text
+    assert "canary resolve auto-silence" in text
     # Completed this round — should not remain as next candidates
-    assert "message-ref prune/TTL" not in text
-    assert "require-auth default-on" not in text
-    assert "canary resolve Grafana panel" not in text
+    assert "message-ref Slack history reconcile" not in text
+    assert "dual-write DLQ quarantine webhook signing sidecar" not in text
+    assert "canary resolve alert rule" not in text
+    assert "webhook-signing-sidecar" in text
+    assert "RAG_JUDGE_ACK_DIGEST_HISTORY_RECONCILE" in text
+    assert "RagInhibitEqualCanaryResolveFail" in text
     assert "RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET" in text
     assert "RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH=0" in text
     assert "Auth varsayılan zorunlu" in text
@@ -452,10 +455,13 @@ def test_ci_inhibit_equal_slack_thread_env():
 def test_judge_ack_digest_mute_prune_workflow_yaml():
     text = Path(".github/workflows/judge-ack-digest.yml").read_text(encoding="utf-8")
     assert "--prune-mutes" in text
+    assert "--reconcile-messages" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_TTL_DAYS" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_PRUNE" in text
     assert "RAG_JUDGE_ACK_DIGEST_MESSAGES_TTL_DAYS" in text
     assert "RAG_JUDGE_ACK_DIGEST_MESSAGES_PRUNE" in text
+    assert "RAG_JUDGE_ACK_DIGEST_HISTORY_RECONCILE" in text
+    assert "RAG_JUDGE_SLACK_BOT_TOKEN" in text
     assert "judge_ack_digest_messages.json" in text
 
 
@@ -529,6 +535,29 @@ def test_dual_write_shadow_alert_artifacts():
     assert "rag:dual_write_shadow_burn:1h" in dash
     assert "DLQ quarantine depth" in dash
     assert "rag_dual_write_webhook_dlq_quarantine_depth >= 1" in dash
+
+
+def test_inhibit_equal_canary_resolve_alert_artifacts():
+    rules = Path("grafana/rules/rag_inhibit_equal.yml").read_text(encoding="utf-8")
+    assert "RagInhibitEqualCanaryResolveFail" in rules
+    assert "RagInhibitEqualCanaryResolveFailBurst" in rules
+    assert "rag_inhibit_equal_canary_resolve_total" in rules
+    assert 'result="fail"' in rules
+    assert "dashboard_uid: rag-judge" in rules
+    alerting = Path("grafana/alerting/rag_inhibit_equal_canary.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "rag-inhibit-equal-canary-resolve-fail" in alerting
+    assert "rag-inhibit-equal-canary-resolve-fail-burst" in alerting
+    assert "rag_inhibit_equal_canary_resolve_total" in alerting
+    assert "Inhibit equal canary resolve" in alerting
+    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+    assert "webhook-signing-sidecar" in compose
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM" in compose
+    am = Path("grafana/alertmanager.yml").read_text(encoding="utf-8")
+    assert "webhook-signing-sidecar" in am
+    tmpl = Path("grafana/alertmanager.yml.template").read_text(encoding="utf-8")
+    assert "signing sidecar" in tmpl
 
 
 def test_suggest_equal_labels_and_from_live(tmp_path, monkeypatch):
