@@ -1,0 +1,35 @@
+"""Periyodik push token prune (revoked/expired temizliği)."""
+
+name: Collab Push Prune
+
+on:
+  schedule:
+    - cron: "0 3 * * *"  # Her gün 03:00 UTC
+  workflow_dispatch:
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Prune expired/revoked push tokens
+        env:
+          RAG_ENABLE_METRICS: "1"
+        run: |
+          python -m rag.cli collab-notifications --user system \
+            --prune-push-tokens --prune-all-users
+      - name: Upload metrics snippet
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: push-prune-${{ github.run_id }}
+          path: metadata/metrics.jsonl
+          if-no-files-found: ignore
