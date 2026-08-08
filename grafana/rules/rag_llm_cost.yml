@@ -1,0 +1,35 @@
+groups:
+  - name: rag_llm_cost
+    interval: 30s
+    rules:
+      - record: rag:llm_prompt_tokens:rate5m
+        expr: sum by (provider, model) (rate(rag_llm_tokens_total{token_type="prompt"}[5m]))
+      - record: rag:llm_completion_tokens:rate5m
+        expr: sum by (provider, model) (rate(rag_llm_tokens_total{token_type="completion"}[5m]))
+      - record: rag:llm_cost_usd_per_hour
+        # Heuristic: prompt $0.15 / 1M + completion $0.60 / 1M
+        expr: |
+          sum(rate(rag_llm_tokens_total{token_type="prompt"}[5m])) * 3600 * 0.00000015
+          + sum(rate(rag_llm_tokens_total{token_type="completion"}[5m])) * 3600 * 0.0000006
+      - record: rag:llm_cost_usd_1h
+        expr: |
+          sum(increase(rag_llm_tokens_total{token_type="prompt"}[1h])) * 0.00000015
+          + sum(increase(rag_llm_tokens_total{token_type="completion"}[1h])) * 0.0000006
+      - alert: RagLlmCostHigh
+        expr: rag:llm_cost_usd_per_hour > 1
+        for: 15m
+        labels:
+          severity: warning
+          service: rag
+        annotations:
+          summary: "RAG LLM estimated cost high"
+          description: "Estimated LLM spend rate {{ $value | humanize }} USD/h (>1)."
+      - alert: RagJudgeSoftFailBurst
+        expr: sum(rate(rag_judge_soft_fail_total[10m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: rag-judge
+        annotations:
+          summary: "Judge soft-fail burst"
+          description: "soft-fail rate {{ $value | humanize }} /s over 10m."
