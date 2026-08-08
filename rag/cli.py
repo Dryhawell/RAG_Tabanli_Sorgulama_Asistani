@@ -1304,7 +1304,9 @@ def cmd_dual_write_dlq(args: argparse.Namespace) -> int:
         dual_write_dlq_quarantine_depth,
         dual_write_webhook_dlq_quarantine_path,
         maybe_alert_dual_write_dlq,
+        maybe_alert_dual_write_dlq_quarantine,
         prune_dual_write_dlq,
+        prune_dual_write_dlq_quarantine,
         read_dual_write_dlq,
         read_dual_write_dlq_quarantine,
         replay_dual_write_dlq,
@@ -1312,7 +1314,15 @@ def cmd_dual_write_dlq(args: argparse.Namespace) -> int:
     )
 
     path = getattr(args, "path", None)
-    if getattr(args, "prune", False):
+    if getattr(args, "prune_quarantine", False):
+        days = getattr(args, "days", None)
+        report = prune_dual_write_dlq_quarantine(
+            path=path,
+            days=float(days) if days is not None else None,
+            dry_run=bool(getattr(args, "dry_run", False)),
+            notify=bool(getattr(args, "notify", False)),
+        )
+    elif getattr(args, "prune", False):
         days = getattr(args, "days", None)
         if days is None:
             days = float(os.environ.get("RAG_DUAL_WRITE_DLQ_RETENTION_DAYS", "7") or 7)
@@ -1322,6 +1332,14 @@ def cmd_dual_write_dlq(args: argparse.Namespace) -> int:
             dry_run=bool(getattr(args, "dry_run", False)),
             notify=bool(getattr(args, "notify", False)),
         )
+        # Also age-prune quarantine when --prune (unless --no-quarantine-prune)
+        if not bool(getattr(args, "no_quarantine_prune", False)):
+            q_days = getattr(args, "days", None)
+            report["quarantine_prune"] = prune_dual_write_dlq_quarantine(
+                days=float(q_days) if q_days is not None else None,
+                dry_run=bool(getattr(args, "dry_run", False)),
+                notify=bool(getattr(args, "notify", False)),
+            )
     elif getattr(args, "replay_quarantine", False):
         if not os.environ.get("RAG_DUAL_WRITE_DLQ_REPLAY_RUN_ID", "").strip():
             os.environ["RAG_DUAL_WRITE_DLQ_REPLAY_RUN_ID"] = (
@@ -1354,11 +1372,12 @@ def cmd_dual_write_dlq(args: argparse.Namespace) -> int:
         rows = read_dual_write_dlq_quarantine(
             path=qpath, limit=getattr(args, "limit", None)
         )
+        depth = dual_write_dlq_quarantine_depth(path=qpath)
         report = {
             "ok": True,
             "quarantine": True,
             "path": qpath,
-            "depth": dual_write_dlq_quarantine_depth(path=qpath),
+            "depth": depth,
             "count": len(rows),
             "entries": [
                 {
@@ -1372,6 +1391,10 @@ def cmd_dual_write_dlq(args: argparse.Namespace) -> int:
                 for r in rows
             ],
         }
+        if getattr(args, "notify", False):
+            report["notify"] = maybe_alert_dual_write_dlq_quarantine(
+                path=qpath, depth=depth
+            )
     else:
         rows = read_dual_write_dlq(path=path, limit=getattr(args, "limit", None))
         depth = dual_write_dlq_depth(path=path)
@@ -1869,7 +1892,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_dlq.add_argument(
         "--prune",
         action="store_true",
-        help="Yaşa göre eski DLQ kayıtlarını sil",
+        help="Yaşa göre eski DLQ kayıtlarını sil (quarantine'ı da prune eder)",
+    )
+    p_dlq.add_argument(
+        "--prune-quarantine",
+        action="store_true",
+        help="Sadece quarantine JSONL yaş prune",
+    )
+    p_dlq.add_argument(
+        "--no-quarantine-prune",
+        action="store_true",
+        help="--prune sırasında quarantine yaş temizliğini atla",
     )
     p_dlq.add_argument(
         "--quarantine",

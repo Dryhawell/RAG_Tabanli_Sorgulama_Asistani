@@ -384,6 +384,83 @@ def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, An
     }
 
 
+def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Close Opsgenie (+ optional PD resolve) canary after successful green apply."""
+    if not report.get("applied") or report.get("rolled_back"):
+        return {"ok": True, "skipped": True, "reason": "not_applied_green"}
+    if os.environ.get("INHIBIT_EQUAL_CANARY_NOTIFY", "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return {"ok": True, "skipped": True, "reason": "disabled"}
+    if os.environ.get("INHIBIT_EQUAL_CANARY_CLOSE_ON_GREEN", "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return {"ok": True, "skipped": True, "reason": "close_disabled"}
+
+    pd_key = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", "").strip()
+    )
+    og_targets = resolve_opsgenie_canary_targets()
+    if not pd_key and not og_targets:
+        return {"ok": True, "skipped": True, "reason": "targets_missing"}
+
+    from rag.judge_alert import post_opsgenie_close, post_pagerduty
+
+    equal = (report.get("generated") or {}).get("equal") or []
+    pd_report = {
+        "summary": {
+            "ok": True,
+            "mode": "inhibit_equal_apply",
+            "accuracy": 1.0,
+            "passed": 1,
+            "failed": 0,
+            "total": 1,
+            "equal": equal,
+        },
+        "mode": "inhibit_equal_apply",
+    }
+
+    pd_ok = False
+    if pd_key:
+        pd_ok = bool(
+            post_pagerduty(
+                routing_key=pd_key,
+                report=pd_report,
+                source="inhibit-equal-canary",
+                event_action="resolve",
+            )
+        )
+
+    og_by_region: Dict[str, bool] = {}
+    for t in og_targets:
+        region = t.get("region") or "us"
+        ok = bool(
+            post_opsgenie_close(
+                api_key=t["api_key"],
+                source="inhibit-equal-canary",
+                region=region,
+            )
+        )
+        og_by_region[region] = ok
+    og_ok = any(og_by_region.values()) if og_by_region else False
+    closed = pd_ok or og_ok
+    return {
+        "ok": closed if (pd_key or og_targets) else True,
+        "skipped": False,
+        "closed": closed,
+        "pagerduty": pd_ok if pd_key else None,
+        "opsgenie": og_ok if og_targets else None,
+        "opsgenie_regions": og_by_region or None,
+    }
+
+
 def main() -> int:
     from rag.alertmanager_ops import apply_inhibit_equal_with_gate
 
@@ -430,6 +507,7 @@ def main() -> int:
             f"[{', '.join(equal)}]"
         )
         report["git"] = maybe_commit_and_push(out_path, message=msg)
+        report["canary_resolve"] = notify_inhibit_equal_close_on_green(report)
     elif report.get("rolled_back"):
         report["git"] = {
             "ok": True,

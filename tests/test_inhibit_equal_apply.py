@@ -303,3 +303,40 @@ def test_opsgenie_api_base_regions() -> None:
     assert opsgenie_api_base(region="us").endswith("api.opsgenie.com")
     assert "eu.api.opsgenie.com" in opsgenie_api_base(region="eu")
     assert opsgenie_api_base(base_url="https://example.test/og") == "https://example.test/og"
+
+
+def test_notify_inhibit_equal_close_on_green(monkeypatch) -> None:
+    from scripts.ci_inhibit_equal_apply import notify_inhibit_equal_close_on_green
+
+    report = {
+        "applied": True,
+        "rolled_back": False,
+        "generated": {"equal": ["alertname"]},
+    }
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", raising=False)
+    skipped = notify_inhibit_equal_close_on_green(report)
+    assert skipped["skipped"] is True
+
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", "og-key")
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_OPSGENIE_REGIONS", "us,eu")
+    with patch("rag.judge_alert.post_opsgenie_close", return_value=True) as close:
+        out = notify_inhibit_equal_close_on_green(report)
+    assert out["closed"] is True
+    assert out["opsgenie"] is True
+    assert out["opsgenie_regions"]["us"] is True
+    assert out["opsgenie_regions"]["eu"] is True
+    assert close.call_count == 2
+    assert all(
+        c.kwargs.get("source") == "inhibit-equal-canary" for c in close.call_args_list
+    )
+
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", raising=False)
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", "pd-key")
+    with patch("rag.judge_alert.post_pagerduty", return_value=True) as pd:
+        with patch("rag.judge_alert.post_opsgenie_close", return_value=False):
+            pd_out = notify_inhibit_equal_close_on_green(report)
+    assert pd_out["pagerduty"] is True
+    assert pd.call_args.kwargs.get("event_action") == "resolve"
+    assert pd.call_args.kwargs.get("source") == "inhibit-equal-canary"

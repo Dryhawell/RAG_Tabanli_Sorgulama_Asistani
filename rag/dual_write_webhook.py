@@ -266,27 +266,82 @@ def maybe_alert_dual_write_dlq_quarantine(
     *,
     entry: Optional[Dict[str, Any]] = None,
     path: Optional[str] = None,
+    depth: Optional[int] = None,
+    removed: int = 0,
+    oldest_age_hours: Optional[float] = None,
+    prune_report: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """Slack notify on quarantine enqueue and/or depth/age/prune thresholds."""
     webhook = (
         os.environ.get("RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_WEBHOOK", "").strip()
         or os.environ.get("RAG_DUAL_WRITE_DLQ_SLACK_WEBHOOK", "").strip()
     )
     if not webhook:
         return {"ok": True, "skipped": True, "reason": "webhook_missing"}
-    row = entry or {}
     qpath = path or dual_write_webhook_dlq_quarantine_path()
-    depth = len(read_dual_write_dlq_quarantine(path=qpath))
-    text = (
-        "*Dual-write DLQ quarantine*\n"
-        f"digest=`{row.get('payload_digest')}` · attempts=`{row.get('attempts')}`\n"
-        f"reason=`{row.get('quarantine_reason') or row.get('reason')}`\n"
-        f"quarantine depth: *{depth}* · path=`{qpath}`"
+    depth_n = int(
+        depth
+        if depth is not None
+        else dual_write_dlq_quarantine_depth(path=qpath)
     )
+    # Enqueue path: single entry notification
+    if entry is not None and removed <= 0 and oldest_age_hours is None and prune_report is None:
+        row = entry or {}
+        text = (
+            "*Dual-write DLQ quarantine*\n"
+            f"digest=`{row.get('payload_digest')}` · attempts=`{row.get('attempts')}`\n"
+            f"reason=`{row.get('quarantine_reason') or row.get('reason')}`\n"
+            f"quarantine depth: *{depth_n}* · path=`{qpath}`"
+        )
+        try:
+            from rag.judge_alert import post_slack
+
+            ok = post_slack(webhook, {"text": text})
+            return {"ok": bool(ok), "skipped": False, "posted": bool(ok), "depth": depth_n}
+        except Exception as exc:
+            return {"ok": False, "error": type(exc).__name__, "detail": str(exc)}
+
+    try:
+        alert_depth = int(
+            os.environ.get("RAG_DUAL_WRITE_DLQ_QUARANTINE_ALERT_DEPTH", "1") or 1
+        )
+    except Exception:
+        alert_depth = 1
+    try:
+        alert_age_days = float(
+            os.environ.get("RAG_DUAL_WRITE_DLQ_QUARANTINE_ALERT_AGE_DAYS", "2") or 2
+        )
+    except Exception:
+        alert_age_days = 2.0
+    reasons: List[str] = []
+    if removed > 0:
+        reasons.append(f"pruned `{removed}` aged quarantine entries")
+    if depth_n >= alert_depth:
+        reasons.append(f"depth `{depth_n}` ≥ `{alert_depth}`")
+    if oldest_age_hours is not None and oldest_age_hours >= alert_age_days * 24:
+        reasons.append(
+            f"oldest `{oldest_age_hours:.1f}h` ≥ `{alert_age_days:g}d`"
+        )
+    if not reasons:
+        return {"ok": True, "skipped": True, "reason": "below_threshold", "depth": depth_n}
+    text = (
+        "*Dual-write DLQ quarantine aging alert*\n"
+        + " · ".join(reasons)
+        + f"\nRemaining quarantine depth: *{depth_n}*"
+    )
+    if prune_report and prune_report.get("cutoff"):
+        text += f"\nCutoff: `{prune_report.get('cutoff')}`"
     try:
         from rag.judge_alert import post_slack
 
         ok = post_slack(webhook, {"text": text})
-        return {"ok": bool(ok), "skipped": False, "posted": bool(ok), "depth": depth}
+        return {
+            "ok": bool(ok),
+            "skipped": False,
+            "posted": bool(ok),
+            "reasons": reasons,
+            "depth": depth_n,
+        }
     except Exception as exc:
         return {"ok": False, "error": type(exc).__name__, "detail": str(exc)}
 
@@ -408,6 +463,97 @@ def prune_dual_write_dlq(
             reason="age_drop",
             actions=len(dropped),
             dlq_depth=len(kept) if not dry_run else len(rows),
+        )
+    except Exception:
+        pass
+    return report
+
+
+def prune_dual_write_dlq_quarantine(
+    *,
+    path: Optional[str] = None,
+    days: Optional[float] = None,
+    dry_run: bool = False,
+    notify: bool = False,
+) -> Dict[str, Any]:
+    """Age-based quarantine drop (quarantined_at || ts)."""
+    from datetime import datetime, timezone
+
+    p = path or dual_write_webhook_dlq_quarantine_path()
+    if days is None:
+        raw = os.environ.get("RAG_DUAL_WRITE_DLQ_QUARANTINE_RETENTION_DAYS", "").strip()
+        if raw:
+            try:
+                days = float(raw)
+            except Exception:
+                return {"ok": False, "error": "days_invalid", "path": p}
+        else:
+            days = float(os.environ.get("RAG_DUAL_WRITE_DLQ_RETENTION_DAYS", "7") or 7)
+    if days is None or float(days) < 0:
+        return {"ok": False, "error": "days_invalid", "path": p}
+    rows = read_dual_write_dlq_quarantine(path=p)
+    cutoff = time.time() - float(days) * 86400.0
+    kept: List[Dict[str, Any]] = []
+    dropped: List[Dict[str, Any]] = []
+    oldest_age_hours: Optional[float] = None
+    now = time.time()
+    for row in rows:
+        ts = _parse_dlq_ts(row.get("quarantined_at")) or _parse_dlq_ts(row.get("ts"))
+        if ts is None:
+            kept.append(row)
+            continue
+        age_h = (now - ts) / 3600.0
+        if oldest_age_hours is None or age_h > oldest_age_hours:
+            oldest_age_hours = age_h
+        if ts < cutoff:
+            dropped.append(
+                {
+                    "ts": row.get("ts"),
+                    "quarantined_at": row.get("quarantined_at"),
+                    "digest": row.get("payload_digest"),
+                    "reason": row.get("quarantine_reason") or row.get("reason"),
+                    "age_hours": round(age_h, 2),
+                }
+            )
+        else:
+            kept.append(row)
+    if not dry_run and dropped:
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            for row in kept:
+                f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+    report = {
+        "ok": True,
+        "quarantine": True,
+        "path": p,
+        "days": float(days),
+        "before": len(rows),
+        "after": len(kept),
+        "removed": len(dropped),
+        "dry_run": bool(dry_run),
+        "oldest_age_hours": oldest_age_hours,
+        "dropped": dropped[:50],
+        "cutoff": datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat(),
+    }
+    if notify:
+        report["notify"] = maybe_alert_dual_write_dlq_quarantine(
+            path=p,
+            depth=len(kept) if not dry_run else len(rows),
+            removed=len(dropped),
+            oldest_age_hours=oldest_age_hours,
+            prune_report=report,
+        )
+    try:
+        emit_dual_write_webhook_metric(
+            result=(
+                "dlq_quarantine_pruned"
+                if dropped and not dry_run
+                else "dlq_quarantine_prune_dry"
+            ),
+            reason="age_drop",
+            actions=len(dropped),
+            dlq_depth=dual_write_dlq_depth(),
+            dlq_quarantine_depth=len(kept) if not dry_run else len(rows),
         )
     except Exception:
         pass

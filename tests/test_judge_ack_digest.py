@@ -259,35 +259,57 @@ def test_mute_ui_interactive_and_block_kit(tmp_path: Path, monkeypatch) -> None:
     assert zoom["value"] == "acme|day"
     assert "Heatmap day" in zoom["text"]["text"]
 
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
     with patch("rag.judge_alert.slack_api", return_value={"ok": True}):
-        muted = handle_slack_interactive_ack(
-            {
-                "type": "block_actions",
-                "actions": [
-                    {"action_id": "judge_ack_digest_mute", "value": "acme"}
-                ],
-                "user": {"id": "U1", "username": "ops"},
-                "channel": {"id": "C1"},
-            }
-        )
+        with patch(
+            "rag.judge_alert.post_judge_digest_mute_thread_reply",
+            return_value={"ok": True, "ts": "1.2"},
+        ) as thread:
+            muted = handle_slack_interactive_ack(
+                {
+                    "type": "block_actions",
+                    "actions": [
+                        {"action_id": "judge_ack_digest_mute", "value": "acme"}
+                    ],
+                    "user": {"id": "U1", "username": "ops"},
+                    "channel": {"id": "C1"},
+                    "message": {"ts": "9.9"},
+                }
+            )
     assert muted["ok"] is True
     assert muted["mode"] == "digest_mute"
     assert muted["muted"] is True
+    assert muted["audit"]["event"] == "digest_mute"
+    assert muted["thread_reply"]["ok"] is True
+    assert thread.called
     assert is_judge_ack_digest_muted("acme", base=str(tmp_path))
 
     with patch("rag.judge_alert.slack_api", return_value={"ok": True}):
-        unmuted = handle_slack_interactive_ack(
-            {
-                "type": "block_actions",
-                "actions": [
-                    {"action_id": "judge_ack_digest_unmute", "value": "acme"}
-                ],
-                "user": {"id": "U1", "username": "ops"},
-                "channel": {"id": "C1"},
-            }
-        )
+        with patch(
+            "rag.judge_alert.post_judge_digest_mute_thread_reply",
+            return_value={"ok": True, "ts": "1.3"},
+        ) as thread2:
+            unmuted = handle_slack_interactive_ack(
+                {
+                    "type": "block_actions",
+                    "actions": [
+                        {"action_id": "judge_ack_digest_unmute", "value": "acme"}
+                    ],
+                    "user": {"id": "U1", "username": "ops"},
+                    "channel": {"id": "C1"},
+                    "message": {"ts": "9.9"},
+                }
+            )
     assert unmuted["muted"] is False
+    assert unmuted["audit"]["event"] == "digest_unmute"
+    assert unmuted["thread_reply"]["ok"] is True
+    assert thread2.called
     assert not is_judge_ack_digest_muted("acme", base=str(tmp_path))
+    from rag.judge_alert import read_judge_ack_audit
+
+    events = [r.get("event") for r in read_judge_ack_audit(path=str(tmp_path / "ack.jsonl"))]
+    assert "digest_mute" in events
+    assert "digest_unmute" in events
 
 
 def test_dual_write_dlq_cli_parser() -> None:
@@ -317,6 +339,11 @@ def test_dual_write_dlq_cli_parser() -> None:
     assert rq.replay_quarantine is True
     assert rq.requeue is True
     assert rq.limit == 2
+    pq = build_parser().parse_args(
+        ["dual-write-dlq", "--prune-quarantine", "--notify", "--dry-run"]
+    )
+    assert pq.prune_quarantine is True
+    assert pq.notify is True
     pm = build_parser().parse_args(["judge-ack-digest", "--prune-mutes", "--dry-run"])
     assert pm.prune_mutes is True
 

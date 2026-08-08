@@ -255,6 +255,59 @@ def test_dlq_quarantine_and_replay_budget(tmp_path: Path, monkeypatch) -> None:
     assert len(read_dual_write_dlq()) == 0
 
 
+def test_prune_dual_write_dlq_quarantine_aging(tmp_path: Path, monkeypatch) -> None:
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from rag.dual_write_webhook import (
+        prune_dual_write_dlq_quarantine,
+        read_dual_write_dlq_quarantine,
+    )
+
+    monkeypatch.setenv(
+        "RAG_DUAL_WRITE_WEBHOOK_DLQ_QUARANTINE", str(tmp_path / "quarantine.jsonl")
+    )
+    monkeypatch.setenv(
+        "RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_WEBHOOK", "https://hooks.slack.test/q"
+    )
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(days=10)).isoformat()
+    young = (now - timedelta(hours=1)).isoformat()
+    path = tmp_path / "quarantine.jsonl"
+    with path.open("w", encoding="utf-8") as f:
+        f.write(
+            json.dumps(
+                {
+                    "ts": old,
+                    "quarantined_at": old,
+                    "payload_digest": "old-q",
+                    "payload": {},
+                }
+            )
+            + "\n"
+        )
+        f.write(
+            json.dumps(
+                {
+                    "ts": young,
+                    "quarantined_at": young,
+                    "payload_digest": "young-q",
+                    "payload": {},
+                }
+            )
+            + "\n"
+        )
+
+    with patch("rag.judge_alert.post_slack", return_value=True) as post:
+        report = prune_dual_write_dlq_quarantine(days=7, dry_run=False, notify=True)
+    assert report["removed"] == 1
+    assert report["after"] == 1
+    assert read_dual_write_dlq_quarantine()[0]["payload_digest"] == "young-q"
+    assert report["notify"]["posted"] is True
+    assert post.called
+    assert "quarantine" in (post.call_args[0][1]["text"] or "").lower()
+
+
 def test_replay_dual_write_dlq_quarantine(tmp_path: Path, monkeypatch) -> None:
     import json
 

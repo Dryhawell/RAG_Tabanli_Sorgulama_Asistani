@@ -380,6 +380,9 @@ def test_dual_write_dlq_replay_workflow_yaml():
     assert "dual_write_dlq_quarantine.json" in text
     assert "--replay-quarantine" in text
     assert "dual_write_dlq_quarantine_replay.json" in text
+    assert "--prune-quarantine" in text
+    assert "dual_write_dlq_quarantine_prune.json" in text
+    assert "RAG_DUAL_WRITE_DLQ_QUARANTINE_RETENTION_DAYS" in text
     assert "RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_RUN" in text
     assert "RAG_DUAL_WRITE_DLQ_QUARANTINE_AFTER" in text
     assert "workflow_dispatch" in text
@@ -390,6 +393,7 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     assert "INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY" in text
     assert "INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON" in text
     assert "INHIBIT_EQUAL_CANARY_OPSGENIE_REGIONS" in text
+    assert "INHIBIT_EQUAL_CANARY_CLOSE_ON_GREEN" in text
     assert "INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY" in text
 
 
@@ -440,6 +444,11 @@ def test_dual_write_shadow_alert_artifacts():
     assert "RagDualWriteShadowOverlapLow" in rules
     assert "RagDualWriteLagHigh" in rules
     assert "RagDualWriteLagShadowBurn" in rules
+    assert "RagDualWriteDlqDepthHigh" in rules
+    assert "RagDualWriteDlqQuarantineDepthHigh" in rules
+    assert "rag_dual_write_webhook_dlq_depth" in rules
+    assert "rag_dual_write_webhook_dlq_quarantine_depth" in rules
+    assert "rag:dual_write_dlq_quarantine_depth:avg1h" in rules
     assert "rag_vector_dual_write_shadow_overlap" in rules
     assert "rag:dual_write_shadow_overlap:avg1h" in rules
     assert "rag:dual_write_lag:avg1h" in rules

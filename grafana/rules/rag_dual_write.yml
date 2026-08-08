@@ -60,3 +60,30 @@ groups:
           description: >
             Combined lag/shadow burn for secondary={{ $labels.secondary_backend }}.
             Catch-up then re-gate: migrate-vector --shadow-compare --auto-catch-up-on-fail
+      - record: rag:dual_write_dlq_depth:avg1h
+        expr: avg_over_time(rag_dual_write_webhook_dlq_depth[1h])
+      - record: rag:dual_write_dlq_quarantine_depth:avg1h
+        expr: avg_over_time(rag_dual_write_webhook_dlq_quarantine_depth[1h])
+      - alert: RagDualWriteDlqDepthHigh
+        expr: rag_dual_write_webhook_dlq_depth >= 10
+        for: 15m
+        labels:
+          severity: warning
+          service: rag-ingest
+        annotations:
+          summary: "Dual-write webhook DLQ depth high"
+          description: >
+            DLQ depth {{ $value | humanize }} ≥ 10.
+            Run: python -m rag.cli dual-write-dlq --replay --notify
+      - alert: RagDualWriteDlqQuarantineDepthHigh
+        expr: rag_dual_write_webhook_dlq_quarantine_depth >= 1
+        for: 10m
+        labels:
+          severity: warning
+          service: rag-ingest
+        annotations:
+          summary: "Dual-write DLQ quarantine not empty"
+          description: >
+            Quarantine depth {{ $value | humanize }} ≥ 1.
+            Inspect: python -m rag.cli dual-write-dlq --quarantine --notify
+            Replay: python -m rag.cli dual-write-dlq --replay-quarantine

@@ -59,6 +59,9 @@ jobs:
           RAG_DUAL_WRITE_DLQ_REPLAY_RUN_ID: ${{ github.run_id }}
           RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_WEBHOOK: ${{ secrets.RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_WEBHOOK }}
           RAG_DUAL_WRITE_DLQ_SLACK_WEBHOOK: ${{ secrets.RAG_DUAL_WRITE_DLQ_SLACK_WEBHOOK }}
+          RAG_DUAL_WRITE_DLQ_QUARANTINE_RETENTION_DAYS: ${{ vars.RAG_DUAL_WRITE_DLQ_QUARANTINE_RETENTION_DAYS || '7' }}
+          RAG_DUAL_WRITE_DLQ_QUARANTINE_ALERT_DEPTH: ${{ vars.RAG_DUAL_WRITE_DLQ_QUARANTINE_ALERT_DEPTH || '1' }}
+          RAG_DUAL_WRITE_DLQ_QUARANTINE_ALERT_AGE_DAYS: ${{ vars.RAG_DUAL_WRITE_DLQ_QUARANTINE_ALERT_AGE_DAYS || '2' }}
           RAG_VECTOR_BACKEND: ${{ vars.RAG_VECTOR_BACKEND || 'faiss' }}
           RAG_VECTOR_DUAL_WRITE: ${{ vars.RAG_VECTOR_DUAL_WRITE || secrets.RAG_VECTOR_DUAL_WRITE }}
           RAG_QDRANT_URL: ${{ secrets.RAG_QDRANT_URL }}
@@ -74,9 +77,11 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "false" ]; then
             EXTRA="$EXTRA --no-force"
           fi
-          # Age prune before replay (default 7d)
-          python -m rag.cli dual-write-dlq --prune --days "${{ vars.RAG_DUAL_WRITE_DLQ_RETENTION_DAYS || '7' }}" --notify \
+          # Age prune DLQ + quarantine before replay
+          python -m rag.cli dual-write-dlq --prune --no-quarantine-prune --days "${{ vars.RAG_DUAL_WRITE_DLQ_RETENTION_DAYS || '7' }}" --notify \
             | tee metadata/dual_write_dlq_prune.json || true
+          python -m rag.cli dual-write-dlq --prune-quarantine --notify \
+            | tee metadata/dual_write_dlq_quarantine_prune.json || true
           # shellcheck disable=SC2086
           python -m rag.cli dual-write-dlq $EXTRA \
             | tee metadata/dual_write_dlq_replay.json
@@ -105,6 +110,7 @@ jobs:
           path: |
             metadata/dual_write_dlq_replay.json
             metadata/dual_write_dlq_prune.json
+            metadata/dual_write_dlq_quarantine_prune.json
             metadata/dual_write_dlq_quarantine.json
             metadata/dual_write_dlq_quarantine_replay.json
             metadata/dual_write_webhook_dlq.jsonl

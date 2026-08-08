@@ -2326,9 +2326,31 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "")
             or ""
         ).strip() or None
+        message_ts = str(
+            ((payload.get("message") or {}).get("ts"))
+            or ((payload.get("container") or {}).get("thread_ts"))
+            or ((payload.get("container") or {}).get("message_ts"))
+            or ""
+        ).strip() or None
+        actor = slack_interactive_actor(payload) or "slack"
         user_id = slack_interactive_user_id(payload)
         verb = "muted" if mute else "unmuted"
         text = f"Tenant `{tid}` {verb} for ack digests."
+        if mute and saved.get("expires_at"):
+            text += f" · expires `{saved.get('expires_at')}`"
+        audit = append_judge_ack_audit(
+            "digest_mute" if mute else "digest_unmute",
+            actor=actor,
+            note=text,
+            source="slack_interactive",
+            extra={
+                "tenant_id": tid,
+                "muted": bool(mute),
+                "expires_at": saved.get("expires_at"),
+                "channel_id": channel_id,
+                "message_ts": message_ts,
+            },
+        )
         ephemeral: Dict[str, Any] = {"ok": False, "skipped": True}
         bot_token = os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
         if bot_token and channel_id and user_id:
@@ -2342,19 +2364,40 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
                     "mrkdwn": True,
                 },
             )
+        # Prefer thread confirmation on unmute; also post on mute for audit trail.
+        thread_reply: Dict[str, Any] = {"ok": False, "skipped": True}
+        if saved.get("ok") and (not mute or os.environ.get(
+            "RAG_JUDGE_ACK_DIGEST_MUTE_THREAD", "1"
+        ).strip().lower() not in {"0", "false", "no", "off"}):
+            thread_reply = post_judge_digest_mute_thread_reply(
+                tenant_id=tid,
+                muted=bool(mute),
+                actor=actor,
+                channel_id=channel_id,
+                thread_ts=message_ts,
+                expires_at=str(saved.get("expires_at") or "") or None,
+                bot_token=bot_token or None,
+            )
         return {
             "ok": bool(saved.get("ok")),
             "mode": "digest_mute",
             "muted": bool(mute),
             "tenant_id": tid,
             "mute": saved,
+            "audit": {
+                "ok": "_write_error" not in audit,
+                "event": audit.get("event"),
+                "actor": audit.get("actor"),
+            },
             "text": text,
             "ephemeral": {
                 "ok": bool(ephemeral.get("ok")),
                 "skipped": bool(ephemeral.get("skipped")),
                 "error": ephemeral.get("error"),
             },
+            "thread_reply": thread_reply,
             "channel_id": channel_id,
+            "message_ts": message_ts,
             "error": saved.get("error"),
         }
 
@@ -2895,6 +2938,30 @@ def post_judge_digest_reexport_thread_reply(
             f"Ack audit re-export attempted · *{count}* rows · `{kind}` "
             f"(file upload failed or skipped)"
         )
+    return post_slack_thread_message(
+        text=text,
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+        bot_token=bot_token,
+    )
+
+
+def post_judge_digest_mute_thread_reply(
+    *,
+    tenant_id: str,
+    muted: bool,
+    actor: str = "slack",
+    channel_id: Optional[str] = None,
+    thread_ts: Optional[str] = None,
+    expires_at: Optional[str] = None,
+    bot_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Mute/unmute sonrası digest mesajı thread'ine onay."""
+    tid = (tenant_id or "").strip() or "unknown"
+    verb = "muted" if muted else "unmuted"
+    text = f"Tenant `{tid}` {verb} for ack digests by *{actor or 'slack'}*"
+    if muted and expires_at:
+        text += f" · expires `{expires_at}`"
     return post_slack_thread_message(
         text=text,
         channel_id=channel_id,
