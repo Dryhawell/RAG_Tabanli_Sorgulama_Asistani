@@ -1,0 +1,78 @@
+"""Dual-write shadow-compare CI gate (overlap exit code)."""
+
+name: Dual-write Shadow Compare
+
+on:
+  schedule:
+    - cron: "0 */12 * * *"  # her 12 saatte
+  workflow_dispatch:
+    inputs:
+      sample:
+        description: "Örnek vektör sayısı"
+        required: false
+        default: "16"
+        type: string
+      top_k:
+        description: "top_k"
+        required: false
+        default: "6"
+        type: string
+      min_overlap:
+        description: "Min overlap eşiği (RAG_DUAL_WRITE_SHADOW_MIN_OVERLAP)"
+        required: false
+        default: "1.0"
+        type: string
+      auto_catch_up_on_fail:
+        description: "Fail olursa catch-up + yeniden gate"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  shadow-compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Dual-write shadow-compare gate
+        env:
+          RAG_ENABLE_METRICS: "1"
+          RAG_ENABLE_PROMETHEUS: "1"
+          RAG_VECTOR_BACKEND: ${{ vars.RAG_VECTOR_BACKEND || 'faiss' }}
+          RAG_VECTOR_DUAL_WRITE: ${{ vars.RAG_VECTOR_DUAL_WRITE || secrets.RAG_VECTOR_DUAL_WRITE }}
+          RAG_QDRANT_URL: ${{ secrets.RAG_QDRANT_URL }}
+          RAG_QDRANT_API_KEY: ${{ secrets.RAG_QDRANT_API_KEY }}
+          RAG_QDRANT_COLLECTION: ${{ vars.RAG_QDRANT_COLLECTION || 'rag_chunks' }}
+          RAG_DUAL_WRITE_SHADOW_MIN_OVERLAP: ${{ inputs.min_overlap || '1.0' }}
+        run: |
+          mkdir -p metadata indexes
+          SAMPLE="${{ inputs.sample || '16' }}"
+          TOP_K="${{ inputs.top_k || '6' }}"
+          EXTRA="--auto-catch-up-on-fail"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.auto_catch_up_on_fail }}" = "false" ]; then
+            EXTRA=""
+          fi
+          # Gate: non-zero exit if final overlap < threshold
+          # shellcheck disable=SC2086
+          python -m rag.cli migrate-vector \
+            --shadow-compare \
+            --sample "$SAMPLE" \
+            --top-k "$TOP_K" \
+            $EXTRA \
+            | tee metadata/dual_write_shadow_compare.json
+      - name: Upload shadow-compare report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dual-write-shadow-compare
+          path: |
+            metadata/dual_write_shadow_compare.json
+            metadata/metrics.jsonl
+          if-no-files-found: ignore
