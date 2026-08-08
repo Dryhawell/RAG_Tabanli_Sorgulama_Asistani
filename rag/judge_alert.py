@@ -877,6 +877,116 @@ def judge_ack_digest_prefs_path(*, base: Optional[str] = None) -> str:
     return os.path.join(base or METADATA_DIR, "judge_ack_digest_prefs.json")
 
 
+def judge_ack_digest_messages_path(*, base: Optional[str] = None) -> str:
+    env = os.environ.get("RAG_JUDGE_ACK_DIGEST_MESSAGES", "").strip()
+    if env:
+        return env
+    try:
+        from app.config import METADATA_DIR
+    except ImportError:
+        METADATA_DIR = "metadata"
+    return os.path.join(base or METADATA_DIR, "judge_ack_digest_messages.json")
+
+
+def load_judge_ack_digest_messages(*, base: Optional[str] = None) -> Dict[str, Any]:
+    p = judge_ack_digest_messages_path(base=base)
+    if not os.path.isfile(p):
+        return {}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_judge_ack_digest_messages(
+    data: Dict[str, Any], *, base: Optional[str] = None
+) -> str:
+    p = judge_ack_digest_messages_path(base=base)
+    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+    payload = dict(data or {})
+    payload["updated_at"] = _utcnow_iso()
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return p
+
+
+def list_judge_ack_digest_message_refs(
+    tenant_id: str, *, base: Optional[str] = None
+) -> List[Dict[str, str]]:
+    tid = (tenant_id or "").strip()
+    if not tid:
+        return []
+    data = load_judge_ack_digest_messages(base=base)
+    row = data.get(tid)
+    if not isinstance(row, dict):
+        return []
+    out: List[Dict[str, str]] = []
+    msgs = row.get("messages")
+    if isinstance(msgs, list):
+        for item in msgs:
+            if not isinstance(item, dict):
+                continue
+            ch = str(item.get("channel_id") or "").strip()
+            ts = str(item.get("message_ts") or "").strip()
+            if ch and ts:
+                out.append({"channel_id": ch, "message_ts": ts})
+    # Legacy single-ref shape
+    ch = str(row.get("channel_id") or "").strip()
+    ts = str(row.get("message_ts") or "").strip()
+    if ch and ts and not any(
+        r["channel_id"] == ch and r["message_ts"] == ts for r in out
+    ):
+        out.append({"channel_id": ch, "message_ts": ts})
+    return out
+
+
+def save_judge_ack_digest_message(
+    tenant_id: str,
+    *,
+    channel_id: str,
+    message_ts: str,
+    base: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Persist last digest Slack message ref(s) for fan-out chat.update sync."""
+    tid = (tenant_id or "").strip()
+    ch = (channel_id or "").strip()
+    ts = (message_ts or "").strip()
+    if not tid or not ch or not ts:
+        return {"ok": False, "error": "ref_incomplete"}
+    data = load_judge_ack_digest_messages(base=base)
+    row = dict(data.get(tid) or {}) if isinstance(data.get(tid), dict) else {}
+    msgs = list(row.get("messages") or []) if isinstance(row.get("messages"), list) else []
+    # Deduplicate + keep latest first
+    msgs = [
+        m
+        for m in msgs
+        if isinstance(m, dict)
+        and not (
+            str(m.get("channel_id") or "").strip() == ch
+            and str(m.get("message_ts") or "").strip() == ts
+        )
+    ]
+    msgs.insert(
+        0,
+        {
+            "channel_id": ch,
+            "message_ts": ts,
+            "updated_at": _utcnow_iso(),
+        },
+    )
+    # Cap stored refs per tenant
+    msgs = msgs[:20]
+    row["messages"] = msgs
+    row["channel_id"] = ch
+    row["message_ts"] = ts
+    row["updated_at"] = _utcnow_iso()
+    data[tid] = row
+    path = save_judge_ack_digest_messages(data, base=base)
+    return {"ok": True, "tenant_id": tid, "path": path, "count": len(msgs)}
+
+
 def load_judge_ack_digest_prefs(*, base: Optional[str] = None) -> Dict[str, Any]:
     p = judge_ack_digest_prefs_path(base=base)
     if not os.path.isfile(p):
@@ -2586,13 +2696,28 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             if catch_up.get("text"):
                 text = f"{text}\n{catch_up['text']}"
         message_update: Dict[str, Any] = {"ok": False, "skipped": True}
+        fanout_sync: Dict[str, Any] = {"ok": True, "skipped": True}
         if saved.get("ok"):
+            if channel_id and message_ts:
+                save_judge_ack_digest_message(
+                    tid,
+                    channel_id=channel_id,
+                    message_ts=message_ts,
+                    base=base,
+                )
             message_update = refresh_judge_ack_digest_message_actions(
                 payload,
                 muted=bool(mute),
                 tenant_id=tid,
                 base=base,
                 bot_token=bot_token or None,
+            )
+            fanout_sync = sync_judge_ack_digest_mute_chat_updates(
+                tid,
+                muted=bool(mute),
+                base=base,
+                bot_token=bot_token or None,
+                exclude_message_ts=message_ts,
             )
         return {
             "ok": bool(saved.get("ok")),
@@ -2614,6 +2739,7 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             "thread_reply": thread_reply,
             "catch_up": catch_up,
             "message_update": message_update,
+            "fanout_sync": fanout_sync,
             "channel_id": channel_id,
             "message_ts": message_ts,
             "error": saved.get("error"),
@@ -2684,12 +2810,27 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             "error": ephemeral.get("error"),
         }
         # Catch-up unmutes → refresh actions to Mute (no Catch-up button).
+        muted_now = is_judge_ack_digest_muted(tid, base=base)
+        if channel_id and message_ts:
+            save_judge_ack_digest_message(
+                tid,
+                channel_id=channel_id,
+                message_ts=message_ts,
+                base=base,
+            )
         out["message_update"] = refresh_judge_ack_digest_message_actions(
             payload,
-            muted=is_judge_ack_digest_muted(tid, base=base),
+            muted=muted_now,
             tenant_id=tid,
             base=base,
             bot_token=bot_token,
+        )
+        out["fanout_sync"] = sync_judge_ack_digest_mute_chat_updates(
+            tid,
+            muted=muted_now,
+            base=base,
+            bot_token=bot_token,
+            exclude_message_ts=message_ts,
         )
         return out
 
@@ -3267,6 +3408,121 @@ def digest_chat_update_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+def digest_fanout_chat_update_enabled() -> bool:
+    raw = os.environ.get("RAG_JUDGE_ACK_DIGEST_FANOUT_CHAT_UPDATE", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def fetch_slack_message_by_ts(
+    *,
+    channel_id: str,
+    message_ts: str,
+    bot_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """conversations.history ile tek digest mesajını (blocks dahil) getir."""
+    token = (
+        (bot_token or "").strip()
+        or os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
+    )
+    ch = (channel_id or "").strip()
+    ts = (message_ts or "").strip()
+    if not token:
+        return {"ok": False, "error": "bot_token_missing"}
+    if not ch or not ts:
+        return {"ok": False, "error": "ref_incomplete"}
+    hist = slack_api(
+        "conversations.history",
+        bot_token=token,
+        json_body={
+            "channel": ch,
+            "latest": ts,
+            "oldest": ts,
+            "inclusive": True,
+            "limit": 1,
+        },
+    )
+    if not hist.get("ok"):
+        return {
+            "ok": False,
+            "error": str(hist.get("error") or "history_failed"),
+            "response": hist,
+        }
+    messages = hist.get("messages") or []
+    for m in messages:
+        if isinstance(m, dict) and str(m.get("ts") or "") == ts:
+            return {"ok": True, "message": m, "channel_id": ch, "message_ts": ts}
+    return {"ok": False, "error": "message_not_found", "channel_id": ch, "message_ts": ts}
+
+
+def sync_judge_ack_digest_mute_chat_updates(
+    tenant_id: str,
+    *,
+    muted: bool,
+    base: Optional[str] = None,
+    bot_token: Optional[str] = None,
+    exclude_message_ts: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Fan-out: stored digest message refs için chat.update (mute state sync)."""
+    if not digest_fanout_chat_update_enabled():
+        return {"ok": True, "skipped": True, "reason": "fanout_chat_update_disabled"}
+    tid = (tenant_id or "").strip()
+    if not tid:
+        return {"ok": False, "error": "tenant_required"}
+    refs = list_judge_ack_digest_message_refs(tid, base=base)
+    if not refs:
+        return {"ok": True, "skipped": True, "reason": "no_message_refs", "updates": []}
+    skip_ts = (exclude_message_ts or "").strip()
+    updates: List[Dict[str, Any]] = []
+    for ref in refs:
+        if skip_ts and ref.get("message_ts") == skip_ts:
+            continue
+        fetched = fetch_slack_message_by_ts(
+            channel_id=ref["channel_id"],
+            message_ts=ref["message_ts"],
+            bot_token=bot_token,
+        )
+        if not fetched.get("ok"):
+            updates.append(
+                {
+                    "ok": False,
+                    "channel_id": ref["channel_id"],
+                    "message_ts": ref["message_ts"],
+                    "error": fetched.get("error"),
+                }
+            )
+            continue
+        msg = fetched.get("message") or {}
+        payload = {
+            "channel": {"id": ref["channel_id"]},
+            "message": msg,
+        }
+        out = refresh_judge_ack_digest_message_actions(
+            payload,
+            muted=bool(muted),
+            tenant_id=tid,
+            base=base,
+            bot_token=bot_token,
+        )
+        updates.append(
+            {
+                **out,
+                "channel_id": ref["channel_id"],
+                "message_ts": ref["message_ts"],
+            }
+        )
+    ok_any = any(u.get("ok") and not u.get("skipped") for u in updates)
+    return {
+        "ok": True if updates else True,
+        "skipped": not bool(updates),
+        "tenant_id": tid,
+        "muted": bool(muted),
+        "updates": updates,
+        "updated": sum(1 for u in updates if u.get("ok") and not u.get("skipped")),
+        "failed": sum(1 for u in updates if not u.get("ok")),
+        "fanout_ok": ok_any or not updates,
+    }
+
+
 def refresh_judge_ack_digest_message_actions(
     payload: Dict[str, Any],
     *,
@@ -3274,6 +3530,8 @@ def refresh_judge_ack_digest_message_actions(
     tenant_id: str,
     base: Optional[str] = None,
     bot_token: Optional[str] = None,
+    channel_id: Optional[str] = None,
+    message_ts: Optional[str] = None,
 ) -> Dict[str, Any]:
     """chat.update original digest so Mute/Unmute/Catch-up match mute state."""
     if not digest_chat_update_enabled():
@@ -3286,13 +3544,15 @@ def refresh_judge_ack_digest_message_actions(
         return {"ok": False, "skipped": True, "error": "bot_token_missing"}
     msg = payload.get("message") if isinstance(payload.get("message"), dict) else {}
     channel_id = str(
-        ((payload.get("channel") or {}).get("id"))
+        (channel_id or "").strip()
+        or ((payload.get("channel") or {}).get("id"))
         or ((payload.get("container") or {}).get("channel_id"))
         or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "")
         or ""
     ).strip()
     message_ts = str(
-        (msg.get("ts") if isinstance(msg, dict) else None)
+        (message_ts or "").strip()
+        or (msg.get("ts") if isinstance(msg, dict) else None)
         or ((payload.get("container") or {}).get("message_ts"))
         or ((payload.get("container") or {}).get("thread_ts"))
         or ""

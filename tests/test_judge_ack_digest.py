@@ -484,6 +484,129 @@ def test_unmute_catch_up_digest_button(tmp_path: Path, monkeypatch) -> None:
     assert not is_judge_ack_digest_muted("acme", base=str(tmp_path))
 
 
+def test_mute_fanout_chat_update_sync(tmp_path: Path, monkeypatch) -> None:
+    from rag.judge_alert import (
+        handle_slack_interactive_ack,
+        list_judge_ack_digest_message_refs,
+        save_judge_ack_digest_message,
+        set_judge_ack_digest_mute,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MESSAGES", str(tmp_path / "msgs.json"))
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_CATCH_UP_ON_UNMUTE", "0")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_CHAT_UPDATE", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_FANOUT_CHAT_UPDATE", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_RATE_LIMIT_SEC", "0")
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", str(tmp_path / "judge_state.json"))
+    monkeypatch.setenv("RAG_JUDGE_ACK_PUBLIC_URL", "http://example.test/judge/ack-form")
+    monkeypatch.setenv("RAG_JUDGE_SLACK_INTERACTIVE", "1")
+
+    save_judge_ack_digest_message(
+        "acme", channel_id="C-other", message_ts="8.8", base=str(tmp_path)
+    )
+    assert len(list_judge_ack_digest_message_refs("acme", base=str(tmp_path))) == 1
+
+    calls: list[dict] = []
+
+    def _fake_api(method, *, bot_token, json_body=None, params=None):
+        calls.append({"method": method, "body": json_body or {}})
+        if method == "conversations.history":
+            return {
+                "ok": True,
+                "messages": [
+                    {
+                        "ts": json_body.get("latest"),
+                        "text": "digest",
+                        "blocks": [
+                            {
+                                "type": "actions",
+                                "block_id": "judge_ack_digest_actions",
+                                "elements": [
+                                    {
+                                        "type": "button",
+                                        "action_id": "judge_ack_digest_mute",
+                                        "value": "acme",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        return {"ok": True, "ts": json_body.get("ts") if json_body else "9.9"}
+
+    with patch("rag.judge_alert.slack_api", side_effect=_fake_api):
+        with patch(
+            "rag.judge_alert.post_judge_digest_mute_thread_reply",
+            return_value={"ok": True},
+        ):
+            out = handle_slack_interactive_ack(
+                {
+                    "type": "block_actions",
+                    "actions": [
+                        {"action_id": "judge_ack_digest_mute", "value": "acme"}
+                    ],
+                    "user": {"id": "U1", "username": "ops"},
+                    "channel": {"id": "C1"},
+                    "message": {
+                        "ts": "9.9",
+                        "text": "digest",
+                        "blocks": [
+                            {
+                                "type": "actions",
+                                "block_id": "judge_ack_digest_actions",
+                                "elements": [
+                                    {
+                                        "type": "button",
+                                        "action_id": "judge_ack_digest_mute",
+                                        "value": "acme",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                }
+            )
+    assert out["ok"] is True
+    refs = list_judge_ack_digest_message_refs("acme", base=str(tmp_path))
+    assert any(r["message_ts"] == "9.9" for r in refs)
+    assert any(r["message_ts"] == "8.8" for r in refs)
+    assert out["fanout_sync"]["updated"] >= 1
+    hist = [c for c in calls if c["method"] == "conversations.history"]
+    assert hist
+    assert any(c["body"].get("latest") == "8.8" for c in hist)
+    updates = [c for c in calls if c["method"] == "chat.update"]
+    assert any(c["body"].get("ts") == "8.8" for c in updates)
+    assert any(c["body"].get("ts") == "9.9" for c in updates)
+
+    # Disable fan-out sync
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_FANOUT_CHAT_UPDATE", "0")
+    import rag.judge_alert as ja
+
+    ja._ACK_RATE.clear()
+    set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path))
+    with patch("rag.judge_alert.slack_api", side_effect=_fake_api):
+        with patch(
+            "rag.judge_alert.post_judge_digest_mute_thread_reply",
+            return_value={"ok": True},
+        ):
+            unmuted = handle_slack_interactive_ack(
+                {
+                    "type": "block_actions",
+                    "actions": [
+                        {"action_id": "judge_ack_digest_unmute", "value": "acme"}
+                    ],
+                    "user": {"id": "U2", "username": "ops2"},
+                    "channel": {"id": "C1"},
+                    "message": {"ts": "9.9", "text": "digest", "blocks": []},
+                }
+            )
+    assert unmuted["fanout_sync"].get("reason") == "fanout_chat_update_disabled"
+
+
 def test_mute_unmute_chat_update_refreshes_actions(tmp_path: Path, monkeypatch) -> None:
     from rag.judge_alert import (
         build_judge_ack_digest_slack_blocks,

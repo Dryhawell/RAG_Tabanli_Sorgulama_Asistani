@@ -413,6 +413,57 @@ def test_notify_inhibit_equal_close_on_green(monkeypatch) -> None:
     assert pd.call_args.kwargs.get("source") == "inhibit-equal-canary"
 
 
+def test_inhibit_equal_canary_resolve_prometheus_metric(monkeypatch) -> None:
+    from scripts.ci_inhibit_equal_apply import notify_inhibit_equal_close_on_green
+
+    seen: list[dict] = []
+
+    def _fake_record(kind, values=None, **kwargs):
+        seen.append({"kind": kind, "values": values or {}})
+
+    monkeypatch.setattr("rag.metrics.record_metric", _fake_record)
+    # Patch where emit imports from
+    monkeypatch.setattr(
+        "scripts.ci_inhibit_equal_apply.emit_inhibit_equal_canary_resolve_metric",
+        lambda **kw: seen.append({"kind": "inhibit_equal_canary_resolve", "values": kw}),
+    )
+
+    skipped = notify_inhibit_equal_close_on_green(
+        {"applied": False, "rolled_back": False}
+    )
+    assert skipped["skipped"] is True
+    assert any(
+        s["values"].get("result") == "skipped" for s in seen if "result" in s["values"]
+    )
+
+    seen.clear()
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", raising=False)
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_SLACK_BOT_TOKEN", "xoxb")
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_SLACK_CHANNEL", "C1")
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_SLACK_THREAD_TS", "111.1")
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_SLACK_THREAD_REPLY", "1")
+    with patch(
+        "rag.judge_alert.post_slack_thread_message",
+        return_value={"ok": True, "ts": "111.2"},
+    ):
+        closed = notify_inhibit_equal_close_on_green(
+            {
+                "applied": True,
+                "rolled_back": False,
+                "generated": {"equal": ["alertname"]},
+                "git": {"ok": True},
+            }
+        )
+    assert closed["slack_thread_reply"] is True
+    assert any(
+        s["values"].get("result") == "ok" and s["values"].get("via") == "thread"
+        for s in seen
+    )
+
+
 def test_inhibit_equal_canary_slack_state_artifact_ensured(
     tmp_path: Path, monkeypatch
 ) -> None:

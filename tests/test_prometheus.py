@@ -101,6 +101,11 @@ def test_prometheus_observe_and_dump(monkeypatch):
         },
         enabled=True,
     )
+    observe_metric(
+        "inhibit_equal_canary_resolve",
+        values={"result": "ok", "via": "thread"},
+        enabled=True,
+    )
     body = render_prometheus().decode("utf-8")
     assert "rag_queries_total" in body
     assert "rag_ingest_total" in body
@@ -119,6 +124,7 @@ def test_prometheus_observe_and_dump(monkeypatch):
     assert "rag_dual_write_webhook_dlq_depth" in body
     assert "rag_dual_write_webhook_dlq_quarantine_depth" in body
     assert "rag_dual_write_webhook_circuit_open" in body
+    assert "rag_inhibit_equal_canary_resolve_total" in body
 
 
 def test_record_metric_forwards_to_prometheus(tmp_path, monkeypatch):

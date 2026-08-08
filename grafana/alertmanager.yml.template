@@ -49,11 +49,15 @@ receivers:
     webhook_configs:
       - url: ${RAG_ALERTMANAGER_INGEST_DLQ_QUARANTINE_WEBHOOK_URL}
         send_resolved: true
+        # Token: RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_TOKEN (or shared RAG_ALERTMANAGER_WEBHOOK_TOKEN)
+        # HMAC: RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET (+ proxy for X-Webhook-* headers)
+        # Optional: http_config.authorization.type=Bearer + credentials=<token>
 
   - name: ingest-webhook
     webhook_configs:
       - url: ${RAG_ALERTMANAGER_INGEST_WEBHOOK_URL}
         send_resolved: true
+        # Optional: http_config.authorization Bearer RAG_ALERTMANAGER_WEBHOOK_TOKEN
 
   - name: rag-webhook
     webhook_configs:

@@ -575,9 +575,29 @@ def build_inhibit_equal_resolve_canary_payload(report: Dict[str, Any]) -> Dict[s
     return {"text": text, "blocks": blocks}
 
 
+def emit_inhibit_equal_canary_resolve_metric(
+    *,
+    result: str,
+    via: str = "none",
+) -> None:
+    try:
+        from rag.metrics import record_metric
+
+        record_metric(
+            "inhibit_equal_canary_resolve",
+            values={
+                "result": str(result or "unknown"),
+                "via": str(via or "none"),
+            },
+        )
+    except Exception:
+        pass
+
+
 def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any]:
     """Close Opsgenie (+ PD resolve + Slack resolve) after successful green apply."""
     if not report.get("applied") or report.get("rolled_back"):
+        emit_inhibit_equal_canary_resolve_metric(result="skipped", via="none")
         return {"ok": True, "skipped": True, "reason": "not_applied_green"}
     if os.environ.get("INHIBIT_EQUAL_CANARY_NOTIFY", "1").strip().lower() in {
         "0",
@@ -585,6 +605,7 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
         "no",
         "off",
     }:
+        emit_inhibit_equal_canary_resolve_metric(result="skipped", via="none")
         return {"ok": True, "skipped": True, "reason": "disabled"}
     if os.environ.get("INHIBIT_EQUAL_CANARY_CLOSE_ON_GREEN", "1").strip().lower() in {
         "0",
@@ -592,6 +613,7 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
         "no",
         "off",
     }:
+        emit_inhibit_equal_canary_resolve_metric(result="skipped", via="none")
         return {"ok": True, "skipped": True, "reason": "close_disabled"}
 
     webhook = (
@@ -616,6 +638,7 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
         and not og_targets
         and not (bot_early and thread_early)
     ):
+        emit_inhibit_equal_canary_resolve_metric(result="skipped", via="none")
         return {"ok": True, "skipped": True, "reason": "targets_missing"}
 
     from rag.judge_alert import (
@@ -654,11 +677,13 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
     slack_ok = False
     slack_thread_reply = False
     slack_via: Optional[str] = None
+    thread_attempted = False
     if (
         inhibit_equal_canary_slack_thread_reply_enabled()
         and bot_token
         and thread_ts
     ):
+        thread_attempted = True
         reply = post_slack_thread_message(
             text=str(resolve_payload.get("text") or "Inhibit equal apply resolved"),
             channel_id=channel or None,
@@ -699,6 +724,19 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
     og_ok = any(og_by_region.values()) if og_by_region else False
     has_slack = bool(webhook or slack_thread_reply or (bot_token and thread_ts))
     closed = slack_ok or pd_ok or og_ok
+    if slack_thread_reply:
+        emit_inhibit_equal_canary_resolve_metric(result="ok", via="thread")
+    elif thread_attempted and not slack_thread_reply:
+        emit_inhibit_equal_canary_resolve_metric(
+            result="ok" if closed else "fail",
+            via="webhook" if slack_via == "webhook" else "thread",
+        )
+    elif slack_via == "webhook":
+        emit_inhibit_equal_canary_resolve_metric(result="ok", via="webhook")
+    elif closed:
+        emit_inhibit_equal_canary_resolve_metric(result="ok", via="none")
+    else:
+        emit_inhibit_equal_canary_resolve_metric(result="fail", via="none")
     return {
         "ok": closed if (has_slack or pd_key or og_targets) else True,
         "skipped": False,

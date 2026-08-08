@@ -43,6 +43,7 @@ _dual_write_webhook_total = None
 _dual_write_webhook_dlq_depth = None
 _dual_write_webhook_dlq_quarantine_depth = None
 _dual_write_webhook_circuit_open = None
+_inhibit_equal_canary_resolve_total = None
 
 
 def prometheus_available() -> bool:
@@ -71,6 +72,7 @@ def _ensure_metrics():
     global _dual_write_webhook_total, _dual_write_webhook_dlq_depth
     global _dual_write_webhook_dlq_quarantine_depth
     global _dual_write_webhook_circuit_open
+    global _inhibit_equal_canary_resolve_total
     if _events_total is not None:
         return
     if not prometheus_available():
@@ -188,6 +190,11 @@ def _ensure_metrics():
     _dual_write_webhook_circuit_open = Gauge(
         "rag_dual_write_webhook_circuit_open",
         "Dual-write webhook circuit breaker açık mı (1/0)",
+    )
+    _inhibit_equal_canary_resolve_total = Counter(
+        "rag_inhibit_equal_canary_resolve_total",
+        "Inhibit-equal canary Slack thread/resolve outcomes",
+        ["result", "via"],
     )
 
 
@@ -382,6 +389,11 @@ def observe_metric(
                 )
             except Exception:
                 pass
+        elif kind == "inhibit_equal_canary_resolve":
+            assert _inhibit_equal_canary_resolve_total is not None
+            result = str(vals.get("result") or "unknown")
+            via = str(vals.get("via") or "none")
+            _inhibit_equal_canary_resolve_total.labels(result=result, via=via).inc()
 
 
 def render_prometheus() -> bytes:

@@ -423,18 +423,20 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_chatupdate_am_route_artifact():
+def test_readme_sonraki_adaylar_after_fanout_hmac_metric():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
-    assert "mute fan-out chat.update sync" in text
-    assert "quarantine webhook HMAC auth" in text
-    assert "thread resolve Prometheus metric" in text
+    assert "message-ref prune/TTL" in text
+    assert "require-auth default-on" in text
+    assert "canary resolve Grafana panel" in text
     # Completed this round — should not remain as next candidates
-    assert "catch-up chat.update unmute action refresh" not in text
-    assert "quarantine Alertmanager route" not in text
-    assert "thread-state CI artifact" not in text
+    assert "mute fan-out chat.update sync" not in text
+    assert "quarantine webhook HMAC auth" not in text
+    assert "thread resolve Prometheus metric" not in text
+    assert "RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET" in text
+    assert "RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH" in text
 
 
 def test_ci_inhibit_equal_slack_thread_env():

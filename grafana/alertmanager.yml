@@ -42,11 +42,16 @@ receivers:
     webhook_configs:
       - url: http://host.docker.internal:8766/hooks/dual-write-dlq-quarantine
         send_resolved: true
+        # Token auth (Alertmanager native Bearer). HMAC needs a signing proxy:
+        #   RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET
+        #   or shared RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET
+        # Optional: http_config.authorization.type=Bearer + credentials=<token>
 
   - name: ingest-webhook
     webhook_configs:
       - url: http://host.docker.internal:8766/hooks/dual-write-catch-up
         send_resolved: true
+        # Optional: http_config.authorization Bearer RAG_ALERTMANAGER_WEBHOOK_TOKEN
 
   - name: rag-webhook
     webhook_configs:

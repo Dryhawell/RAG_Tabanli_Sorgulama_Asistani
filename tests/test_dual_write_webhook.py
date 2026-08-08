@@ -545,6 +545,70 @@ def test_http_adapter_unauthorized(monkeypatch) -> None:
     assert json.loads(body2.decode())["skipped"] is True
 
 
+def test_quarantine_webhook_hmac_auth(tmp_path: Path, monkeypatch) -> None:
+    import time
+
+    from rag.dual_write_webhook import (
+        build_webhook_signature,
+        handle_alertmanager_webhook_http,
+        webhook_signing_secret,
+    )
+
+    monkeypatch.delenv("RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET", raising=False)
+    monkeypatch.delenv("RAG_ALERTMANAGER_WEBHOOK_TOKEN", raising=False)
+    monkeypatch.setenv(
+        "RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET", "q-hmac-secret"
+    )
+    assert webhook_signing_secret(mode="dlq_quarantine") == "q-hmac-secret"
+    assert webhook_signing_secret(mode="catch_up") == ""
+
+    body = b'{"status":"firing","alerts":[]}'
+    ts = str(int(time.time()))
+    sig = build_webhook_signature(body, timestamp=ts, secret="q-hmac-secret")
+    state = tmp_path / "q-wh.json"
+
+    bad, _, raw_bad = handle_alertmanager_webhook_http(
+        body,
+        headers={
+            "X-Webhook-Timestamp": ts,
+            "X-Webhook-Signature": "v0=deadbeef",
+            "X-Webhook-Nonce": "qn-1",
+        },
+        state_path=str(state),
+        mode="dlq_quarantine",
+    )
+    assert bad == 401
+    assert json.loads(raw_bad.decode())["error"] == "invalid_signature"
+    assert json.loads(raw_bad.decode())["mode"] == "dlq_quarantine"
+
+    ok_code, _, raw_ok = handle_alertmanager_webhook_http(
+        body,
+        headers={
+            "X-Webhook-Timestamp": ts,
+            "X-Webhook-Signature": sig,
+            "X-Webhook-Nonce": "qn-1",
+        },
+        state_path=str(state),
+        mode="dlq_quarantine",
+    )
+    assert ok_code == 200
+    parsed = json.loads(raw_ok.decode())
+    assert parsed.get("auth") == "hmac"
+    assert parsed.get("mode") == "dlq_quarantine"
+
+    # Dedicated quarantine token fallback (no HMAC)
+    monkeypatch.delenv("RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET", raising=False)
+    monkeypatch.setenv("RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_TOKEN", "q-token")
+    tok_code, _, tok_raw = handle_alertmanager_webhook_http(
+        body,
+        headers={"Authorization": "Bearer q-token"},
+        state_path=str(tmp_path / "q-wh2.json"),
+        mode="dlq_quarantine",
+    )
+    assert tok_code == 200
+    assert json.loads(tok_raw.decode()).get("auth") == "token"
+
+
 def test_webhook_hmac_and_replay(tmp_path: Path, monkeypatch) -> None:
     import time
 

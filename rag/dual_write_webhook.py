@@ -1123,8 +1123,31 @@ def build_webhook_http_headers(
     )
 
 
-def webhook_signing_secret() -> str:
+def webhook_signing_secret(*, mode: str = "catch_up") -> str:
+    """HMAC signing secret; quarantine may override with dedicated env."""
+    if mode == "dlq_quarantine":
+        dedicated = os.environ.get(
+            "RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET", ""
+        ).strip()
+        if dedicated:
+            return dedicated
     return os.environ.get("RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET", "").strip()
+
+
+def webhook_shared_token(*, mode: str = "catch_up") -> str:
+    """Bearer / X-Webhook-Token shared secret; quarantine may override."""
+    if mode == "dlq_quarantine":
+        dedicated = os.environ.get(
+            "RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_TOKEN", ""
+        ).strip()
+        if dedicated:
+            return dedicated
+    return os.environ.get("RAG_ALERTMANAGER_WEBHOOK_TOKEN", "").strip()
+
+
+def webhook_require_auth() -> bool:
+    raw = os.environ.get("RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def webhook_signature_max_age_sec() -> int:
@@ -1286,15 +1309,16 @@ def authorize_alertmanager_webhook(
     headers: Optional[Dict[str, str]] = None,
     state_path: Optional[str] = None,
     now: Optional[float] = None,
+    mode: str = "catch_up",
 ) -> Dict[str, Any]:
     """
     Auth sırası:
     1) Signing secret varsa → HMAC + nonce replay zorunlu
     2) Shared token varsa → Bearer / X-Webhook-Token
-    3) Hiçbiri yoksa → açık (ok)
+    3) Hiçbiri yoksa → açık (ok) unless REQUIRE_AUTH
     """
     auth = extract_webhook_auth_headers(headers)
-    secret = webhook_signing_secret()
+    secret = webhook_signing_secret(mode=mode)
     if secret:
         if not verify_webhook_signature(
             body,
@@ -1307,6 +1331,7 @@ def authorize_alertmanager_webhook(
                 "ok": False,
                 "error": "invalid_signature",
                 "auth": "hmac",
+                "mode": mode,
             }
         replay = check_webhook_replay(
             nonce=auth["nonce"],
@@ -1320,17 +1345,30 @@ def authorize_alertmanager_webhook(
                 "ok": False,
                 "error": str(replay.get("error") or "replay"),
                 "auth": "hmac",
+                "mode": mode,
                 "replay": replay,
             }
-        return {"ok": True, "auth": "hmac", "replay": replay}
+        return {"ok": True, "auth": "hmac", "mode": mode, "replay": replay}
 
-    token = os.environ.get("RAG_ALERTMANAGER_WEBHOOK_TOKEN", "").strip()
+    token = webhook_shared_token(mode=mode)
     if token:
         if auth["token"] != token:
-            return {"ok": False, "error": "unauthorized", "auth": "token"}
-        return {"ok": True, "auth": "token"}
+            return {
+                "ok": False,
+                "error": "unauthorized",
+                "auth": "token",
+                "mode": mode,
+            }
+        return {"ok": True, "auth": "token", "mode": mode}
 
-    return {"ok": True, "auth": "none"}
+    if webhook_require_auth():
+        return {
+            "ok": False,
+            "error": "auth_required",
+            "auth": "none",
+            "mode": mode,
+        }
+    return {"ok": True, "auth": "none", "mode": mode}
 
 
 def extract_firing_dual_write_alerts(
@@ -1947,20 +1985,30 @@ def handle_alertmanager_webhook_http(
         )
 
     auth = authorize_alertmanager_webhook(
-        body, headers=headers, state_path=state_path
+        body, headers=headers, state_path=state_path, mode=mode
     )
     if not auth.get("ok"):
         err = str(auth.get("error") or "unauthorized")
         code = 401
         if err == "replay":
             code = 409
-        elif err in {"timestamp_expired", "timestamp_invalid", "nonce_missing"}:
+        elif err in {
+            "timestamp_expired",
+            "timestamp_invalid",
+            "nonce_missing",
+            "auth_required",
+        }:
             code = 401
         return (
             code,
             {"Content-Type": "application/json"},
             json.dumps(
-                {"ok": False, "error": err, "auth": auth.get("auth")},
+                {
+                    "ok": False,
+                    "error": err,
+                    "auth": auth.get("auth"),
+                    "mode": auth.get("mode") or mode,
+                },
                 ensure_ascii=False,
             ).encode("utf-8"),
         )
