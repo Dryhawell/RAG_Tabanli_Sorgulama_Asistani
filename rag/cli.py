@@ -1270,12 +1270,22 @@ def cmd_webhook_signing_sidecar(args: argparse.Namespace) -> int:
         run_webhook_signing_sidecar,
         sidecar_listen_host,
         sidecar_listen_port,
+        sidecar_tls_enabled,
+        sidecar_tls_status,
         sidecar_upstream_url,
     )
     from rag.dual_write_webhook import webhook_signing_secret
 
     if getattr(args, "upstream", None):
         os.environ["RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM"] = str(args.upstream)
+    if getattr(args, "tls_cert", None):
+        os.environ["RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT"] = str(args.tls_cert)
+    if getattr(args, "tls_key", None):
+        os.environ["RAG_WEBHOOK_SIGNING_SIDECAR_TLS_KEY"] = str(args.tls_key)
+    if getattr(args, "tls_ca", None):
+        os.environ["RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CA"] = str(args.tls_ca)
+    if getattr(args, "mtls", False):
+        os.environ["RAG_WEBHOOK_SIGNING_SIDECAR_MTLS"] = "1"
 
     if getattr(args, "sign_once", False):
         body = sys.stdin.buffer.read() or b"{}"
@@ -1297,6 +1307,7 @@ def cmd_webhook_signing_sidecar(args: argparse.Namespace) -> int:
                     "mode": mode,
                     "upstream": sidecar_upstream_url(mode=mode),
                     "headers": headers,
+                    "tls": sidecar_tls_status(),
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -1306,10 +1317,17 @@ def cmd_webhook_signing_sidecar(args: argparse.Namespace) -> int:
 
     host = args.host or sidecar_listen_host()
     port = args.port if args.port is not None else sidecar_listen_port()
-    server = run_webhook_signing_sidecar(host=host, port=port)
+    try:
+        server = run_webhook_signing_sidecar(host=host, port=port)
+    except ValueError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 1
+    scheme = "https" if sidecar_tls_enabled() else "http"
+    tls = sidecar_tls_status()
     print(
-        f"Webhook signing sidecar: http://{host}:{port}/ "
-        f"(quarantine→{sidecar_upstream_url(mode='dlq_quarantine')})"
+        f"Webhook signing sidecar: {scheme}://{host}:{port}/ "
+        f"(quarantine→{sidecar_upstream_url(mode='dlq_quarantine')}; "
+        f"tls={tls.get('tls')} mtls={tls.get('mtls')})"
     )
     print("Durdurmak için Ctrl+C")
     try:
@@ -2128,6 +2146,26 @@ def build_parser() -> argparse.ArgumentParser:
         default="dlq_quarantine",
         choices=["dlq_quarantine", "catch_up"],
         help="Signing secret mode (--sign-once)",
+    )
+    p_wss.add_argument(
+        "--tls-cert",
+        default=None,
+        help="TLS cert PEM (RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT)",
+    )
+    p_wss.add_argument(
+        "--tls-key",
+        default=None,
+        help="TLS key PEM (RAG_WEBHOOK_SIGNING_SIDECAR_TLS_KEY)",
+    )
+    p_wss.add_argument(
+        "--tls-ca",
+        default=None,
+        help="Client CA PEM for mTLS (RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CA)",
+    )
+    p_wss.add_argument(
+        "--mtls",
+        action="store_true",
+        help="Require client cert (RAG_WEBHOOK_SIGNING_SIDECAR_MTLS=1)",
     )
     p_wss.set_defaults(func=cmd_webhook_signing_sidecar)
 

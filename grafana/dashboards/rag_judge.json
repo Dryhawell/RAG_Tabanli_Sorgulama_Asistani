@@ -625,6 +625,66 @@
           ]
         }
       }
+    },
+    {
+      "type": "timeseries",
+      "title": "Digest msgref reconcile actions",
+      "description": "rag_judge_ack_digest_msgref_reconcile_total by action (kept/dropped/repaired/error/skipped)",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 65
+      },
+      "id": 20,
+      "targets": [
+        {
+          "expr": "sum by (action) (rate(rag_judge_ack_digest_msgref_reconcile_total[5m]))",
+          "legendFormat": "{{action}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Digest msgref reconcile (last)",
+      "description": "Last reconcile checked/dropped/repaired gauges",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 65
+      },
+      "id": 21,
+      "targets": [
+        {
+          "expr": "rag_judge_ack_digest_msgref_reconcile_checked",
+          "legendFormat": "checked",
+          "refId": "A"
+        },
+        {
+          "expr": "rag_judge_ack_digest_msgref_reconcile_dropped",
+          "legendFormat": "dropped",
+          "refId": "B"
+        },
+        {
+          "expr": "rag_judge_ack_digest_msgref_reconcile_repaired",
+          "legendFormat": "repaired",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     }
   ],
   "schemaVersion": 39,
@@ -637,6 +697,8 @@
     "inhibit",
     "judge",
     "llm",
+    "msgref",
+    "mute",
     "otel",
     "quarantine",
     "rag",

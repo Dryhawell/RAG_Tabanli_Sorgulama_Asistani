@@ -1501,7 +1501,7 @@ def reconcile_judge_ack_digest_message_refs(
     mutated = repaired > 0 or dropped > 0
     if not dry_run and mutated:
         save_judge_ack_digest_messages(new_data, base=base)
-    return {
+    report = {
         "ok": True,
         "path": path,
         "dry_run": bool(dry_run),
@@ -1513,6 +1513,38 @@ def reconcile_judge_ack_digest_message_refs(
         "tenants": len(tenants),
         "details": details,
     }
+    emit_judge_ack_digest_msgref_reconcile_metric(report)
+    return report
+
+
+def emit_judge_ack_digest_msgref_reconcile_metric(
+    report: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Prometheus/JSONL: rag_judge_ack_digest_msgref_reconcile_* ."""
+    try:
+        from rag.metrics import record_metric
+
+        r = report or {}
+        if r.get("skipped"):
+            record_metric(
+                "judge_ack_digest_msgref_reconcile",
+                values={"result": "skipped", "skipped": True},
+            )
+            return
+        record_metric(
+            "judge_ack_digest_msgref_reconcile",
+            values={
+                "result": "ok" if r.get("ok") else "fail",
+                "checked": int(r.get("checked") or 0),
+                "kept": int(r.get("kept") or 0),
+                "dropped": int(r.get("dropped") or 0),
+                "repaired": int(r.get("repaired") or 0),
+                "errors": int(r.get("errors") or 0),
+                "dry_run": bool(r.get("dry_run")),
+            },
+        )
+    except Exception:
+        pass
 
 
 def maybe_reconcile_judge_ack_digest_message_refs(
@@ -1523,7 +1555,9 @@ def maybe_reconcile_judge_ack_digest_message_refs(
 ) -> Dict[str, Any]:
     """Env-gated history reconcile (RAG_JUDGE_ACK_DIGEST_HISTORY_RECONCILE)."""
     if not digest_history_reconcile_enabled():
-        return {"ok": True, "skipped": True, "reason": "reconcile_disabled"}
+        out = {"ok": True, "skipped": True, "reason": "reconcile_disabled"}
+        emit_judge_ack_digest_msgref_reconcile_metric(out)
+        return out
     return reconcile_judge_ack_digest_message_refs(
         base=base, dry_run=dry_run, bot_token=bot_token
     )

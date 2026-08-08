@@ -44,6 +44,11 @@ _dual_write_webhook_dlq_depth = None
 _dual_write_webhook_dlq_quarantine_depth = None
 _dual_write_webhook_circuit_open = None
 _inhibit_equal_canary_resolve_total = None
+_inhibit_equal_canary_silence_total = None
+_msgref_reconcile_total = None
+_msgref_reconcile_checked = None
+_msgref_reconcile_dropped = None
+_msgref_reconcile_repaired = None
 
 
 def prometheus_available() -> bool:
@@ -73,6 +78,9 @@ def _ensure_metrics():
     global _dual_write_webhook_dlq_quarantine_depth
     global _dual_write_webhook_circuit_open
     global _inhibit_equal_canary_resolve_total
+    global _inhibit_equal_canary_silence_total
+    global _msgref_reconcile_total
+    global _msgref_reconcile_checked, _msgref_reconcile_dropped, _msgref_reconcile_repaired
     if _events_total is not None:
         return
     if not prometheus_available():
@@ -195,6 +203,28 @@ def _ensure_metrics():
         "rag_inhibit_equal_canary_resolve_total",
         "Inhibit-equal canary Slack thread/resolve outcomes",
         ["result", "via"],
+    )
+    _inhibit_equal_canary_silence_total = Counter(
+        "rag_inhibit_equal_canary_silence_total",
+        "Inhibit-equal canary auto-silence outcomes",
+        ["result"],
+    )
+    _msgref_reconcile_total = Counter(
+        "rag_judge_ack_digest_msgref_reconcile_total",
+        "Judge ACK digest Slack message-ref history reconcile actions",
+        ["action"],
+    )
+    _msgref_reconcile_checked = Gauge(
+        "rag_judge_ack_digest_msgref_reconcile_checked",
+        "Last msgref reconcile checked count",
+    )
+    _msgref_reconcile_dropped = Gauge(
+        "rag_judge_ack_digest_msgref_reconcile_dropped",
+        "Last msgref reconcile dropped count",
+    )
+    _msgref_reconcile_repaired = Gauge(
+        "rag_judge_ack_digest_msgref_reconcile_repaired",
+        "Last msgref reconcile repaired count",
     )
 
 
@@ -394,6 +424,36 @@ def observe_metric(
             result = str(vals.get("result") or "unknown")
             via = str(vals.get("via") or "none")
             _inhibit_equal_canary_resolve_total.labels(result=result, via=via).inc()
+        elif kind == "inhibit_equal_canary_silence":
+            assert _inhibit_equal_canary_silence_total is not None
+            result = str(vals.get("result") or "unknown")
+            _inhibit_equal_canary_silence_total.labels(result=result).inc()
+        elif kind == "judge_ack_digest_msgref_reconcile":
+            assert _msgref_reconcile_total is not None
+            assert _msgref_reconcile_checked is not None
+            assert _msgref_reconcile_dropped is not None
+            assert _msgref_reconcile_repaired is not None
+            if vals.get("skipped") or str(vals.get("result") or "") == "skipped":
+                _msgref_reconcile_total.labels(action="skipped").inc()
+            else:
+                for action, key in (
+                    ("kept", "kept"),
+                    ("dropped", "dropped"),
+                    ("repaired", "repaired"),
+                    ("error", "errors"),
+                ):
+                    try:
+                        n = int(vals.get(key) or 0)
+                    except (TypeError, ValueError):
+                        n = 0
+                    if n > 0:
+                        _msgref_reconcile_total.labels(action=action).inc(n)
+                try:
+                    _msgref_reconcile_checked.set(float(vals.get("checked") or 0))
+                    _msgref_reconcile_dropped.set(float(vals.get("dropped") or 0))
+                    _msgref_reconcile_repaired.set(float(vals.get("repaired") or 0))
+                except (TypeError, ValueError):
+                    pass
 
 
 def render_prometheus() -> bytes:

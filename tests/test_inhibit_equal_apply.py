@@ -464,6 +464,51 @@ def test_inhibit_equal_canary_resolve_prometheus_metric(monkeypatch) -> None:
     )
 
 
+def test_inhibit_equal_canary_auto_silence(monkeypatch) -> None:
+    from scripts.ci_inhibit_equal_apply import (
+        auto_silence_inhibit_equal_canary_resolve,
+        inhibit_equal_canary_auto_silence_enabled,
+    )
+
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        "scripts.ci_inhibit_equal_apply.emit_inhibit_equal_canary_silence_metric",
+        lambda **kw: seen.append(kw),
+    )
+
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_AUTO_SILENCE", "0")
+    assert inhibit_equal_canary_auto_silence_enabled() is False
+    disabled = auto_silence_inhibit_equal_canary_resolve(
+        {"applied": True, "rolled_back": False}
+    )
+    assert disabled["skipped"] is True
+    assert disabled["reason"] == "disabled"
+
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_AUTO_SILENCE", "1")
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_AUTO_SILENCE_DURATION", "30m")
+    with patch(
+        "rag.alertmanager_ops.create_silence",
+        return_value={"ok": True, "silenceID": "sil-1"},
+    ) as create:
+        out = auto_silence_inhibit_equal_canary_resolve(
+            {"applied": True, "rolled_back": False}
+        )
+    assert out["ok"] is True
+    assert out["silenceID"] == "sil-1"
+    assert out["duration_sec"] == 1800.0
+    assert create.called
+    matchers = create.call_args.kwargs.get("matchers") or []
+    names = {m.get("name") for m in matchers}
+    assert "alertname" in names
+    assert "service" in names
+    assert any(s.get("result") == "ok" for s in seen)
+
+    skipped = auto_silence_inhibit_equal_canary_resolve(
+        {"applied": False, "rolled_back": False}
+    )
+    assert skipped["reason"] == "not_applied_green"
+
+
 def test_inhibit_equal_canary_slack_state_artifact_ensured(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import ssl
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional, Tuple
@@ -61,6 +62,69 @@ def sidecar_forward_timeout_sec() -> float:
         return max(1.0, float(raw or 30))
     except Exception:
         return 30.0
+
+
+def sidecar_tls_cert_path() -> str:
+    return os.environ.get("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT", "").strip()
+
+
+def sidecar_tls_key_path() -> str:
+    return os.environ.get("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_KEY", "").strip()
+
+
+def sidecar_tls_ca_path() -> str:
+    return os.environ.get("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CA", "").strip()
+
+
+def sidecar_tls_enabled() -> bool:
+    return bool(sidecar_tls_cert_path() and sidecar_tls_key_path())
+
+
+def sidecar_mtls_required() -> bool:
+    raw = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_TLS_REQUIRE_CLIENT_CERT", ""
+    ).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    mtls = os.environ.get("RAG_WEBHOOK_SIGNING_SIDECAR_MTLS", "").strip().lower()
+    if mtls in {"1", "true", "yes", "on"}:
+        return True
+    # CA without explicit off → require client cert
+    return bool(sidecar_tls_ca_path())
+
+
+def build_sidecar_ssl_context() -> Optional[ssl.SSLContext]:
+    """TLS server context; optional mTLS when CA / REQUIRE_CLIENT_CERT / MTLS set."""
+    if not sidecar_tls_enabled():
+        return None
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(sidecar_tls_cert_path(), sidecar_tls_key_path())
+    if sidecar_mtls_required():
+        ca = sidecar_tls_ca_path()
+        if not ca:
+            raise ValueError("mtls_requires_ca")
+        ctx.load_verify_locations(ca)
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        try:
+            ctx.check_hostname = False
+        except Exception:
+            pass
+    else:
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def sidecar_tls_status() -> Dict[str, Any]:
+    enabled = sidecar_tls_enabled()
+    mtls = bool(enabled and sidecar_mtls_required())
+    return {
+        "tls": enabled,
+        "mtls": mtls,
+        "cert": sidecar_tls_cert_path() if enabled else "",
+        "ca": sidecar_tls_ca_path() if mtls else "",
+    }
 
 
 def build_signed_webhook_headers(
@@ -267,12 +331,15 @@ class _SigningSidecarHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = (self.path or "/").split("?", 1)[0]
         if path in {"/", "/healthz", "/readyz"}:
+            tls = sidecar_tls_status()
             body = json.dumps(
                 {
                     "ok": True,
                     "service": "webhook-signing-sidecar",
                     "upstream_quarantine": sidecar_upstream_url(mode="dlq_quarantine"),
                     "upstream_catch_up": sidecar_upstream_url(mode="catch_up"),
+                    "tls": tls.get("tls"),
+                    "mtls": tls.get("mtls"),
                 },
                 ensure_ascii=False,
             ).encode("utf-8")
@@ -303,8 +370,12 @@ def run_webhook_signing_sidecar(
     *,
     host: Optional[str] = None,
     port: Optional[int] = None,
+    ssl_context: Optional[ssl.SSLContext] = None,
 ) -> ThreadingHTTPServer:
     bind_host = host or sidecar_listen_host()
     bind_port = int(port if port is not None else sidecar_listen_port())
     server = ThreadingHTTPServer((bind_host, bind_port), _SigningSidecarHandler)
+    ctx = ssl_context if ssl_context is not None else build_sidecar_ssl_context()
+    if ctx is not None:
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
     return server

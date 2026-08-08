@@ -104,7 +104,7 @@ services:
       - alertmanager
 
   # Alertmanager cannot attach X-Webhook-* HMAC headers; point quarantine
-  # receiver at this sidecar (e.g. http://webhook-signing-sidecar:8777/).
+  # receiver at this sidecar (e.g. https://webhook-signing-sidecar:8777/ with mTLS).
   webhook-signing-sidecar:
     build: .
     profiles: ["obs"]
@@ -116,6 +116,12 @@ services:
       RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM: ${RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM:-http://host.docker.internal:8766/hooks/dual-write-dlq-quarantine}
       RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET: ${RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET:-}
       RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET: ${RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET:-}
+      RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT: ${RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT:-}
+      RAG_WEBHOOK_SIGNING_SIDECAR_TLS_KEY: ${RAG_WEBHOOK_SIGNING_SIDECAR_TLS_KEY:-}
+      RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CA: ${RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CA:-}
+      RAG_WEBHOOK_SIGNING_SIDECAR_MTLS: ${RAG_WEBHOOK_SIGNING_SIDECAR_MTLS:-}
+    volumes:
+      - ${RAG_WEBHOOK_SIGNING_SIDECAR_TLS_DIR:-./metadata/sidecar-tls}:/tls:ro
     command:
       - python
       - -m

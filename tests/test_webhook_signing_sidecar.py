@@ -120,6 +120,130 @@ def test_compose_and_readme_document_sidecar() -> None:
     assert "webhook-signing-sidecar:" in compose
     assert "rag.cli" in compose
     assert "webhook-signing-sidecar" in compose
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT" in compose
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_MTLS" in compose
     readme = Path("README.md").read_text(encoding="utf-8")
     assert "webhook-signing-sidecar" in readme
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM" in readme
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_MTLS" in readme
+
+
+def _write_self_signed_pair(tmp_path: Path):
+    import datetime
+    import ipaddress
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "sidecar.test")]
+    )
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=1))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName(
+                [x509.DNSName("localhost"), x509.IPAddress(ipaddress.IPv4Address("127.0.0.1"))]
+            ),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    cert_path = tmp_path / "server.crt"
+    key_path = tmp_path / "server.key"
+    ca_path = tmp_path / "ca.crt"
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    # Self-signed: CA == server cert for client trust / mTLS demo
+    ca_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    client_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    client_subject = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "am-client")]
+    )
+    client_cert = (
+        x509.CertificateBuilder()
+        .subject_name(client_subject)
+        .issuer_name(issuer)
+        .public_key(client_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=1))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .sign(key, hashes.SHA256())
+    )
+    client_cert_path = tmp_path / "client.crt"
+    client_key_path = tmp_path / "client.key"
+    client_cert_path.write_bytes(client_cert.public_bytes(serialization.Encoding.PEM))
+    client_key_path.write_bytes(
+        client_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    return cert_path, key_path, ca_path, client_cert_path, client_key_path
+
+
+def test_sidecar_tls_and_mtls_context(tmp_path: Path, monkeypatch) -> None:
+    cryptography = pytest.importorskip("cryptography")
+    _ = cryptography
+
+    from rag.webhook_signing_sidecar import (
+        build_sidecar_ssl_context,
+        sidecar_mtls_required,
+        sidecar_tls_enabled,
+        sidecar_tls_status,
+    )
+
+    cert, key, ca, _cc, _ck = _write_self_signed_pair(tmp_path)
+    monkeypatch.delenv("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT", raising=False)
+    monkeypatch.delenv("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_KEY", raising=False)
+    monkeypatch.delenv("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CA", raising=False)
+    monkeypatch.delenv("RAG_WEBHOOK_SIGNING_SIDECAR_MTLS", raising=False)
+    assert sidecar_tls_enabled() is False
+    assert build_sidecar_ssl_context() is None
+
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT", str(cert))
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_KEY", str(key))
+    assert sidecar_tls_enabled() is True
+    assert sidecar_mtls_required() is False
+    ctx = build_sidecar_ssl_context()
+    assert ctx is not None
+
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CA", str(ca))
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_MTLS", "1")
+    assert sidecar_mtls_required() is True
+    mtls_ctx = build_sidecar_ssl_context()
+    assert mtls_ctx is not None
+    assert mtls_ctx.verify_mode.name == "CERT_REQUIRED"
+    status = sidecar_tls_status()
+    assert status["tls"] is True
+    assert status["mtls"] is True
+
+
+def test_sidecar_mtls_requires_ca(monkeypatch, tmp_path: Path) -> None:
+    cryptography = pytest.importorskip("cryptography")
+    _ = cryptography
+    from rag.webhook_signing_sidecar import build_sidecar_ssl_context
+
+    cert, key, _ca, _cc, _ck = _write_self_signed_pair(tmp_path)
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT", str(cert))
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_KEY", str(key))
+    monkeypatch.delenv("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CA", raising=False)
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_MTLS", "1")
+    with pytest.raises(ValueError, match="mtls_requires_ca"):
+        build_sidecar_ssl_context()

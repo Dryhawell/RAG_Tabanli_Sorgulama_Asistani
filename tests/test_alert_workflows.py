@@ -410,6 +410,9 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     assert "INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON" in text
     assert "INHIBIT_EQUAL_CANARY_OPSGENIE_REGIONS" in text
     assert "INHIBIT_EQUAL_CANARY_CLOSE_ON_GREEN" in text
+    assert "INHIBIT_EQUAL_CANARY_AUTO_SILENCE" in text
+    assert "INHIBIT_EQUAL_CANARY_AUTO_SILENCE_DURATION" in text
+    assert "INHIBIT_EQUAL_CANARY_AUTO_SILENCE_MATCHERS" in text
     assert "INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY" in text
     assert "INHIBIT_EQUAL_CANARY_PD_SEVERITY" in text
     assert "INHIBIT_EQUAL_CANARY_PD_SEVERITY_BY_REASON" in text
@@ -423,19 +426,23 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_history_sidecar_canary_alert():
+def test_readme_sonraki_adaylar_after_metrics_mtls_autosilence():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
-    assert "message-ref reconcile metrics/Grafana" in text
-    assert "signing sidecar mTLS" in text
-    assert "canary resolve auto-silence" in text
+    assert "mute snapshot export / CSV" in text
+    assert "sidecar upstream client-cert" in text
+    assert "canary silence expiry webhook" in text
     # Completed this round — should not remain as next candidates
-    assert "message-ref Slack history reconcile" not in text
-    assert "dual-write DLQ quarantine webhook signing sidecar" not in text
-    assert "canary resolve alert rule" not in text
+    assert "message-ref reconcile metrics/Grafana" not in text
+    assert "signing sidecar mTLS" not in text
+    assert "canary resolve auto-silence" not in text
     assert "webhook-signing-sidecar" in text
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_MTLS" in text
+    assert "rag_judge_ack_digest_msgref_reconcile_total" in text
+    assert "INHIBIT_EQUAL_CANARY_AUTO_SILENCE" in text
+    assert "rag_inhibit_equal_canary_silence_total" in text
     assert "RAG_JUDGE_ACK_DIGEST_HISTORY_RECONCILE" in text
     assert "RagInhibitEqualCanaryResolveFail" in text
     assert "RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET" in text

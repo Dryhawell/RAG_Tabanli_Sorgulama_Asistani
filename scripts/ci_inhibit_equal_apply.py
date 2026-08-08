@@ -594,6 +594,90 @@ def emit_inhibit_equal_canary_resolve_metric(
         pass
 
 
+def emit_inhibit_equal_canary_silence_metric(*, result: str) -> None:
+    try:
+        from rag.metrics import record_metric
+
+        record_metric(
+            "inhibit_equal_canary_silence",
+            values={"result": str(result or "unknown")},
+        )
+    except Exception:
+        pass
+
+
+def inhibit_equal_canary_auto_silence_enabled() -> bool:
+    raw = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_AUTO_SILENCE", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_AUTO_SILENCE", "").strip()
+        or "1"
+    )
+    return raw.lower() not in {"0", "false", "no", "off"}
+
+
+def inhibit_equal_canary_auto_silence_duration_sec() -> float:
+    from rag.alertmanager_ops import parse_duration_sec
+
+    raw = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_AUTO_SILENCE_DURATION", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_AUTO_SILENCE_DURATION", "").strip()
+        or "2h"
+    )
+    try:
+        return max(60.0, float(parse_duration_sec(raw)))
+    except Exception:
+        return 7200.0
+
+
+def auto_silence_inhibit_equal_canary_resolve(
+    report: Dict[str, Any],
+) -> Dict[str, Any]:
+    """After green inhibit-equal apply, silence canary resolve fail alerts."""
+    if not report.get("applied") or report.get("rolled_back"):
+        emit_inhibit_equal_canary_silence_metric(result="skipped")
+        return {"ok": True, "skipped": True, "reason": "not_applied_green"}
+    if not inhibit_equal_canary_auto_silence_enabled():
+        emit_inhibit_equal_canary_silence_metric(result="skipped")
+        return {"ok": True, "skipped": True, "reason": "disabled"}
+
+    from rag.alertmanager_ops import create_silence, parse_silence_matcher
+
+    matchers_raw = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_AUTO_SILENCE_MATCHERS", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_AUTO_SILENCE_MATCHERS", "").strip()
+    )
+    if matchers_raw:
+        parts = [p.strip() for p in matchers_raw.replace(";", ",").split(",") if p.strip()]
+    else:
+        parts = [
+            "alertname=~RagInhibitEqualCanaryResolveFail.*",
+            "service=rag",
+        ]
+    try:
+        matchers = [parse_silence_matcher(p) for p in parts]
+    except ValueError as exc:
+        emit_inhibit_equal_canary_silence_metric(result="fail")
+        return {"ok": False, "error": f"bad_matcher:{exc}", "matchers": parts}
+
+    duration = inhibit_equal_canary_auto_silence_duration_sec()
+    silence = create_silence(
+        matchers=matchers,
+        duration_sec=duration,
+        created_by="inhibit-equal-canary",
+        comment="auto-silence after green inhibit-equal canary resolve",
+    )
+    result = "ok" if silence.get("ok") else "fail"
+    emit_inhibit_equal_canary_silence_metric(result=result)
+    return {
+        "ok": bool(silence.get("ok")),
+        "skipped": False,
+        "duration_sec": duration,
+        "matchers": matchers,
+        "silence": silence,
+        "silenceID": silence.get("silenceID"),
+    }
+
+
 def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any]:
     """Close Opsgenie (+ PD resolve + Slack resolve) after successful green apply."""
     if not report.get("applied") or report.get("rolled_back"):
@@ -802,6 +886,9 @@ def main() -> int:
         )
         report["git"] = maybe_commit_and_push(out_path, message=msg)
         report["canary_resolve"] = notify_inhibit_equal_close_on_green(report)
+        report["canary_auto_silence"] = auto_silence_inhibit_equal_canary_resolve(
+            report
+        )
     elif report.get("rolled_back"):
         report["git"] = {
             "ok": True,

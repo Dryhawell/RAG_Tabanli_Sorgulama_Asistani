@@ -800,6 +800,13 @@ def test_digest_message_ref_history_reconcile(tmp_path: Path, monkeypatch) -> No
     monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MESSAGES", str(tmp_path / "msgs.json"))
     monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
     monkeypatch.delenv("RAG_JUDGE_ACK_DIGEST_HISTORY_RECONCILE", raising=False)
+    seen_metrics: list[dict] = []
+    monkeypatch.setattr(
+        "rag.metrics.record_metric",
+        lambda kind, values=None, **kw: seen_metrics.append(
+            {"kind": kind, "values": values or {}}
+        ),
+    )
 
     save_judge_ack_digest_message(
         "acme", channel_id="C-wrong", message_ts="1.1", base=str(tmp_path)
@@ -830,6 +837,11 @@ def test_digest_message_ref_history_reconcile(tmp_path: Path, monkeypatch) -> No
 
     skipped = maybe_reconcile_judge_ack_digest_message_refs(base=str(tmp_path))
     assert skipped.get("skipped") is True
+    assert any(
+        m["kind"] == "judge_ack_digest_msgref_reconcile"
+        and m["values"].get("result") == "skipped"
+        for m in seen_metrics
+    )
 
     monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_HISTORY_RECONCILE", "1")
     with patch("rag.judge_alert.slack_api", side_effect=_fake_api):
@@ -845,6 +857,7 @@ def test_digest_message_ref_history_reconcile(tmp_path: Path, monkeypatch) -> No
             for r in list_judge_ack_digest_message_refs("acme", base=str(tmp_path))
         )
 
+        seen_metrics.clear()
         out = reconcile_judge_ack_digest_message_refs(
             base=str(tmp_path), dry_run=False
         )
@@ -856,6 +869,11 @@ def test_digest_message_ref_history_reconcile(tmp_path: Path, monkeypatch) -> No
         assert {r["message_ts"] for r in refs} == {"1.1", "3.3"}
         assert any(r["channel_id"] == "C-fixed" and r["message_ts"] == "1.1" for r in refs)
         assert not any(r["message_ts"] == "2.2" for r in refs)
+        assert any(
+            m["kind"] == "judge_ack_digest_msgref_reconcile"
+            and int(m["values"].get("dropped") or 0) >= 1
+            for m in seen_metrics
+        )
 
     from rag.cli import build_parser
 
