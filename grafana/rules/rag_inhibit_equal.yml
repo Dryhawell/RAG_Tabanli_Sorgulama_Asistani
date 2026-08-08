@@ -1,0 +1,32 @@
+groups:
+  - name: rag_inhibit_equal
+    interval: 30s
+    rules:
+      - alert: RagInhibitEqualCanaryResolveFail
+        expr: increase(rag_inhibit_equal_canary_resolve_total{result="fail"}[1h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: rag
+        annotations:
+          summary: "Inhibit equal canary resolve failed"
+          description: >
+            Canary resolve fail count {{ $value | humanize }} in the last 1h
+            (via={{ $labels.via }}).
+            Dashboard: rag-judge (Inhibit equal canary resolve panel).
+            CI: scripts/ci_inhibit_equal_apply.py close-on-green / thread resolve.
+          dashboard_uid: rag-judge
+          panel_id: "18"
+      - alert: RagInhibitEqualCanaryResolveFailBurst
+        expr: sum(increase(rag_inhibit_equal_canary_resolve_total{result="fail"}[6h])) >= 3
+        for: 10m
+        labels:
+          severity: critical
+          service: rag
+        annotations:
+          summary: "Inhibit equal canary resolve fail burst"
+          description: >
+            ≥3 canary resolve failures in 6h (value={{ $value | humanize }}).
+            Check Slack thread / webhook close path and CI inhibit-equal canary.
+          dashboard_uid: rag-judge
+          panel_id: "18"
