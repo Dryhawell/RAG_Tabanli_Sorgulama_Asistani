@@ -85,15 +85,27 @@ jobs:
           # shellcheck disable=SC2086
           python -m rag.cli dual-write-dlq $EXTRA \
             | tee metadata/dual_write_dlq_replay.json
+          # Quarantine auto-replay on cron (vars) or workflow_dispatch input
+          AUTO_Q="${{ vars.RAG_DUAL_WRITE_DLQ_QUARANTINE_AUTO_REPLAY || '1' }}"
+          DO_Q=false
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$AUTO_Q" = "1" ]; then
+            DO_Q=true
+          fi
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.replay_quarantine }}" = "true" ]; then
+            DO_Q=true
+          fi
+          if [ "$DO_Q" = "true" ]; then
             QEXTRA="--replay-quarantine --limit $LIMIT"
-            if [ "${{ inputs.dry_run }}" = "true" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
               QEXTRA="$QEXTRA --dry-run"
             fi
-            if [ "${{ inputs.force }}" = "false" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "false" ]; then
               QEXTRA="$QEXTRA --no-force"
             fi
-            if [ "${{ inputs.requeue }}" = "true" ]; then
+            AUTO_REQUEUE="${{ vars.RAG_DUAL_WRITE_DLQ_QUARANTINE_AUTO_REQUEUE || '0' }}"
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.requeue }}" = "true" ]; then
+              QEXTRA="$QEXTRA --requeue"
+            elif [ "${{ github.event_name }}" = "schedule" ] && [ "$AUTO_REQUEUE" = "1" ]; then
               QEXTRA="$QEXTRA --requeue"
             fi
             # shellcheck disable=SC2086

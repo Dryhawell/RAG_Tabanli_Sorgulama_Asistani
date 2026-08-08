@@ -384,8 +384,41 @@ def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, An
     }
 
 
+def build_inhibit_equal_resolve_canary_payload(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Slack payload when green apply succeeds (canary resolve)."""
+    equal = (report.get("generated") or {}).get("equal") or []
+    if not isinstance(equal, list):
+        equal = [str(equal)]
+    text = (
+        "Inhibit equal apply *resolved* (green CI · canary close)\n"
+        f"equal=`{', '.join(equal) or '—'}` · applied=`{report.get('applied')}`"
+    )
+    blocks: list = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": "Inhibit equal apply resolved",
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*status*: green apply succeeded\n"
+                    f"*equal*: `{', '.join(equal) or '—'}`\n"
+                    f"*backup*: `{report.get('backup') or '—'}`\n"
+                    f"*git*: `{(report.get('git') or {}).get('ok')}`"
+                ),
+            },
+        },
+    ]
+    return {"text": text, "blocks": blocks}
+
+
 def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any]:
-    """Close Opsgenie (+ optional PD resolve) canary after successful green apply."""
+    """Close Opsgenie (+ PD resolve + Slack resolve) after successful green apply."""
     if not report.get("applied") or report.get("rolled_back"):
         return {"ok": True, "skipped": True, "reason": "not_applied_green"}
     if os.environ.get("INHIBIT_EQUAL_CANARY_NOTIFY", "1").strip().lower() in {
@@ -403,15 +436,19 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
     }:
         return {"ok": True, "skipped": True, "reason": "close_disabled"}
 
+    webhook = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", "").strip()
+    )
     pd_key = (
         os.environ.get("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", "").strip()
         or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", "").strip()
     )
     og_targets = resolve_opsgenie_canary_targets()
-    if not pd_key and not og_targets:
+    if not webhook and not pd_key and not og_targets:
         return {"ok": True, "skipped": True, "reason": "targets_missing"}
 
-    from rag.judge_alert import post_opsgenie_close, post_pagerduty
+    from rag.judge_alert import post_opsgenie_close, post_pagerduty, post_slack
 
     equal = (report.get("generated") or {}).get("equal") or []
     pd_report = {
@@ -426,6 +463,12 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
         },
         "mode": "inhibit_equal_apply",
     }
+
+    slack_ok = False
+    if webhook:
+        slack_ok = bool(
+            post_slack(webhook, build_inhibit_equal_resolve_canary_payload(report))
+        )
 
     pd_ok = False
     if pd_key:
@@ -450,11 +493,12 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
         )
         og_by_region[region] = ok
     og_ok = any(og_by_region.values()) if og_by_region else False
-    closed = pd_ok or og_ok
+    closed = slack_ok or pd_ok or og_ok
     return {
-        "ok": closed if (pd_key or og_targets) else True,
+        "ok": closed if (webhook or pd_key or og_targets) else True,
         "skipped": False,
         "closed": closed,
+        "slack": slack_ok if webhook else None,
         "pagerduty": pd_ok if pd_key else None,
         "opsgenie": og_ok if og_targets else None,
         "opsgenie_regions": og_by_region or None,

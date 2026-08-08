@@ -608,7 +608,15 @@ def diff_judge_ack_digest(
 def format_judge_ack_digest_diff_text(diff: Optional[Dict[str, Any]]) -> str:
     """Slack mrkdwn: vs last digest canvas-style özet."""
     if not diff or not diff.get("has_previous"):
-        return "*vs last digest*\n_No previous snapshot — baseline recorded._"
+        base = "*vs last digest*\n_No previous snapshot — baseline recorded._"
+        muted = diff.get("muted_tenants") if isinstance(diff, dict) else None
+        if muted:
+            return (
+                base
+                + "\nMuted tenants: "
+                + ", ".join(f"`{t}`" for t in list(muted)[:12])
+            )
+        return base
     delta = int(diff.get("delta_total") or 0)
     sign = f"+{delta}" if delta > 0 else str(delta)
     lines = [
@@ -634,6 +642,11 @@ def format_judge_ack_digest_diff_text(diff: Optional[Dict[str, Any]]) -> str:
         lines.append("Actors +: " + ", ".join(f"`{a}`" for a in actors_added[:10]))
     if actors_removed:
         lines.append("Actors −: " + ", ".join(f"`{a}`" for a in actors_removed[:10]))
+    muted = diff.get("muted_tenants") or []
+    if muted:
+        lines.append(
+            "Muted tenants: " + ", ".join(f"`{t}`" for t in list(muted)[:12])
+        )
     return "\n".join(lines)
 
 
@@ -1242,8 +1255,14 @@ def build_judge_ack_digest_slack_blocks(
             }
         )
     by_tenant = summary.get("by_tenant") or {}
+    muted_set = parse_judge_ack_digest_mutes(base=base) if not tid else set()
     if by_tenant and not tid:
-        parts = [f"`{k}`={v}" for k, v in sorted(by_tenant.items())[:12]]
+        parts = []
+        for k, v in sorted(by_tenant.items())[:12]:
+            label = f"`{k}`={v}"
+            if str(k) in muted_set:
+                label += " _(muted)_"
+            parts.append(label)
         blocks.append(
             {
                 "type": "section",
@@ -1427,6 +1446,7 @@ def build_judge_ack_digest_text(
     tenant_id: Optional[str] = None,
     diff: Optional[Dict[str, Any]] = None,
     heatmap: Optional[Dict[str, Any]] = None,
+    base: Optional[str] = None,
 ) -> str:
     tid = (tenant_id or summary.get("tenant_id") or "").strip() or None
     title = "*RAG judge ack audit digest*"
@@ -1448,8 +1468,14 @@ def build_judge_ack_digest_text(
         parts = [f"`{k}`={v}" for k, v in sorted(by_event.items())]
         lines.append("By event: " + ", ".join(parts))
     by_tenant = summary.get("by_tenant") or {}
+    muted_set = parse_judge_ack_digest_mutes(base=base) if not tid else set()
     if by_tenant and not tid:
-        parts = [f"`{k}`={v}" for k, v in sorted(by_tenant.items())[:12]]
+        parts = []
+        for k, v in sorted(by_tenant.items())[:12]:
+            label = f"`{k}`={v}"
+            if str(k) in muted_set:
+                label += " (muted)"
+            parts.append(label)
         lines.append("By tenant: " + ", ".join(parts))
     actors = summary.get("actors") or []
     if actors:
@@ -1539,9 +1565,13 @@ def dispatch_judge_ack_digest(
     use_diff = digest_diff_enabled() if include_diff is None else bool(include_diff)
     diff: Optional[Dict[str, Any]] = None
     snapshot_path = None
+    muted_tenants = sorted(parse_judge_ack_digest_mutes(base=base))
     if use_diff:
         prev = load_judge_ack_digest_snapshot(tenant_id=tid, base=base)
         diff = diff_judge_ack_digest(prev, summary)
+        # Annotate global digests with currently muted tenants.
+        if not tid and muted_tenants:
+            diff["muted_tenants"] = muted_tenants
 
     heatmap_bucket = resolve_heatmap_bucket(tid, base=base)
     heatmap: Optional[Dict[str, Any]] = None
@@ -1569,7 +1599,7 @@ def dispatch_judge_ack_digest(
 
     url = resolve_judge_ack_digest_webhook(tid, url=webhook, base=base)
     text = build_judge_ack_digest_text(
-        summary, tenant_id=tid, diff=diff, heatmap=heatmap
+        summary, tenant_id=tid, diff=diff, heatmap=heatmap, base=base
     )
     use_blocks = block_kit
     if use_blocks is None:
@@ -2318,6 +2348,17 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
                 break
         if not tid:
             return {"ok": False, "error": "tenant_required", "mode": "digest_mute"}
+        actor = slack_interactive_actor(payload) or "slack"
+        state_path = os.environ.get("RAG_JUDGE_ALERT_STATE", "").strip() or None
+        rate = check_judge_ack_rate_limit(actor, state_path=state_path)
+        if rate.get("limited"):
+            return {
+                "ok": False,
+                "error": "rate_limited",
+                "mode": "digest_mute",
+                "retry_after_sec": rate.get("retry_after_sec"),
+                "tenant_id": tid,
+            }
         base = os.environ.get("RAG_JUDGE_ACK_DIGEST_BASE", "").strip() or None
         saved = set_judge_ack_digest_mute(tid, muted=mute, base=base)
         channel_id = str(
@@ -2332,12 +2373,13 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             or ((payload.get("container") or {}).get("message_ts"))
             or ""
         ).strip() or None
-        actor = slack_interactive_actor(payload) or "slack"
         user_id = slack_interactive_user_id(payload)
         verb = "muted" if mute else "unmuted"
         text = f"Tenant `{tid}` {verb} for ack digests."
         if mute and saved.get("expires_at"):
             text += f" · expires `{saved.get('expires_at')}`"
+        if saved.get("ok"):
+            record_judge_ack_rate(actor, state_path=state_path)
         audit = append_judge_ack_audit(
             "digest_mute" if mute else "digest_unmute",
             actor=actor,

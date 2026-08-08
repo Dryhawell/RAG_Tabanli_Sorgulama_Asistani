@@ -75,6 +75,31 @@ def test_dispatch_judge_ack_digest_dry_run(tmp_path: Path, monkeypatch) -> None:
     assert "judge_ack_digest_reexport_csv" not in ids or len(actions[0]["elements"]) <= 5
 
 
+def test_digest_diff_muted_tenants_annotation(tmp_path: Path, monkeypatch) -> None:
+    from rag.judge_alert import (
+        dispatch_judge_ack_digest,
+        format_judge_ack_digest_diff_text,
+        set_judge_ack_digest_mute,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_DIFF", "1")
+    monkeypatch.setenv("RAG_JUDGE_SLACK_INTERACTIVE", "1")
+    path = str(tmp_path / "ack.jsonl")
+    append_judge_ack_audit("ack", actor="a", path=path, extra={"tenant_id": "acme"})
+    append_judge_ack_audit("ack", actor="b", path=path, extra={"tenant_id": "beta"})
+    set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path))
+    summary = summarize_judge_ack_audit(path=path, since_hours=24 * 365)
+    result = dispatch_judge_ack_digest(summary, dry_run=True, base=str(tmp_path))
+    assert result["diff"] is not None
+    assert "acme" in (result["diff"].get("muted_tenants") or [])
+    text = format_judge_ack_digest_diff_text(result["diff"])
+    assert "Muted tenants" in text
+    assert "`acme`" in text
+    assert "(muted)" in result["payload"]["text"] or "_(muted)_" in str(
+        result["payload"].get("blocks")
+    )
+
+
 def test_digest_diff_snapshot_delta(tmp_path: Path, monkeypatch) -> None:
     from rag.judge_alert import (
         diff_judge_ack_digest,
@@ -260,6 +285,8 @@ def test_mute_ui_interactive_and_block_kit(tmp_path: Path, monkeypatch) -> None:
     assert "Heatmap day" in zoom["text"]["text"]
 
     monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
+    monkeypatch.setenv("RAG_JUDGE_ACK_RATE_LIMIT_SEC", "3600")
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", str(tmp_path / "judge_state.json"))
     with patch("rag.judge_alert.slack_api", return_value={"ok": True}):
         with patch(
             "rag.judge_alert.post_judge_digest_mute_thread_reply",
@@ -284,6 +311,25 @@ def test_mute_ui_interactive_and_block_kit(tmp_path: Path, monkeypatch) -> None:
     assert thread.called
     assert is_judge_ack_digest_muted("acme", base=str(tmp_path))
 
+    # Same actor immediately rate-limited on unmute
+    limited = handle_slack_interactive_ack(
+        {
+            "type": "block_actions",
+            "actions": [{"action_id": "judge_ack_digest_unmute", "value": "acme"}],
+            "user": {"id": "U1", "username": "ops"},
+            "channel": {"id": "C1"},
+        }
+    )
+    assert limited["ok"] is False
+    assert limited["error"] == "rate_limited"
+    assert limited["mode"] == "digest_mute"
+    assert is_judge_ack_digest_muted("acme", base=str(tmp_path))
+
+    # Clear rate limit for successful unmute path
+    monkeypatch.setenv("RAG_JUDGE_ACK_RATE_LIMIT_SEC", "0")
+    import rag.judge_alert as ja
+
+    ja._ACK_RATE.clear()
     with patch("rag.judge_alert.slack_api", return_value={"ok": True}):
         with patch(
             "rag.judge_alert.post_judge_digest_mute_thread_reply",

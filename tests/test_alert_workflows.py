@@ -383,6 +383,9 @@ def test_dual_write_dlq_replay_workflow_yaml():
     assert "--prune-quarantine" in text
     assert "dual_write_dlq_quarantine_prune.json" in text
     assert "RAG_DUAL_WRITE_DLQ_QUARANTINE_RETENTION_DAYS" in text
+    assert "RAG_DUAL_WRITE_DLQ_QUARANTINE_AUTO_REPLAY" in text
+    assert "RAG_DUAL_WRITE_DLQ_QUARANTINE_AUTO_REQUEUE" in text
+    assert 'github.event_name }}" = "schedule"' in text or "schedule" in text
     assert "RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_RUN" in text
     assert "RAG_DUAL_WRITE_DLQ_QUARANTINE_AFTER" in text
     assert "workflow_dispatch" in text

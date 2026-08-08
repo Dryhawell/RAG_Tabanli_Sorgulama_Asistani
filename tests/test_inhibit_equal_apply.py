@@ -306,19 +306,37 @@ def test_opsgenie_api_base_regions() -> None:
 
 
 def test_notify_inhibit_equal_close_on_green(monkeypatch) -> None:
-    from scripts.ci_inhibit_equal_apply import notify_inhibit_equal_close_on_green
+    from scripts.ci_inhibit_equal_apply import (
+        build_inhibit_equal_resolve_canary_payload,
+        notify_inhibit_equal_close_on_green,
+    )
 
     report = {
         "applied": True,
         "rolled_back": False,
         "generated": {"equal": ["alertname"]},
+        "git": {"ok": True},
     }
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", raising=False)
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON", raising=False)
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", raising=False)
     skipped = notify_inhibit_equal_close_on_green(report)
     assert skipped["skipped"] is True
 
+    payload = build_inhibit_equal_resolve_canary_payload(report)
+    assert "resolved" in payload["text"].lower()
+    assert "green" in payload["text"].lower()
+
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", "https://hooks.slack.test/r")
+    with patch("rag.judge_alert.post_slack", return_value=True) as slack:
+        slack_out = notify_inhibit_equal_close_on_green(report)
+    assert slack_out["closed"] is True
+    assert slack_out["slack"] is True
+    assert slack.called
+    assert "resolved" in slack.call_args[0][1]["text"].lower()
+
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", raising=False)
     monkeypatch.setenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", "og-key")
     monkeypatch.setenv("INHIBIT_EQUAL_CANARY_OPSGENIE_REGIONS", "us,eu")
     with patch("rag.judge_alert.post_opsgenie_close", return_value=True) as close:
