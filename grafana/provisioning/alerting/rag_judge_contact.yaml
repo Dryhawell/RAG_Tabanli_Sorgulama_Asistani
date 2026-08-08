@@ -1,0 +1,20 @@
+# Grafana alerting provisioning pointer (örnek)
+# Gerçek ortamda contact points + notification policies ayrıca tanımlanır.
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: rag-slack
+    group_by: ["grafana_folder", "alertname"]
+
+contactPoints:
+  - orgId: 1
+    name: rag-slack
+    receivers:
+      - uid: rag-slack-webhook
+        type: slack
+        settings:
+          url: ${RAG_JUDGE_SLACK_WEBHOOK}
+          title: RAG Alert
+          text: "{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}"
+        disableResolveMessage: false
