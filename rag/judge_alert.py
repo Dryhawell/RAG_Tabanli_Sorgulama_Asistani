@@ -1070,6 +1070,222 @@ def _mute_ttl_days() -> Optional[float]:
         return None
 
 
+def list_judge_ack_digest_mute_entries(
+    *,
+    base: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Rich mute store rows (active flag + TTL metadata)."""
+    path = judge_ack_digest_mutes_path(base=base)
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception:
+        return []
+    now_ts = time.time()
+    rows: List[Dict[str, Any]] = []
+    if isinstance(raw, list):
+        for item in raw:
+            tid = str(item).strip()
+            if not tid:
+                continue
+            rows.append(
+                {
+                    "tenant_id": tid,
+                    "muted": True,
+                    "active": True,
+                    "muted_at": "",
+                    "expires_at": "",
+                    "ttl_days": "",
+                }
+            )
+        return rows
+    if not isinstance(raw, dict):
+        return []
+    for k, v in raw.items():
+        tid = str(k).strip()
+        if not tid:
+            continue
+        if isinstance(v, dict):
+            rows.append(
+                {
+                    "tenant_id": tid,
+                    "muted": bool(_mute_value_active(v, now_ts=now_ts))
+                    or bool(v.get("muted", True)),
+                    "active": bool(_mute_value_active(v, now_ts=now_ts)),
+                    "muted_at": str(v.get("muted_at") or ""),
+                    "expires_at": str(v.get("expires_at") or ""),
+                    "ttl_days": v.get("ttl_days") if v.get("ttl_days") is not None else "",
+                }
+            )
+        else:
+            active = _mute_value_active(v, now_ts=now_ts)
+            rows.append(
+                {
+                    "tenant_id": tid,
+                    "muted": bool(active),
+                    "active": bool(active),
+                    "muted_at": "",
+                    "expires_at": "",
+                    "ttl_days": "",
+                }
+            )
+    rows.sort(key=lambda r: str(r.get("tenant_id") or ""))
+    return rows
+
+
+def list_judge_ack_digest_snapshots(
+    *,
+    base: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Load global + per-tenant keep-on-mute digest snapshots."""
+    try:
+        from app.config import METADATA_DIR
+    except ImportError:
+        METADATA_DIR = "metadata"
+    root = base or METADATA_DIR
+    out: List[Dict[str, Any]] = []
+    seen_paths: Set[str] = set()
+    candidates = [
+        judge_ack_digest_snapshot_path(base=base),
+    ]
+    try:
+        for name in os.listdir(root):
+            if name == "judge_ack_digest_last.json" or (
+                name.startswith("judge_ack_digest_last_") and name.endswith(".json")
+            ):
+                candidates.append(os.path.join(root, name))
+    except Exception:
+        pass
+    for p in candidates:
+        ap = os.path.abspath(p)
+        if ap in seen_paths or not os.path.isfile(p):
+            continue
+        seen_paths.add(ap)
+        data = load_judge_ack_digest_snapshot(path=p, base=base)
+        if not data:
+            continue
+        summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+        tid = str(data.get("tenant_id") or summary.get("tenant_id") or "").strip()
+        if not tid and os.path.basename(p).startswith("judge_ack_digest_last_"):
+            tid = os.path.basename(p)[
+                len("judge_ack_digest_last_") : -len(".json")
+            ]
+        last_diff = data.get("last_diff") if isinstance(data.get("last_diff"), dict) else {}
+        out.append(
+            {
+                "tenant_id": tid,
+                "snapshot_path": p,
+                "saved_at": str(data.get("saved_at") or ""),
+                "total": summary.get("total"),
+                "since_hours": summary.get("since_hours"),
+                "actor_count": summary.get("actor_count"),
+                "by_event": json.dumps(
+                    summary.get("by_event") or {}, ensure_ascii=False, sort_keys=True
+                ),
+                "diff_total_delta": (last_diff or {}).get("total_delta"),
+                "has_diff": bool(last_diff),
+            }
+        )
+    out.sort(key=lambda r: (str(r.get("tenant_id") or ""), str(r.get("saved_at") or "")))
+    return out
+
+
+def export_judge_ack_digest_mute_snapshots(
+    *,
+    fmt: str = "csv",
+    output: Optional[str] = None,
+    base: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Join mute store + digest snapshots → CSV/JSONL export."""
+    want = (tenant_id or "").strip()
+    mutes = {
+        str(r.get("tenant_id") or ""): r
+        for r in list_judge_ack_digest_mute_entries(base=base)
+        if str(r.get("tenant_id") or "").strip()
+    }
+    snaps = list_judge_ack_digest_snapshots(base=base)
+    snap_by_tid: Dict[str, Dict[str, Any]] = {}
+    for s in snaps:
+        tid = str(s.get("tenant_id") or "").strip()
+        if tid:
+            # Prefer newest saved_at per tenant
+            prev = snap_by_tid.get(tid)
+            if not prev or str(s.get("saved_at") or "") >= str(prev.get("saved_at") or ""):
+                snap_by_tid[tid] = s
+    tenant_ids = sorted(set(mutes) | set(snap_by_tid))
+    if want:
+        tenant_ids = [t for t in tenant_ids if t == want]
+    rows: List[Dict[str, Any]] = []
+    for tid in tenant_ids:
+        m = mutes.get(tid) or {}
+        s = snap_by_tid.get(tid) or {}
+        rows.append(
+            {
+                "tenant_id": tid,
+                "muted": m.get("muted", ""),
+                "active": m.get("active", ""),
+                "muted_at": m.get("muted_at", ""),
+                "expires_at": m.get("expires_at", ""),
+                "ttl_days": m.get("ttl_days", ""),
+                "snapshot_saved_at": s.get("saved_at", ""),
+                "snapshot_total": s.get("total", ""),
+                "snapshot_since_hours": s.get("since_hours", ""),
+                "snapshot_actor_count": s.get("actor_count", ""),
+                "snapshot_by_event": s.get("by_event", ""),
+                "snapshot_diff_total_delta": s.get("diff_total_delta", ""),
+                "snapshot_has_diff": s.get("has_diff", ""),
+                "snapshot_path": s.get("snapshot_path", ""),
+            }
+        )
+    kind = (fmt or "csv").strip().lower()
+    if kind == "jsonl":
+        text = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+    else:
+        import csv
+        import io
+
+        kind = "csv"
+        fields = [
+            "tenant_id",
+            "muted",
+            "active",
+            "muted_at",
+            "expires_at",
+            "ttl_days",
+            "snapshot_saved_at",
+            "snapshot_total",
+            "snapshot_since_hours",
+            "snapshot_actor_count",
+            "snapshot_by_event",
+            "snapshot_diff_total_delta",
+            "snapshot_has_diff",
+            "snapshot_path",
+        ]
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({k: row.get(k) for k in fields})
+        text = buf.getvalue()
+    if output:
+        os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
+        with open(output, "w", encoding="utf-8") as f:
+            f.write(text)
+    return {
+        "ok": True,
+        "format": kind,
+        "count": len(rows),
+        "output": output,
+        "text": text if not output else None,
+        "tenant_id": want or None,
+        "muted_count": sum(1 for r in rows if r.get("active") in {True, "True", "true", 1, "1"}),
+        "snapshot_count": sum(1 for r in rows if r.get("snapshot_saved_at")),
+    }
+
+
 def set_judge_ack_digest_mute(
     tenant_id: str,
     *,

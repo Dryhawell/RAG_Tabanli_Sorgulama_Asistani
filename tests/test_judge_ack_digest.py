@@ -883,6 +883,64 @@ def test_digest_message_ref_history_reconcile(tmp_path: Path, monkeypatch) -> No
     assert args.reconcile_messages is True
 
 
+def test_export_mute_snapshots_csv(tmp_path: Path, monkeypatch) -> None:
+    from rag.judge_alert import (
+        export_judge_ack_digest_mute_snapshots,
+        save_judge_ack_digest_snapshot,
+        set_judge_ack_digest_mute,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
+    set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path), ttl_days=7)
+    set_judge_ack_digest_mute("beta", muted=True, base=str(tmp_path))
+    save_judge_ack_digest_snapshot(
+        {
+            "total": 12,
+            "since_hours": 168,
+            "actor_count": 3,
+            "by_event": {"ack": 10, "resolve": 2},
+            "tenant_id": "acme",
+        },
+        tenant_id="acme",
+        base=str(tmp_path),
+        diff={"total_delta": 2},
+    )
+
+    out = export_judge_ack_digest_mute_snapshots(
+        fmt="csv", base=str(tmp_path), output=str(tmp_path / "mutes.csv")
+    )
+    assert out["ok"] is True
+    assert out["count"] == 2
+    assert out["muted_count"] >= 1
+    assert out["snapshot_count"] >= 1
+    text = (tmp_path / "mutes.csv").read_text(encoding="utf-8")
+    assert "tenant_id" in text
+    assert "acme" in text
+    assert "snapshot_saved_at" in text
+    assert "12" in text
+
+    only = export_judge_ack_digest_mute_snapshots(
+        fmt="jsonl", base=str(tmp_path), tenant_id="acme"
+    )
+    assert only["count"] == 1
+    assert "acme" in (only.get("text") or "")
+
+    from rag.cli import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "judge-ack-digest",
+            "--export-mute-snapshots",
+            "--export-format",
+            "csv",
+            "--export-output",
+            str(tmp_path / "cli.csv"),
+        ]
+    )
+    assert args.export_mute_snapshots is True
+    assert args.export_format == "csv"
+
+
 def test_digest_message_ref_prune_ttl(tmp_path: Path, monkeypatch) -> None:
     import json
     from datetime import datetime, timedelta, timezone

@@ -287,5 +287,6 @@ jobs:
             metadata/inhibit_equal_apply.json
             metadata/inhibit_equal.diff
             metadata/inhibit_equal_canary_slack.json
+            metadata/inhibit_equal_canary_silence.json
             grafana/inhibit_rules.generated.yml
           if-no-files-found: ignore

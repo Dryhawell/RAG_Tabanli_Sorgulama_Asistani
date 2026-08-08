@@ -167,9 +167,10 @@ Alertmanager: rotate/reload/silence/inhibit + `--check-config`; CI: `--tune-equa
 LLM cost recording rules: `grafana/rules/rag_llm_cost.yml` → `rag:llm_cost_usd_per_hour`.
 Vektör migrasyon: `python -m rag.cli migrate-vector --source faiss --target qdrant` (dual-write: `RAG_VECTOR_DUAL_WRITE=qdrant`).
 Dual-write: burn-rate webhook `POST /hooks/dual-write-catch-up` → in-process catch-up; fail/`not_dual_write` → GitHub `workflow_dispatch` fallback (`GH_PAT`).
-Quarantine alert route: `POST /hooks/dual-write-dlq-quarantine` (HMAC: `RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET` veya paylaşılan `RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET` + `X-Webhook-Timestamp/Signature/Nonce`; Alertmanager native için Bearer `RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_TOKEN`. Auth varsayılan zorunlu; kapatmak için `RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH=0`). HMAC için Alertmanager → signing sidecar: `python -m rag.cli webhook-signing-sidecar` / `docker compose --profile obs up webhook-signing-sidecar` (`RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM`). Sidecar mTLS: `RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT` / `_TLS_KEY` / `_TLS_CA` + `RAG_WEBHOOK_SIGNING_SIDECAR_MTLS=1` (veya `--tls-cert/--tls-key/--tls-ca/--mtls`).
+Quarantine alert route: `POST /hooks/dual-write-dlq-quarantine` (HMAC: `RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET` veya paylaşılan `RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET` + `X-Webhook-Timestamp/Signature/Nonce`; Alertmanager native için Bearer `RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_TOKEN`. Auth varsayılan zorunlu; kapatmak için `RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH=0`). HMAC için Alertmanager → signing sidecar: `python -m rag.cli webhook-signing-sidecar` / `docker compose --profile obs up webhook-signing-sidecar` (`RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM`). Sidecar mTLS: `RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT` / `_TLS_KEY` / `_TLS_CA` + `RAG_WEBHOOK_SIGNING_SIDECAR_MTLS=1` (veya `--tls-cert/--tls-key/--tls-ca/--mtls`). Upstream client-cert: `RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT` / `_UPSTREAM_CLIENT_KEY` / `_UPSTREAM_CA` (veya `--upstream-client-cert/--upstream-client-key/--upstream-ca`).
 Digest message-ref reconcile: `python -m rag.cli judge-ack-digest --reconcile-messages` (`RAG_JUDGE_ACK_DIGEST_HISTORY_RECONCILE=1`, bot token: `RAG_JUDGE_SLACK_BOT_TOKEN`). Metrikler: `rag_judge_ack_digest_msgref_reconcile_total` + Grafana panelleri.
-Inhibit equal canary resolve alert: `grafana/rules/rag_inhibit_equal.yml` + `grafana/alerting/rag_inhibit_equal_canary.yaml` (`RagInhibitEqualCanaryResolveFail`). Green apply sonrası auto-silence: `INHIBIT_EQUAL_CANARY_AUTO_SILENCE=1` (`_DURATION=2h`, metrik: `rag_inhibit_equal_canary_silence_total`).
+Mute snapshot export: `python -m rag.cli judge-ack-digest --export-mute-snapshots --export-format csv` (mute store + keep-on-mute digest snapshot).
+Inhibit equal canary resolve alert: `grafana/rules/rag_inhibit_equal.yml` + `grafana/alerting/rag_inhibit_equal_canary.yaml` (`RagInhibitEqualCanaryResolveFail`). Green apply sonrası auto-silence: `INHIBIT_EQUAL_CANARY_AUTO_SILENCE=1` (`_DURATION=2h`, metrik: `rag_inhibit_equal_canary_silence_total`). Silence expiry webhook: `alertmanager --canary-silence-expiry` / `.github/workflows/inhibit-equal-canary-silence-expiry.yml` (`INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK`).
 VAPID üretimi: `python -m rag.cli collab-notifications --generate-vapid`
 VAPID rotate/vault: `python -m rag.cli collab-notifications --rotate-vapid` (Actions: **VAPID Rotate**; secret sync: `GH_PAT` + `--update-github-secrets` + opsiyonel `--vapid-github-environment`)
 Digest alert: `python -m rag.cli collab-notifications --digest-alert-check --digest-alert-all` (cron: `.github/workflows/digest-alert.yml`; tenant webhook: `RAG_DIGEST_ALERT_WEBHOOKS_JSON` veya `metadata/digest_alert_webhooks.json`)
@@ -515,6 +516,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
 - Push: VAPID OIDC / Deploy-key based secret store sync
-- Judge: digest mute snapshot export / CSV
-- Ingest: dual-write DLQ quarantine sidecar upstream client-cert
-- Observability: inhibit equal canary silence expiry webhook
+- Judge: digest mute snapshot Slack files.upload
+- Ingest: dual-write DLQ quarantine sidecar forward metrics
+- Observability: inhibit equal canary silence Grafana panel

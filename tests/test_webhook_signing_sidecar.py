@@ -235,6 +235,75 @@ def test_sidecar_tls_and_mtls_context(tmp_path: Path, monkeypatch) -> None:
     assert status["mtls"] is True
 
 
+def test_upstream_client_cert_context(tmp_path: Path, monkeypatch) -> None:
+    cryptography = pytest.importorskip("cryptography")
+    _ = cryptography
+    from rag.webhook_signing_sidecar import (
+        build_upstream_ssl_context,
+        sidecar_tls_status,
+        sidecar_upstream_client_cert_enabled,
+        sign_and_forward_webhook,
+    )
+
+    cert, key, ca, client_cert, client_key = _write_self_signed_pair(tmp_path)
+    monkeypatch.delenv("RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT", raising=False)
+    monkeypatch.delenv("RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_KEY", raising=False)
+    monkeypatch.delenv("RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CA", raising=False)
+    assert sidecar_upstream_client_cert_enabled() is False
+    assert build_upstream_ssl_context() is None
+
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT", str(client_cert)
+    )
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_KEY", str(client_key)
+    )
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CA", str(ca))
+    assert sidecar_upstream_client_cert_enabled() is True
+    ctx = build_upstream_ssl_context()
+    assert ctx is not None
+    status = sidecar_tls_status()
+    assert status["upstream_client_cert"] is True
+    assert status["upstream_ca"] is True
+
+    monkeypatch.setenv(
+        "RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET", "fwd-secret"
+    )
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM",
+        "https://example.test/hooks/dual-write-dlq-quarantine",
+    )
+    captured = {}
+
+    class _Resp:
+        status = 200
+
+        def read(self):
+            return b'{"ok":true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _urlopen(req, timeout=30, context=None):
+        captured["context"] = context
+        captured["url"] = req.full_url
+        return _Resp()
+
+    with patch("rag.webhook_signing_sidecar.urlopen", side_effect=_urlopen):
+        out = sign_and_forward_webhook(b'{"alerts":[]}', mode="dlq_quarantine")
+    assert out["ok"] is True
+    assert out.get("upstream_client_cert") is True
+    assert captured["context"] is not None
+
+    monkeypatch.delenv("RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_KEY", raising=False)
+    with pytest.raises(ValueError, match="upstream_client_cert_incomplete"):
+        build_upstream_ssl_context()
+    _ = (cert, key)  # server pair unused here
+
+
 def test_sidecar_mtls_requires_ca(monkeypatch, tmp_path: Path) -> None:
     cryptography = pytest.importorskip("cryptography")
     _ = cryptography

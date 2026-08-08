@@ -1286,6 +1286,16 @@ def cmd_webhook_signing_sidecar(args: argparse.Namespace) -> int:
         os.environ["RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CA"] = str(args.tls_ca)
     if getattr(args, "mtls", False):
         os.environ["RAG_WEBHOOK_SIGNING_SIDECAR_MTLS"] = "1"
+    if getattr(args, "upstream_client_cert", None):
+        os.environ["RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT"] = str(
+            args.upstream_client_cert
+        )
+    if getattr(args, "upstream_client_key", None):
+        os.environ["RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_KEY"] = str(
+            args.upstream_client_key
+        )
+    if getattr(args, "upstream_ca", None):
+        os.environ["RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CA"] = str(args.upstream_ca)
 
     if getattr(args, "sign_once", False):
         body = sys.stdin.buffer.read() or b"{}"
@@ -1499,6 +1509,7 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
     from rag.judge_alert import (
         dispatch_judge_ack_digest,
         dispatch_judge_ack_digest_fanout,
+        export_judge_ack_digest_mute_snapshots,
         maybe_prune_judge_ack_digest_mutes,
         maybe_purge_judge_ack_audit,
         summarize_judge_ack_audit,
@@ -1515,6 +1526,24 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
         block_kit = False
     elif getattr(args, "block_kit", False):
         block_kit = True
+
+    if getattr(args, "export_mute_snapshots", False):
+        report = export_judge_ack_digest_mute_snapshots(
+            fmt=getattr(args, "export_format", None) or "csv",
+            output=getattr(args, "export_output", None),
+            tenant_id=getattr(args, "tenant", None),
+        )
+        if report.get("output"):
+            print(
+                json.dumps(
+                    {k: v for k, v in report.items() if k != "text"},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            sys.stdout.write(report.get("text") or "")
+        return 0 if report.get("ok") else 1
 
     purge = maybe_purge_judge_ack_audit(path=audit, dry_run=dry_run)
     mute_prune = maybe_prune_judge_ack_digest_mutes(dry_run=dry_run)
@@ -1709,6 +1738,17 @@ def cmd_alertmanager(args: argparse.Namespace) -> int:
     if getattr(args, "list_silences", False):
         report = list_silences(base_url=getattr(args, "api_url", None))
         print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+
+    if getattr(args, "canary_silence_expiry", False):
+        from scripts.ci_inhibit_equal_apply import (
+            check_inhibit_equal_canary_silence_expiry,
+        )
+
+        report = check_inhibit_equal_canary_silence_expiry(
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0 if report.get("ok") else 1
 
     if getattr(args, "delete_silence", None):
@@ -2114,6 +2154,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Slack history ile digest message-ref doğrula/onar/düşür",
     )
+    p_jdig.add_argument(
+        "--export-mute-snapshots",
+        action="store_true",
+        help="Mute store + keep-on-mute digest snapshot CSV/JSONL export",
+    )
+    p_jdig.add_argument(
+        "--export-format",
+        choices=["csv", "jsonl"],
+        default="csv",
+        help="--export-mute-snapshots formatı (varsayılan csv)",
+    )
+    p_jdig.add_argument(
+        "--export-output",
+        default=None,
+        help="--export-mute-snapshots dosya yolu (yoksa stdout)",
+    )
     p_jdig.set_defaults(func=cmd_judge_ack_digest)
 
     p_wss = sub.add_parser(
@@ -2166,6 +2222,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--mtls",
         action="store_true",
         help="Require client cert (RAG_WEBHOOK_SIGNING_SIDECAR_MTLS=1)",
+    )
+    p_wss.add_argument(
+        "--upstream-client-cert",
+        default=None,
+        help="Upstream client cert PEM (RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT)",
+    )
+    p_wss.add_argument(
+        "--upstream-client-key",
+        default=None,
+        help="Upstream client key PEM (RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_KEY)",
+    )
+    p_wss.add_argument(
+        "--upstream-ca",
+        default=None,
+        help="Upstream CA PEM (RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CA)",
     )
     p_wss.set_defaults(func=cmd_webhook_signing_sidecar)
 
@@ -2278,6 +2349,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--list-silences",
         action="store_true",
         help="Aktif silences listele",
+    )
+    p_am.add_argument(
+        "--canary-silence-expiry",
+        action="store_true",
+        help="Inhibit equal canary silence expiry kontrol + webhook",
     )
     p_am.add_argument(
         "--delete-silence",

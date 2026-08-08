@@ -464,16 +464,20 @@ def test_inhibit_equal_canary_resolve_prometheus_metric(monkeypatch) -> None:
     )
 
 
-def test_inhibit_equal_canary_auto_silence(monkeypatch) -> None:
+def test_inhibit_equal_canary_auto_silence(monkeypatch, tmp_path: Path) -> None:
     from scripts.ci_inhibit_equal_apply import (
         auto_silence_inhibit_equal_canary_resolve,
         inhibit_equal_canary_auto_silence_enabled,
+        load_inhibit_equal_canary_silence_state,
     )
 
     seen: list[dict] = []
     monkeypatch.setattr(
         "scripts.ci_inhibit_equal_apply.emit_inhibit_equal_canary_silence_metric",
         lambda **kw: seen.append(kw),
+    )
+    monkeypatch.setenv(
+        "INHIBIT_EQUAL_CANARY_SILENCE_STATE", str(tmp_path / "silence.json")
     )
 
     monkeypatch.setenv("INHIBIT_EQUAL_CANARY_AUTO_SILENCE", "0")
@@ -488,7 +492,14 @@ def test_inhibit_equal_canary_auto_silence(monkeypatch) -> None:
     monkeypatch.setenv("INHIBIT_EQUAL_CANARY_AUTO_SILENCE_DURATION", "30m")
     with patch(
         "rag.alertmanager_ops.create_silence",
-        return_value={"ok": True, "silenceID": "sil-1"},
+        return_value={
+            "ok": True,
+            "silenceID": "sil-1",
+            "request": {
+                "startsAt": "2026-01-01T00:00:00Z",
+                "endsAt": "2026-01-01T00:30:00Z",
+            },
+        },
     ) as create:
         out = auto_silence_inhibit_equal_canary_resolve(
             {"applied": True, "rolled_back": False}
@@ -502,11 +513,64 @@ def test_inhibit_equal_canary_auto_silence(monkeypatch) -> None:
     assert "alertname" in names
     assert "service" in names
     assert any(s.get("result") == "ok" for s in seen)
+    state = load_inhibit_equal_canary_silence_state()
+    assert state.get("silenceID") == "sil-1"
+    assert state.get("endsAt") == "2026-01-01T00:30:00Z"
 
     skipped = auto_silence_inhibit_equal_canary_resolve(
         {"applied": False, "rolled_back": False}
     )
     assert skipped["reason"] == "not_applied_green"
+
+
+def test_inhibit_equal_canary_silence_expiry_webhook(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from scripts.ci_inhibit_equal_apply import (
+        check_inhibit_equal_canary_silence_expiry,
+        save_inhibit_equal_canary_silence_state,
+    )
+
+    monkeypatch.setenv(
+        "INHIBIT_EQUAL_CANARY_SILENCE_STATE", str(tmp_path / "silence.json")
+    )
+    monkeypatch.setenv(
+        "INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK", "https://hooks.example/x"
+    )
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        "scripts.ci_inhibit_equal_apply.emit_inhibit_equal_canary_silence_metric",
+        lambda **kw: seen.append(kw),
+    )
+
+    empty = check_inhibit_equal_canary_silence_expiry()
+    assert empty["skipped"] is True
+    assert empty["reason"] == "no_silence_state"
+
+    save_inhibit_equal_canary_silence_state(
+        silence_id="sil-exp",
+        ends_at="2020-01-01T00:00:00Z",
+        starts_at="2019-12-31T22:00:00Z",
+        matchers=[{"name": "alertname", "value": "X", "isRegex": False, "isEqual": True}],
+        expiry_notified_at="",
+    )
+    with patch(
+        "rag.alertmanager_ops.list_silences",
+        return_value={"ok": True, "silences": []},
+    ):
+        with patch("rag.judge_alert.post_slack", return_value=True) as post:
+            out = check_inhibit_equal_canary_silence_expiry()
+    assert out["expired"] is True
+    assert out["notified"] is True
+    assert out["metric_result"] == "webhook_ok"
+    assert post.called
+    assert any(s.get("result") == "webhook_ok" for s in seen)
+
+    # Second call should skip (already notified)
+    seen.clear()
+    again = check_inhibit_equal_canary_silence_expiry()
+    assert again["skipped"] is True
+    assert again["reason"] == "already_notified"
 
 
 def test_inhibit_equal_canary_slack_state_artifact_ensured(

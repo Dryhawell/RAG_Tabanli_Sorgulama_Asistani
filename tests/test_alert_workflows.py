@@ -426,19 +426,23 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_metrics_mtls_autosilence():
+def test_readme_sonraki_adaylar_after_export_clientcert_expiry():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
-    assert "mute snapshot export / CSV" in text
-    assert "sidecar upstream client-cert" in text
-    assert "canary silence expiry webhook" in text
+    assert "mute snapshot Slack files.upload" in text
+    assert "sidecar forward metrics" in text
+    assert "canary silence Grafana panel" in text
     # Completed this round — should not remain as next candidates
-    assert "message-ref reconcile metrics/Grafana" not in text
-    assert "signing sidecar mTLS" not in text
-    assert "canary resolve auto-silence" not in text
+    assert "mute snapshot export / CSV" not in text
+    assert "sidecar upstream client-cert" not in text
+    assert "canary silence expiry webhook" not in text
     assert "webhook-signing-sidecar" in text
+    assert "--export-mute-snapshots" in text
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT" in text
+    assert "INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK" in text
+    assert "--canary-silence-expiry" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_MTLS" in text
     assert "rag_judge_ack_digest_msgref_reconcile_total" in text
     assert "INHIBIT_EQUAL_CANARY_AUTO_SILENCE" in text
@@ -470,6 +474,19 @@ def test_judge_ack_digest_mute_prune_workflow_yaml():
     assert "RAG_JUDGE_ACK_DIGEST_HISTORY_RECONCILE" in text
     assert "RAG_JUDGE_SLACK_BOT_TOKEN" in text
     assert "judge_ack_digest_messages.json" in text
+
+
+def test_canary_silence_expiry_workflow_yaml():
+    path = Path(".github/workflows/inhibit-equal-canary-silence-expiry.yml")
+    assert path.is_file()
+    text = path.read_text(encoding="utf-8")
+    assert "--canary-silence-expiry" in text
+    assert "INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK" in text
+    assert "inhibit_equal_canary_silence.json" in text
+    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT" in compose
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_KEY" in compose
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CA" in compose
 
 
 def test_judge_ack_digest_workflow_yaml():

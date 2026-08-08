@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -629,6 +630,57 @@ def inhibit_equal_canary_auto_silence_duration_sec() -> float:
         return 7200.0
 
 
+def inhibit_equal_canary_silence_state_path(base: Optional[str] = None) -> str:
+    env = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_SILENCE_STATE", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_SILENCE_STATE", "").strip()
+    )
+    if env:
+        return env
+    root = base or str(ROOT / "metadata")
+    return str(Path(root) / "inhibit_equal_canary_silence.json")
+
+
+def load_inhibit_equal_canary_silence_state(
+    *, base: Optional[str] = None
+) -> Dict[str, Any]:
+    path = inhibit_equal_canary_silence_state_path(base=base)
+    if not Path(path).is_file():
+        return {}
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_inhibit_equal_canary_silence_state(
+    *,
+    silence_id: Optional[str] = None,
+    ends_at: Optional[str] = None,
+    starts_at: Optional[str] = None,
+    matchers: Optional[List[Dict[str, Any]]] = None,
+    expiry_notified_at: Optional[str] = None,
+    base: Optional[str] = None,
+) -> Dict[str, Any]:
+    path = Path(inhibit_equal_canary_silence_state_path(base=base))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = load_inhibit_equal_canary_silence_state(base=base)
+    if silence_id is not None:
+        row["silenceID"] = str(silence_id).strip()
+    if ends_at is not None:
+        row["endsAt"] = str(ends_at).strip()
+    if starts_at is not None:
+        row["startsAt"] = str(starts_at).strip()
+    if matchers is not None:
+        row["matchers"] = matchers
+    if expiry_notified_at is not None:
+        row["expiry_notified_at"] = str(expiry_notified_at).strip()
+    row["updated_at"] = datetime.now(timezone.utc).isoformat()
+    path.write_text(json.dumps(row, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return row
+
+
 def auto_silence_inhibit_equal_canary_resolve(
     report: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -668,6 +720,20 @@ def auto_silence_inhibit_equal_canary_resolve(
     )
     result = "ok" if silence.get("ok") else "fail"
     emit_inhibit_equal_canary_silence_metric(result=result)
+    ends_at = None
+    starts_at = None
+    req = silence.get("request") if isinstance(silence.get("request"), dict) else {}
+    if req:
+        ends_at = req.get("endsAt")
+        starts_at = req.get("startsAt")
+    if silence.get("ok") and silence.get("silenceID"):
+        save_inhibit_equal_canary_silence_state(
+            silence_id=str(silence.get("silenceID")),
+            ends_at=str(ends_at or ""),
+            starts_at=str(starts_at or ""),
+            matchers=matchers,
+            expiry_notified_at="",
+        )
     return {
         "ok": bool(silence.get("ok")),
         "skipped": False,
@@ -675,6 +741,169 @@ def auto_silence_inhibit_equal_canary_resolve(
         "matchers": matchers,
         "silence": silence,
         "silenceID": silence.get("silenceID"),
+        "endsAt": ends_at,
+        "state_path": inhibit_equal_canary_silence_state_path(),
+    }
+
+
+def inhibit_equal_canary_silence_expiry_webhook() -> str:
+    return (
+        os.environ.get("INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK", "").strip()
+        or os.environ.get("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", "").strip()
+    )
+
+
+def _parse_rfc3339_ts(raw: Any) -> Optional[float]:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def check_inhibit_equal_canary_silence_expiry(
+    *,
+    base: Optional[str] = None,
+    now: Optional[float] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Notify webhook when persisted canary silence has expired / disappeared."""
+    state = load_inhibit_equal_canary_silence_state(base=base)
+    silence_id = str(state.get("silenceID") or "").strip()
+    if not silence_id and not state.get("endsAt"):
+        emit_inhibit_equal_canary_silence_metric(result="skipped")
+        return {"ok": True, "skipped": True, "reason": "no_silence_state"}
+
+    if state.get("expiry_notified_at"):
+        emit_inhibit_equal_canary_silence_metric(result="skipped")
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "already_notified",
+            "silenceID": silence_id or None,
+            "expiry_notified_at": state.get("expiry_notified_at"),
+        }
+
+    now_f = float(now if now is not None else time.time())
+    ends_ts = _parse_rfc3339_ts(state.get("endsAt"))
+    from rag.alertmanager_ops import list_silences
+
+    listed = list_silences()
+    silences = listed.get("silences") if listed.get("ok") else []
+    if not isinstance(silences, list):
+        silences = []
+    found = None
+    for s in silences:
+        if not isinstance(s, dict):
+            continue
+        sid = str(s.get("id") or s.get("silenceID") or "").strip()
+        if silence_id and sid == silence_id:
+            found = s
+            break
+        if not silence_id and str(s.get("createdBy") or "") == "inhibit-equal-canary":
+            found = s
+            silence_id = sid
+            break
+
+    expired = False
+    reason = ""
+    if found is None and silence_id:
+        # Missing from AM → treat as expired/expired-or-deleted
+        if ends_ts is not None and now_f >= ends_ts:
+            expired = True
+            reason = "silence_missing_and_past_endsAt"
+        elif ends_ts is None:
+            expired = True
+            reason = "silence_missing"
+        else:
+            # Still within window but gone — also notify
+            expired = True
+            reason = "silence_deleted_early"
+    elif found is not None:
+        status = str(found.get("status", {}).get("state") or found.get("status") or "").lower()
+        found_ends = _parse_rfc3339_ts(found.get("endsAt")) or ends_ts
+        if status in {"expired"}:
+            expired = True
+            reason = "status_expired"
+        elif found_ends is not None and now_f >= found_ends:
+            expired = True
+            reason = "past_endsAt"
+        else:
+            emit_inhibit_equal_canary_silence_metric(result="skipped")
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "still_active",
+                "silenceID": silence_id,
+                "endsAt": found.get("endsAt") or state.get("endsAt"),
+                "list_ok": listed.get("ok"),
+            }
+    elif ends_ts is not None and now_f >= ends_ts:
+        expired = True
+        reason = "past_endsAt_no_id"
+    else:
+        emit_inhibit_equal_canary_silence_metric(result="skipped")
+        return {"ok": True, "skipped": True, "reason": "not_expired_yet", "endsAt": state.get("endsAt")}
+
+    if not expired:
+        emit_inhibit_equal_canary_silence_metric(result="skipped")
+        return {"ok": True, "skipped": True, "reason": "not_expired"}
+
+    webhook = inhibit_equal_canary_silence_expiry_webhook()
+    payload = {
+        "text": (
+            f":bell: Inhibit equal canary silence expired (`{silence_id or 'unknown'}`)\n"
+            f"reason=`{reason}` endsAt=`{state.get('endsAt') or ''}`"
+        ),
+        "silenceID": silence_id or None,
+        "reason": reason,
+        "endsAt": state.get("endsAt"),
+        "startsAt": state.get("startsAt"),
+        "matchers": state.get("matchers"),
+    }
+    if dry_run:
+        emit_inhibit_equal_canary_silence_metric(result="expired")
+        return {
+            "ok": True,
+            "dry_run": True,
+            "expired": True,
+            "reason": reason,
+            "silenceID": silence_id or None,
+            "webhook": bool(webhook),
+            "payload": payload,
+        }
+
+    notified = False
+    if webhook:
+        from rag.judge_alert import post_slack
+
+        notified = bool(post_slack(webhook, payload))
+    notified_at = datetime.now(timezone.utc).isoformat()
+    if notified or not webhook:
+        # Persist even without webhook so we don't spam checks; metric distinguishes
+        save_inhibit_equal_canary_silence_state(
+            silence_id=silence_id or state.get("silenceID") or "",
+            ends_at=str(state.get("endsAt") or ""),
+            starts_at=str(state.get("startsAt") or ""),
+            matchers=state.get("matchers") if isinstance(state.get("matchers"), list) else None,
+            expiry_notified_at=notified_at,
+            base=base,
+        )
+    metric_result = "webhook_ok" if notified else ("expired" if not webhook else "fail")
+    emit_inhibit_equal_canary_silence_metric(result=metric_result)
+    return {
+        "ok": bool(notified or not webhook),
+        "expired": True,
+        "reason": reason,
+        "silenceID": silence_id or None,
+        "webhook": bool(webhook),
+        "notified": notified,
+        "expiry_notified_at": notified_at if (notified or not webhook) else None,
+        "list_ok": listed.get("ok"),
+        "metric_result": metric_result,
     }
 
 

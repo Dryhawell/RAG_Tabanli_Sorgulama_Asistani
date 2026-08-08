@@ -116,14 +116,56 @@ def build_sidecar_ssl_context() -> Optional[ssl.SSLContext]:
     return ctx
 
 
+def sidecar_upstream_client_cert_path() -> str:
+    return os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT", ""
+    ).strip()
+
+
+def sidecar_upstream_client_key_path() -> str:
+    return os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_KEY", ""
+    ).strip()
+
+
+def sidecar_upstream_ca_path() -> str:
+    return os.environ.get("RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CA", "").strip()
+
+
+def sidecar_upstream_client_cert_enabled() -> bool:
+    return bool(
+        sidecar_upstream_client_cert_path() and sidecar_upstream_client_key_path()
+    )
+
+
+def build_upstream_ssl_context() -> Optional[ssl.SSLContext]:
+    """TLS client context for upstream forward (optional client-cert + CA)."""
+    cert = sidecar_upstream_client_cert_path()
+    key = sidecar_upstream_client_key_path()
+    ca = sidecar_upstream_ca_path()
+    if not cert and not key and not ca:
+        return None
+    if bool(cert) ^ bool(key):
+        raise ValueError("upstream_client_cert_incomplete")
+    ctx = ssl.create_default_context()
+    if ca:
+        ctx.load_verify_locations(ca)
+    if cert and key:
+        ctx.load_cert_chain(cert, key)
+    return ctx
+
+
 def sidecar_tls_status() -> Dict[str, Any]:
     enabled = sidecar_tls_enabled()
     mtls = bool(enabled and sidecar_mtls_required())
+    upstream_client = sidecar_upstream_client_cert_enabled()
     return {
         "tls": enabled,
         "mtls": mtls,
         "cert": sidecar_tls_cert_path() if enabled else "",
         "ca": sidecar_tls_ca_path() if mtls else "",
+        "upstream_client_cert": upstream_client,
+        "upstream_ca": bool(sidecar_upstream_ca_path()),
     }
 
 
@@ -194,9 +236,21 @@ def sign_and_forward_webhook(
     timeout = float(
         timeout_sec if timeout_sec is not None else sidecar_forward_timeout_sec()
     )
-    req = Request(up, data=body, headers=headers, method="POST")
     try:
-        with urlopen(req, timeout=timeout) as resp:
+        ssl_ctx = build_upstream_ssl_context()
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "mode": mode,
+            "upstream": up,
+        }
+    req = Request(up, data=body, headers=headers, method="POST")
+    open_kw: Dict[str, Any] = {"timeout": timeout}
+    if ssl_ctx is not None:
+        open_kw["context"] = ssl_ctx
+    try:
+        with urlopen(req, **open_kw) as resp:
             resp_body = resp.read()
             status = int(getattr(resp, "status", 200) or 200)
             return {
@@ -204,6 +258,7 @@ def sign_and_forward_webhook(
                 "status": status,
                 "mode": mode,
                 "upstream": up,
+                "upstream_client_cert": bool(ssl_ctx and sidecar_upstream_client_cert_enabled()),
                 "signed": {
                     "timestamp": headers["X-Webhook-Timestamp"],
                     "nonce": headers["X-Webhook-Nonce"],
@@ -222,6 +277,7 @@ def sign_and_forward_webhook(
             "status": int(exc.code),
             "mode": mode,
             "upstream": up,
+            "upstream_client_cert": bool(ssl_ctx and sidecar_upstream_client_cert_enabled()),
             "signed": {
                 "timestamp": headers["X-Webhook-Timestamp"],
                 "nonce": headers["X-Webhook-Nonce"],
@@ -236,6 +292,7 @@ def sign_and_forward_webhook(
             "detail": str(exc.reason or exc),
             "mode": mode,
             "upstream": up,
+            "upstream_client_cert": bool(ssl_ctx and sidecar_upstream_client_cert_enabled()),
             "signed": {
                 "timestamp": headers["X-Webhook-Timestamp"],
                 "nonce": headers["X-Webhook-Nonce"],
@@ -249,6 +306,9 @@ def sign_and_forward_webhook(
             "detail": str(exc),
             "mode": mode,
             "upstream": up,
+            "upstream_client_cert": bool(
+                ssl_ctx is not None and sidecar_upstream_client_cert_enabled()
+            ),
         }
 
 
@@ -340,6 +400,8 @@ class _SigningSidecarHandler(BaseHTTPRequestHandler):
                     "upstream_catch_up": sidecar_upstream_url(mode="catch_up"),
                     "tls": tls.get("tls"),
                     "mtls": tls.get("mtls"),
+                    "upstream_client_cert": tls.get("upstream_client_cert"),
+                    "upstream_ca": tls.get("upstream_ca"),
                 },
                 ensure_ascii=False,
             ).encode("utf-8")
