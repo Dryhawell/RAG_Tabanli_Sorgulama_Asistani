@@ -1445,6 +1445,7 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
     mute_prune = maybe_prune_judge_ack_digest_mutes(dry_run=dry_run)
     if getattr(args, "prune_mutes", False):
         from rag.judge_alert import (
+            prune_judge_ack_digest_messages,
             prune_judge_ack_digest_mutes,
             prune_judge_ack_digest_prefs,
         )
@@ -1453,6 +1454,7 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
             "ok": True,
             "mutes": prune_judge_ack_digest_mutes(dry_run=dry_run),
             "prefs": prune_judge_ack_digest_prefs(dry_run=dry_run),
+            "messages": prune_judge_ack_digest_messages(dry_run=dry_run),
             "forced": True,
             "dry_run": dry_run,
         }

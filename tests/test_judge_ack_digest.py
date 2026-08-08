@@ -787,6 +787,59 @@ def test_dual_write_dlq_cli_parser() -> None:
     assert pm.prune_mutes is True
 
 
+def test_digest_message_ref_prune_ttl(tmp_path: Path, monkeypatch) -> None:
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from rag.judge_alert import (
+        list_judge_ack_digest_message_refs,
+        maybe_prune_judge_ack_digest_mutes,
+        prune_judge_ack_digest_messages,
+        save_judge_ack_digest_message,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MESSAGES", str(tmp_path / "msgs.json"))
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MESSAGES_TTL_DAYS", "30")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MESSAGES_PRUNE", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_PRUNE", "0")
+
+    save_judge_ack_digest_message(
+        "acme", channel_id="C1", message_ts="1.1", base=str(tmp_path)
+    )
+    save_judge_ack_digest_message(
+        "acme", channel_id="C2", message_ts="2.2", base=str(tmp_path)
+    )
+    save_judge_ack_digest_message(
+        "beta", channel_id="C3", message_ts="3.3", base=str(tmp_path)
+    )
+    assert len(list_judge_ack_digest_message_refs("acme", base=str(tmp_path))) == 2
+
+    path = tmp_path / "msgs.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+    data["acme"]["messages"][1]["updated_at"] = old
+    data["beta"]["updated_at"] = old
+    data["beta"]["messages"][0]["updated_at"] = old
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    dry = prune_judge_ack_digest_messages(base=str(tmp_path), dry_run=True)
+    assert dry["removed_refs"] >= 1
+    assert len(list_judge_ack_digest_message_refs("acme", base=str(tmp_path))) == 2
+
+    pruned = prune_judge_ack_digest_messages(base=str(tmp_path), dry_run=False)
+    assert pruned["ok"] is True
+    assert pruned["removed_refs"] >= 1
+    assert "beta" in pruned["removed_tenants"]
+    refs = list_judge_ack_digest_message_refs("acme", base=str(tmp_path))
+    assert len(refs) == 1
+    assert refs[0]["message_ts"] == "2.2"
+    assert list_judge_ack_digest_message_refs("beta", base=str(tmp_path)) == []
+
+    report = maybe_prune_judge_ack_digest_mutes(base=str(tmp_path), dry_run=False)
+    assert report["ok"] is True
+    assert "messages" in report
+
+
 def test_mute_ttl_retention_and_prune(tmp_path: Path, monkeypatch) -> None:
     from datetime import datetime, timedelta, timezone
 

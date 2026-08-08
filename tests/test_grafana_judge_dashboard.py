@@ -27,4 +27,8 @@ def test_rag_judge_grafana_dashboard_json():
     assert "rag:dual_write_shadow_burn:1h" in joined
     assert "rag_dual_write_webhook_dlq_depth" in joined
     assert "rag_dual_write_webhook_dlq_quarantine_depth" in joined
+    assert "rag_inhibit_equal_canary_resolve_total" in joined
     assert any("DLQ" in (t or "") for t in titles)
+    assert any("canary" in (t or "").lower() for t in titles)
+    assert "canary" in (data.get("tags") or [])
+    assert "inhibit" in (data.get("tags") or [])

@@ -1146,8 +1146,11 @@ def webhook_shared_token(*, mode: str = "catch_up") -> str:
 
 
 def webhook_require_auth() -> bool:
-    raw = os.environ.get("RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH", "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    """Default ON: unset/empty/truthy → require HMAC or token; disable with 0/false/off."""
+    raw = os.environ.get("RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH", "1").strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return True
 
 
 def webhook_signature_max_age_sec() -> int:
@@ -1315,7 +1318,7 @@ def authorize_alertmanager_webhook(
     Auth sırası:
     1) Signing secret varsa → HMAC + nonce replay zorunlu
     2) Shared token varsa → Bearer / X-Webhook-Token
-    3) Hiçbiri yoksa → açık (ok) unless REQUIRE_AUTH
+    3) Hiçbiri yoksa → auth_required (default); açık yalnızca REQUIRE_AUTH=0
     """
     auth = extract_webhook_auth_headers(headers)
     secret = webhook_signing_secret(mode=mode)

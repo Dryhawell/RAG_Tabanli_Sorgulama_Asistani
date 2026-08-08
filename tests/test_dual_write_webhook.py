@@ -437,6 +437,7 @@ def test_webhook_circuit_breaker_and_rate_limit_headers(
 
     monkeypatch.delenv("RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET", raising=False)
     monkeypatch.delenv("RAG_ALERTMANAGER_WEBHOOK_TOKEN", raising=False)
+    monkeypatch.setenv("RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH", "0")
     monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_COOLDOWN_SEC", "0")
     monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_CB_FAILURES", "2")
     monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_CB_OPEN_SEC", "3600")
@@ -511,6 +512,7 @@ def test_http_adapter_cooldown_rate_limit_headers(
 
     monkeypatch.delenv("RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET", raising=False)
     monkeypatch.delenv("RAG_ALERTMANAGER_WEBHOOK_TOKEN", raising=False)
+    monkeypatch.setenv("RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH", "0")
     monkeypatch.setenv("RAG_DUAL_WRITE_WEBHOOK_COOLDOWN_SEC", "3600")
     monkeypatch.delenv("RAG_DUAL_WRITE_WEBHOOK_STRICT_RL", raising=False)
     state = tmp_path / "rl.json"
@@ -524,6 +526,38 @@ def test_http_adapter_cooldown_rate_limit_headers(
     assert headers["RateLimit-Remaining"] == "0"
     assert "Retry-After" in headers
     assert json.loads(body.decode())["reason"] == "cooldown"
+
+
+def test_webhook_require_auth_default_on(monkeypatch, tmp_path: Path) -> None:
+    import json
+
+    from rag.dual_write_webhook import (
+        handle_alertmanager_webhook_http,
+        webhook_require_auth,
+    )
+
+    monkeypatch.delenv("RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET", raising=False)
+    monkeypatch.delenv("RAG_ALERTMANAGER_WEBHOOK_TOKEN", raising=False)
+    monkeypatch.delenv("RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH", raising=False)
+    assert webhook_require_auth() is True
+
+    code, _, body = handle_alertmanager_webhook_http(
+        b'{"alerts":[]}',
+        headers={},
+        state_path=str(tmp_path / "auth.json"),
+    )
+    assert code == 401
+    assert json.loads(body.decode())["error"] == "auth_required"
+
+    monkeypatch.setenv("RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH", "0")
+    assert webhook_require_auth() is False
+    code2, _, body2 = handle_alertmanager_webhook_http(
+        b'{"status":"firing","alerts":[]}',
+        headers={},
+        state_path=str(tmp_path / "auth2.json"),
+    )
+    assert code2 == 200
+    assert json.loads(body2.decode()).get("auth") == "none"
 
 
 def test_http_adapter_unauthorized(monkeypatch) -> None:

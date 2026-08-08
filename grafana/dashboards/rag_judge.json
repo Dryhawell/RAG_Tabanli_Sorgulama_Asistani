@@ -570,14 +570,71 @@
           ]
         }
       }
+    },
+    {
+      "type": "timeseries",
+      "title": "Inhibit equal canary resolve",
+      "description": "rag_inhibit_equal_canary_resolve_total by result (ok/fail/skipped) and via (thread/webhook/none)",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 58
+      },
+      "id": 18,
+      "targets": [
+        {
+          "expr": "sum by (result, via) (rate(rag_inhibit_equal_canary_resolve_total[5m]))",
+          "legendFormat": "{{result}}/{{via}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Inhibit equal canary resolve (7d)",
+      "description": "increase(rag_inhibit_equal_canary_resolve_total[7d])",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 58
+      },
+      "id": 19,
+      "targets": [
+        {
+          "expr": "sum(increase(rag_inhibit_equal_canary_resolve_total[7d]))",
+          "legendFormat": "resolves 7d",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(increase(rag_inhibit_equal_canary_resolve_total{result=\"ok\",via=\"thread\"}[7d]))",
+          "legendFormat": "thread ok 7d",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     }
   ],
   "schemaVersion": 39,
   "tags": [
     "ack-audit",
     "burn-rate",
+    "canary",
     "dlq",
     "dual-write",
+    "inhibit",
     "judge",
     "llm",
     "otel",

@@ -1250,28 +1250,172 @@ def prune_judge_ack_digest_prefs(
     }
 
 
+def _messages_ttl_days() -> Optional[float]:
+    raw = os.environ.get("RAG_JUDGE_ACK_DIGEST_MESSAGES_TTL_DAYS", "").strip()
+    if not raw:
+        return None
+    try:
+        days = float(raw)
+        return days if days > 0 else None
+    except Exception:
+        return None
+
+
+def _parse_iso_ts(raw: Any) -> Optional[float]:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def prune_judge_ack_digest_messages(
+    *,
+    base: Optional[str] = None,
+    days: Optional[float] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Remove stale digest Slack message refs older than ``days`` (updated_at)."""
+    path = judge_ack_digest_messages_path(base=base)
+    if days is None:
+        days = _messages_ttl_days()
+    if days is None or float(days) < 0:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "days_not_configured",
+            "path": path,
+            "dry_run": bool(dry_run),
+        }
+    data = load_judge_ack_digest_messages(base=base)
+    tenants = {
+        k: v
+        for k, v in data.items()
+        if k != "updated_at" and isinstance(v, dict)
+    }
+    if not tenants:
+        return {
+            "ok": True,
+            "path": path,
+            "days": float(days),
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "removed_refs": 0,
+            "removed_tenants": [],
+            "dry_run": bool(dry_run),
+            "missing": not os.path.isfile(path),
+        }
+    cutoff = time.time() - float(days) * 86400.0
+    kept_tenants: Dict[str, Any] = {}
+    removed_tenants: List[str] = []
+    removed_refs = 0
+    before_refs = 0
+    for tid, row in tenants.items():
+        msgs_in = list(row.get("messages") or []) if isinstance(row.get("messages"), list) else []
+        # Count legacy single ref as one
+        legacy_ch = str(row.get("channel_id") or "").strip()
+        legacy_ts = str(row.get("message_ts") or "").strip()
+        if not msgs_in and legacy_ch and legacy_ts:
+            msgs_in = [
+                {
+                    "channel_id": legacy_ch,
+                    "message_ts": legacy_ts,
+                    "updated_at": row.get("updated_at"),
+                }
+            ]
+        before_refs += len(msgs_in)
+        kept_msgs: List[Dict[str, Any]] = []
+        for item in msgs_in:
+            if not isinstance(item, dict):
+                continue
+            ts = _parse_iso_ts(item.get("updated_at"))
+            if ts is None:
+                # Keep unparseable ages (don't drop blindly)
+                kept_msgs.append(item)
+                continue
+            if ts < cutoff:
+                removed_refs += 1
+                continue
+            kept_msgs.append(item)
+        row_ts = _parse_iso_ts(row.get("updated_at"))
+        if not kept_msgs:
+            # Drop tenant if row also stale or no usable timestamps left
+            if row_ts is None or row_ts < cutoff:
+                removed_tenants.append(str(tid))
+                continue
+            # Row still fresh but no msgs — keep empty shell? Drop for cleanliness.
+            removed_tenants.append(str(tid))
+            continue
+        new_row = dict(row)
+        new_row["messages"] = kept_msgs
+        new_row["channel_id"] = str(kept_msgs[0].get("channel_id") or "").strip()
+        new_row["message_ts"] = str(kept_msgs[0].get("message_ts") or "").strip()
+        new_row["updated_at"] = kept_msgs[0].get("updated_at") or row.get("updated_at")
+        kept_tenants[str(tid)] = new_row
+    if not dry_run and (removed_refs or removed_tenants):
+        out = dict(kept_tenants)
+        save_judge_ack_digest_messages(out, base=base)
+    after_refs = sum(
+        len(r.get("messages") or [])
+        for r in kept_tenants.values()
+        if isinstance(r, dict)
+    )
+    return {
+        "ok": True,
+        "path": path,
+        "days": float(days),
+        "before": before_refs,
+        "after": after_refs if not dry_run else before_refs - removed_refs,
+        "removed": removed_refs + len(removed_tenants),
+        "removed_refs": removed_refs,
+        "removed_tenants": sorted(removed_tenants),
+        "dry_run": bool(dry_run),
+    }
+
+
 def maybe_prune_judge_ack_digest_mutes(
     *,
     base: Optional[str] = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
-    """Env-gated mute/prefs retention (RAG_JUDGE_ACK_DIGEST_MUTE_PRUNE)."""
+    """Env-gated mute/prefs/messages retention (RAG_JUDGE_ACK_DIGEST_MUTE_PRUNE)."""
     flag = os.environ.get("RAG_JUDGE_ACK_DIGEST_MUTE_PRUNE", "").strip().lower()
-    if flag in {"0", "false", "no", "off"}:
+    msg_flag = os.environ.get("RAG_JUDGE_ACK_DIGEST_MESSAGES_PRUNE", "").strip().lower()
+    if flag in {"0", "false", "no", "off"} and msg_flag in {"0", "false", "no", "off"}:
         return {"ok": True, "skipped": True, "reason": "prune_disabled"}
     # Auto when TTL configured or explicit prune=1
     ttl = _mute_ttl_days()
     prefs_days_raw = os.environ.get(
         "RAG_JUDGE_ACK_DIGEST_PREFS_RETENTION_DAYS", ""
     ).strip()
-    if flag not in {"1", "true", "yes", "on"} and ttl is None and not prefs_days_raw:
+    messages_ttl = _messages_ttl_days()
+    explicit = flag in {"1", "true", "yes", "on"} or msg_flag in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if (
+        not explicit
+        and ttl is None
+        and not prefs_days_raw
+        and messages_ttl is None
+    ):
         return {"ok": True, "skipped": True, "reason": "retention_not_configured"}
     mute_report = prune_judge_ack_digest_mutes(base=base, dry_run=dry_run)
     prefs_report = prune_judge_ack_digest_prefs(base=base, dry_run=dry_run)
+    messages_report = prune_judge_ack_digest_messages(base=base, dry_run=dry_run)
     return {
-        "ok": bool(mute_report.get("ok") and prefs_report.get("ok")),
+        "ok": bool(
+            mute_report.get("ok")
+            and prefs_report.get("ok")
+            and messages_report.get("ok")
+        ),
         "mutes": mute_report,
         "prefs": prefs_report,
+        "messages": messages_report,
         "dry_run": bool(dry_run),
     }
 

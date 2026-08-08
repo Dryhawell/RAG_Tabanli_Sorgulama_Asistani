@@ -167,7 +167,7 @@ Alertmanager: rotate/reload/silence/inhibit + `--check-config`; CI: `--tune-equa
 LLM cost recording rules: `grafana/rules/rag_llm_cost.yml` → `rag:llm_cost_usd_per_hour`.
 Vektör migrasyon: `python -m rag.cli migrate-vector --source faiss --target qdrant` (dual-write: `RAG_VECTOR_DUAL_WRITE=qdrant`).
 Dual-write: burn-rate webhook `POST /hooks/dual-write-catch-up` → in-process catch-up; fail/`not_dual_write` → GitHub `workflow_dispatch` fallback (`GH_PAT`).
-Quarantine alert route: `POST /hooks/dual-write-dlq-quarantine` (HMAC: `RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET` veya paylaşılan `RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET` + `X-Webhook-Timestamp/Signature/Nonce`; Alertmanager native için Bearer `RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_TOKEN`. Zorunlu auth: `RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH=1`).
+Quarantine alert route: `POST /hooks/dual-write-dlq-quarantine` (HMAC: `RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET` veya paylaşılan `RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET` + `X-Webhook-Timestamp/Signature/Nonce`; Alertmanager native için Bearer `RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_TOKEN`. Auth varsayılan zorunlu; kapatmak için `RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH=0`).
 VAPID üretimi: `python -m rag.cli collab-notifications --generate-vapid`
 VAPID rotate/vault: `python -m rag.cli collab-notifications --rotate-vapid` (Actions: **VAPID Rotate**; secret sync: `GH_PAT` + `--update-github-secrets` + opsiyonel `--vapid-github-environment`)
 Digest alert: `python -m rag.cli collab-notifications --digest-alert-check --digest-alert-all` (cron: `.github/workflows/digest-alert.yml`; tenant webhook: `RAG_DIGEST_ALERT_WEBHOOKS_JSON` veya `metadata/digest_alert_webhooks.json`)
@@ -513,6 +513,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
 - Push: VAPID OIDC / Deploy-key based secret store sync
-- Judge: digest mute message-ref prune/TTL
-- Ingest: dual-write DLQ quarantine webhook require-auth default-on
-- Observability: inhibit equal canary resolve Grafana panel
+- Judge: digest mute message-ref Slack history reconcile
+- Ingest: dual-write DLQ quarantine webhook signing sidecar
+- Observability: inhibit equal canary resolve alert rule

@@ -423,20 +423,21 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_fanout_hmac_metric():
+def test_readme_sonraki_adaylar_after_prune_require_auth_panel():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
-    assert "message-ref prune/TTL" in text
-    assert "require-auth default-on" in text
-    assert "canary resolve Grafana panel" in text
+    assert "message-ref Slack history reconcile" in text
+    assert "webhook signing sidecar" in text
+    assert "canary resolve alert rule" in text
     # Completed this round — should not remain as next candidates
-    assert "mute fan-out chat.update sync" not in text
-    assert "quarantine webhook HMAC auth" not in text
-    assert "thread resolve Prometheus metric" not in text
+    assert "message-ref prune/TTL" not in text
+    assert "require-auth default-on" not in text
+    assert "canary resolve Grafana panel" not in text
     assert "RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET" in text
-    assert "RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH" in text
+    assert "RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH=0" in text
+    assert "Auth varsayılan zorunlu" in text
 
 
 def test_ci_inhibit_equal_slack_thread_env():
@@ -453,6 +454,9 @@ def test_judge_ack_digest_mute_prune_workflow_yaml():
     assert "--prune-mutes" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_TTL_DAYS" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_PRUNE" in text
+    assert "RAG_JUDGE_ACK_DIGEST_MESSAGES_TTL_DAYS" in text
+    assert "RAG_JUDGE_ACK_DIGEST_MESSAGES_PRUNE" in text
+    assert "judge_ack_digest_messages.json" in text
 
 
 def test_judge_ack_digest_workflow_yaml():
