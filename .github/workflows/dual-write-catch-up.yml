@@ -1,0 +1,68 @@
+"""Dual-write catch-up (cron + manuel)."""
+
+name: Dual-write Catch-up
+
+on:
+  schedule:
+    - cron: "30 */6 * * *"  # her 6 saatte
+  workflow_dispatch:
+    inputs:
+      force_cutover_check:
+        description: "Catch-up sonrası lag raporu yazdır"
+        required: false
+        default: true
+        type: boolean
+      auto_cutover:
+        description: "lag=0 ise cutover env yaz (--auto-cutover)"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  catch-up:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Dual-write catch-up
+        env:
+          RAG_ENABLE_METRICS: "1"
+          RAG_ENABLE_PROMETHEUS: "1"
+          RAG_VECTOR_BACKEND: ${{ vars.RAG_VECTOR_BACKEND || 'faiss' }}
+          RAG_VECTOR_DUAL_WRITE: ${{ vars.RAG_VECTOR_DUAL_WRITE || secrets.RAG_VECTOR_DUAL_WRITE }}
+          RAG_QDRANT_URL: ${{ secrets.RAG_QDRANT_URL }}
+          RAG_QDRANT_API_KEY: ${{ secrets.RAG_QDRANT_API_KEY }}
+          RAG_QDRANT_COLLECTION: ${{ vars.RAG_QDRANT_COLLECTION || 'rag_chunks' }}
+        run: |
+          mkdir -p metadata indexes
+          EXTRA=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.auto_cutover }}" = "true" ]; then
+            EXTRA="--auto-cutover"
+          fi
+          set +e
+          # shellcheck disable=SC2086
+          python -m rag.cli migrate-vector --catch-up $EXTRA | tee metadata/dual_write_catch_up.json
+          RC=${PIPESTATUS[0]}
+          set -e
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force_cutover_check }}" = "true" ]; then
+            python -m rag.cli migrate-vector --lag-report | tee metadata/dual_write_lag.json || true
+          fi
+          exit $RC
+      - name: Upload catch-up report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dual-write-catch-up
+          path: |
+            metadata/dual_write_catch_up.json
+            metadata/dual_write_lag.json
+            metadata/metrics.jsonl
+            metadata/vector_cutover_*.env
+          if-no-files-found: ignore
