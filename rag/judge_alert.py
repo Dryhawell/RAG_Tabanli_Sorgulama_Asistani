@@ -1192,6 +1192,124 @@ def list_judge_ack_digest_snapshots(
     return out
 
 
+def upload_judge_ack_digest_mute_snapshots_slack(
+    *,
+    payload: Optional[Dict[str, Any]] = None,
+    tenant_id: Optional[str] = None,
+    base: Optional[str] = None,
+    bot_token: Optional[str] = None,
+    channel_id: Optional[str] = None,
+    thread_ts: Optional[str] = None,
+    fmt: str = "csv",
+) -> Dict[str, Any]:
+    """Export mute+snapshot CSV and Slack files.upload (interactive / CLI)."""
+    payload = payload if isinstance(payload, dict) else {}
+    kind = (fmt or "csv").strip().lower() or "csv"
+    if kind not in {"csv", "jsonl"}:
+        kind = "csv"
+    root = base or os.environ.get("RAG_JUDGE_ACK_DIGEST_BASE", "").strip() or None
+    exported = export_judge_ack_digest_mute_snapshots(
+        fmt=kind, base=root, tenant_id=tenant_id
+    )
+    content = exported.get("text") or ""
+    count = int(exported.get("count") or 0)
+    ch = str(
+        (channel_id or "").strip()
+        or ((payload.get("channel") or {}).get("id") or "")
+        or ((payload.get("container") or {}).get("channel_id") or "")
+        or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "")
+        or ""
+    ).strip() or None
+    ts = str(
+        (thread_ts or "").strip()
+        or ((payload.get("message") or {}).get("ts") or "")
+        or ((payload.get("container") or {}).get("thread_ts") or "")
+        or ((payload.get("container") or {}).get("message_ts") or "")
+        or ""
+    ).strip() or None
+    user_id = slack_interactive_user_id(payload) if payload else None
+    token = (
+        (bot_token or "").strip()
+        or os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
+    )
+    filename = f"judge_ack_digest_mute_snapshots.{kind}"
+    tid_label = (tenant_id or "").strip() or "all"
+    progress: Dict[str, Any] = {"ok": False, "skipped": True}
+    upload: Dict[str, Any] = {"ok": False, "skipped": True, "reason": "not_attempted"}
+    thread_reply: Dict[str, Any] = {"ok": False, "skipped": True, "reason": "not_attempted"}
+    text = f"Mute snapshot export · {count} rows · `{kind}` · tenant `{tid_label}`"
+    if content and token:
+        if ch and user_id:
+            progress = slack_api(
+                "chat.postEphemeral",
+                bot_token=token,
+                json_body={
+                    "channel": ch,
+                    "user": user_id,
+                    "text": f"Uploading mute snapshots (`{count}` rows, `{kind}`)…",
+                },
+            )
+        upload = slack_files_upload(
+            content=content,
+            filename=filename,
+            title=f"Mute snapshots ({count} rows, {kind})",
+            channels=ch,
+            thread_ts=ts,
+            initial_comment=text,
+            bot_token=token,
+        )
+        if upload.get("ok"):
+            text = (
+                f"{text}\nAttached `{filename}`"
+                + (
+                    f" (<{upload.get('permalink')}|open>)"
+                    if upload.get("permalink")
+                    else ""
+                )
+            )
+            if ch and ts:
+                reply_text = (
+                    f"Mute snapshot export ready · *{count}* rows · `{kind}` "
+                    f"· tenant `{tid_label}`"
+                )
+                if upload.get("permalink"):
+                    reply_text += f" · <{upload.get('permalink')}|open file>"
+                thread_reply = post_slack_thread_message(
+                    text=reply_text,
+                    channel_id=ch,
+                    thread_ts=ts,
+                    bot_token=token,
+                )
+        else:
+            text = f"{text}\nFile upload skipped: `{upload.get('error')}`"
+    elif not token:
+        upload = {"ok": False, "skipped": True, "reason": "bot_token_missing"}
+    elif not content:
+        upload = {"ok": False, "skipped": True, "reason": "empty_export"}
+    return {
+        "ok": True,
+        "mode": "digest_mute_snapshot_upload",
+        "tenant_id": (tenant_id or "").strip() or None,
+        "export": {
+            "ok": exported.get("ok"),
+            "count": count,
+            "format": exported.get("format") or kind,
+            "muted_count": exported.get("muted_count"),
+            "snapshot_count": exported.get("snapshot_count"),
+        },
+        "upload": upload,
+        "progress": {
+            "ok": bool(progress.get("ok")),
+            "skipped": bool(progress.get("skipped")),
+            "error": progress.get("error"),
+        },
+        "thread_reply": thread_reply,
+        "text": text,
+        "channel_id": ch,
+        "message_ts": ts,
+    }
+
+
 def export_judge_ack_digest_mute_snapshots(
     *,
     fmt: str = "csv",
@@ -2003,14 +2121,23 @@ def build_judge_ack_digest_slack_blocks(
                         "style": "primary",
                     }
                 )
-        export_btn: Dict[str, Any] = {
-            "type": "button",
-            "text": {"type": "plain_text", "text": "Export JSONL"},
-            "action_id": "judge_ack_digest_reexport",
-            "value": "jsonl",
-        }
-        if not is_muted:
-            export_btn["style"] = "primary"
+        if is_muted:
+            # Prefer mute+snapshot CSV upload when tenant is muted (keep-on-mute).
+            export_btn = {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Mute snapshots"},
+                "action_id": "judge_ack_digest_export_mute_snapshots",
+                "value": tid or "all",
+                "style": "primary",
+            }
+        else:
+            export_btn = {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Export JSONL"},
+                "action_id": "judge_ack_digest_reexport",
+                "value": "jsonl",
+                "style": "primary",
+            }
         elements.append(export_btn)
         # CSV only when mute button is absent (room under 5-cap with form+zoom).
         if not tid:
@@ -2046,12 +2173,13 @@ def build_judge_ack_digest_slack_blocks(
     )
     ack_url = ack_urls.get("form") or judge_ack_public_url()
     if ack_url:
-        # Prefer mute/catch-up/zoom + form: drop CSV / export if we would exceed 5
+        # Prefer mute/catch-up/mute-snapshots/zoom + form: drop CSV / audit export if needed
         if len(elements) >= 4:
             drop_ids = {"judge_ack_digest_reexport_csv"}
             if any(
                 e.get("action_id") == "judge_ack_digest_catch_up" for e in elements
             ):
+                # Keep mute-snapshots when muted; drop audit JSONL reexport only
                 drop_ids.add("judge_ack_digest_reexport")
             elements = [
                 e for e in elements if e.get("action_id") not in drop_ids
@@ -3468,6 +3596,20 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             },
             "channel_id": channel_id,
         }
+
+    if "judge_ack_digest_export_mute_snapshots" in action_ids:
+        tid = ""
+        for act in actions:
+            if not isinstance(act, dict):
+                continue
+            if str(act.get("action_id") or "") == "judge_ack_digest_export_mute_snapshots":
+                tid = str(act.get("value") or "").strip()
+                break
+        if tid.lower() in {"", "all", "csv", "*"}:
+            tid = ""
+        return upload_judge_ack_digest_mute_snapshots_slack(
+            payload=payload, tenant_id=tid or None
+        )
 
     if (
         "judge_ack_digest_reexport" in action_ids

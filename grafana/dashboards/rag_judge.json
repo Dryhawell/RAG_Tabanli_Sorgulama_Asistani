@@ -685,6 +685,85 @@
           ]
         }
       }
+    },
+    {
+      "type": "timeseries",
+      "title": "Inhibit equal canary silence",
+      "description": "rag_inhibit_equal_canary_silence_total by result (ok/fail/skipped/expired/webhook_ok)",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 72
+      },
+      "id": 22,
+      "targets": [
+        {
+          "expr": "sum by (result) (rate(rag_inhibit_equal_canary_silence_total[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Inhibit equal canary silence (7d)",
+      "description": "increase(rag_inhibit_equal_canary_silence_total[7d])",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 72
+      },
+      "id": 23,
+      "targets": [
+        {
+          "expr": "sum(increase(rag_inhibit_equal_canary_silence_total[7d]))",
+          "legendFormat": "silences 7d",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(increase(rag_inhibit_equal_canary_silence_total{result=\"ok\"}[7d]))",
+          "legendFormat": "ok 7d",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(increase(rag_inhibit_equal_canary_silence_total{result=\"webhook_ok\"}[7d]))",
+          "legendFormat": "expiry webhook 7d",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Signing sidecar forward",
+      "description": "rag_webhook_signing_sidecar_forward_total by mode/result",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 79
+      },
+      "id": 24,
+      "targets": [
+        {
+          "expr": "sum by (mode, result) (rate(rag_webhook_signing_sidecar_forward_total[5m]))",
+          "legendFormat": "{{mode}}/{{result}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "schemaVersion": 39,
@@ -703,6 +782,7 @@
     "quarantine",
     "rag",
     "shadow",
+    "sidecar",
     "soft-fail",
     "tempo"
   ],

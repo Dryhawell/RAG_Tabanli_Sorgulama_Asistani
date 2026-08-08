@@ -1527,7 +1527,22 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
     elif getattr(args, "block_kit", False):
         block_kit = True
 
-    if getattr(args, "export_mute_snapshots", False):
+    if getattr(args, "export_mute_snapshots", False) or getattr(
+        args, "upload_mute_snapshots", False
+    ):
+        if getattr(args, "upload_mute_snapshots", False):
+            from rag.judge_alert import upload_judge_ack_digest_mute_snapshots_slack
+
+            report = upload_judge_ack_digest_mute_snapshots_slack(
+                tenant_id=getattr(args, "tenant", None),
+                fmt=getattr(args, "export_format", None) or "csv",
+                channel_id=getattr(args, "upload_channel", None),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+            return 0 if report.get("ok") and (
+                (report.get("upload") or {}).get("ok")
+                or (report.get("upload") or {}).get("skipped")
+            ) else 1
         report = export_judge_ack_digest_mute_snapshots(
             fmt=getattr(args, "export_format", None) or "csv",
             output=getattr(args, "export_output", None),
@@ -2158,6 +2173,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--export-mute-snapshots",
         action="store_true",
         help="Mute store + keep-on-mute digest snapshot CSV/JSONL export",
+    )
+    p_jdig.add_argument(
+        "--upload-mute-snapshots",
+        action="store_true",
+        help="Mute snapshot CSV export + Slack files.upload",
+    )
+    p_jdig.add_argument(
+        "--upload-channel",
+        default=None,
+        help="Slack channel for --upload-mute-snapshots",
     )
     p_jdig.add_argument(
         "--export-format",

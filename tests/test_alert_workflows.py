@@ -426,20 +426,23 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_export_clientcert_expiry():
+def test_readme_sonraki_adaylar_after_upload_forward_silence_panel():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
-    assert "mute snapshot Slack files.upload" in text
-    assert "sidecar forward metrics" in text
-    assert "canary silence Grafana panel" in text
+    assert "mute snapshot export schedule CI" in text
+    assert "sidecar Grafana alerts" in text
+    assert "canary silence burn-rate rule" in text
     # Completed this round — should not remain as next candidates
-    assert "mute snapshot export / CSV" not in text
-    assert "sidecar upstream client-cert" not in text
-    assert "canary silence expiry webhook" not in text
+    assert "mute snapshot Slack files.upload" not in text
+    assert "sidecar forward metrics" not in text
+    assert "canary silence Grafana panel" not in text
     assert "webhook-signing-sidecar" in text
     assert "--export-mute-snapshots" in text
+    assert "--upload-mute-snapshots" in text
+    assert "judge_ack_digest_export_mute_snapshots" in text
+    assert "rag_webhook_signing_sidecar_forward_total" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT" in text
     assert "INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK" in text
     assert "--canary-silence-expiry" in text

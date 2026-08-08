@@ -885,12 +885,16 @@ def test_digest_message_ref_history_reconcile(tmp_path: Path, monkeypatch) -> No
 
 def test_export_mute_snapshots_csv(tmp_path: Path, monkeypatch) -> None:
     from rag.judge_alert import (
+        build_judge_ack_digest_slack_blocks,
         export_judge_ack_digest_mute_snapshots,
+        handle_slack_interactive_ack,
         save_judge_ack_digest_snapshot,
         set_judge_ack_digest_mute,
     )
 
     monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
+    monkeypatch.setenv("RAG_JUDGE_SLACK_INTERACTIVE", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_PUBLIC_URL", "http://example.test/judge/ack-form")
     set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path), ttl_days=7)
     set_judge_ack_digest_mute("beta", muted=True, base=str(tmp_path))
     save_judge_ack_digest_snapshot(
@@ -925,6 +929,57 @@ def test_export_mute_snapshots_csv(tmp_path: Path, monkeypatch) -> None:
     assert only["count"] == 1
     assert "acme" in (only.get("text") or "")
 
+    summary = {
+        "ok": True,
+        "since_hours": 168,
+        "total": 1,
+        "actor_count": 1,
+        "by_event": {"ack": 1},
+        "actors": ["a"],
+        "tenant_id": "acme",
+    }
+    blocks = build_judge_ack_digest_slack_blocks(
+        summary, tenant_id="acme", muted=True, base=str(tmp_path)
+    )
+    actions = next(b for b in blocks if b.get("type") == "actions")
+    ids = {e.get("action_id") for e in actions["elements"]}
+    assert "judge_ack_digest_export_mute_snapshots" in ids
+    assert "judge_ack_digest_reexport" not in ids
+
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    with patch(
+        "rag.judge_alert.slack_files_upload",
+        return_value={
+            "ok": True,
+            "permalink": "https://slack.test/file",
+            "filename": "judge_ack_digest_mute_snapshots.csv",
+        },
+    ) as upload:
+        with patch("rag.judge_alert.slack_api", return_value={"ok": True}):
+            with patch(
+                "rag.judge_alert.post_slack_thread_message",
+                return_value={"ok": True, "ts": "9.91"},
+            ):
+                uploaded = handle_slack_interactive_ack(
+                    {
+                        "type": "block_actions",
+                        "actions": [
+                            {
+                                "action_id": "judge_ack_digest_export_mute_snapshots",
+                                "value": "acme",
+                            }
+                        ],
+                        "user": {"id": "U1", "username": "ops"},
+                        "channel": {"id": "C1"},
+                        "message": {"ts": "9.9"},
+                    }
+                )
+    assert uploaded["mode"] == "digest_mute_snapshot_upload"
+    assert uploaded["export"]["count"] >= 1
+    assert uploaded["upload"]["ok"] is True
+    assert upload.called
+    assert "mute_snapshots" in str(upload.call_args.kwargs.get("filename") or "")
+
     from rag.cli import build_parser
 
     args = build_parser().parse_args(
@@ -939,6 +994,10 @@ def test_export_mute_snapshots_csv(tmp_path: Path, monkeypatch) -> None:
     )
     assert args.export_mute_snapshots is True
     assert args.export_format == "csv"
+    up_args = build_parser().parse_args(
+        ["judge-ack-digest", "--upload-mute-snapshots", "--tenant", "acme"]
+    )
+    assert up_args.upload_mute_snapshots is True
 
 
 def test_digest_message_ref_prune_ttl(tmp_path: Path, monkeypatch) -> None:

@@ -188,6 +188,29 @@ def build_signed_webhook_headers(
     }
 
 
+def emit_sidecar_forward_metric(report: Dict[str, Any]) -> None:
+    """Prometheus/JSONL: rag_webhook_signing_sidecar_forward_total{mode,result}."""
+    try:
+        from rag.metrics import record_metric
+
+        result = "ok" if report.get("ok") else str(
+            report.get("error") or report.get("result") or "fail"
+        )
+        if report.get("dry_run"):
+            result = "dry_run"
+        record_metric(
+            "webhook_signing_sidecar_forward",
+            values={
+                "mode": str(report.get("mode") or "dlq_quarantine"),
+                "result": result,
+                "status": report.get("status"),
+                "upstream_client_cert": bool(report.get("upstream_client_cert")),
+            },
+        )
+    except Exception:
+        pass
+
+
 def sign_and_forward_webhook(
     body: bytes,
     *,
@@ -207,18 +230,22 @@ def sign_and_forward_webhook(
     )
     up = (upstream or sidecar_upstream_url(mode=mode)).strip()
     if not sec:
-        return {
+        out = {
             "ok": False,
             "error": "signing_secret_missing",
             "mode": mode,
             "upstream": up,
         }
+        emit_sidecar_forward_metric(out)
+        return out
     if not up:
-        return {
+        out = {
             "ok": False,
             "error": "upstream_missing",
             "mode": mode,
         }
+        emit_sidecar_forward_metric(out)
+        return out
     headers = build_signed_webhook_headers(
         body, secret=sec, now=now, nonce=nonce
     )
@@ -239,12 +266,14 @@ def sign_and_forward_webhook(
     try:
         ssl_ctx = build_upstream_ssl_context()
     except ValueError as exc:
-        return {
+        out = {
             "ok": False,
             "error": str(exc),
             "mode": mode,
             "upstream": up,
         }
+        emit_sidecar_forward_metric(out)
+        return out
     req = Request(up, data=body, headers=headers, method="POST")
     open_kw: Dict[str, Any] = {"timeout": timeout}
     if ssl_ctx is not None:
@@ -253,7 +282,7 @@ def sign_and_forward_webhook(
         with urlopen(req, **open_kw) as resp:
             resp_body = resp.read()
             status = int(getattr(resp, "status", 200) or 200)
-            return {
+            out = {
                 "ok": 200 <= status < 300,
                 "status": status,
                 "mode": mode,
@@ -266,12 +295,16 @@ def sign_and_forward_webhook(
                 },
                 "response": resp_body.decode("utf-8", errors="replace")[:4000],
             }
+            if not out["ok"]:
+                out["error"] = f"upstream_status_{status}"
+            emit_sidecar_forward_metric(out)
+            return out
     except HTTPError as exc:
         try:
             resp_body = exc.read()
         except Exception:
             resp_body = b""
-        return {
+        out = {
             "ok": False,
             "error": "upstream_http_error",
             "status": int(exc.code),
@@ -285,8 +318,10 @@ def sign_and_forward_webhook(
             },
             "response": resp_body.decode("utf-8", errors="replace")[:4000],
         }
+        emit_sidecar_forward_metric(out)
+        return out
     except URLError as exc:
-        return {
+        out = {
             "ok": False,
             "error": "upstream_unreachable",
             "detail": str(exc.reason or exc),
@@ -299,8 +334,10 @@ def sign_and_forward_webhook(
                 "signature": headers["X-Webhook-Signature"],
             },
         }
+        emit_sidecar_forward_metric(out)
+        return out
     except Exception as exc:
-        return {
+        out = {
             "ok": False,
             "error": "forward_failed",
             "detail": str(exc),
@@ -310,6 +347,8 @@ def sign_and_forward_webhook(
                 ssl_ctx is not None and sidecar_upstream_client_cert_enabled()
             ),
         }
+        emit_sidecar_forward_metric(out)
+        return out
 
 
 def handle_signing_sidecar_http(
@@ -328,6 +367,7 @@ def handle_signing_sidecar_http(
         secret = webhook_signing_secret(mode=mode)
         if not secret:
             payload = {"ok": False, "error": "signing_secret_missing", "mode": mode}
+            emit_sidecar_forward_metric(payload)
             return (
                 500,
                 {"Content-Type": "application/json"},
@@ -345,6 +385,7 @@ def handle_signing_sidecar_http(
                 "signature": signed["X-Webhook-Signature"],
             },
         }
+        emit_sidecar_forward_metric(payload)
         return (
             200,
             {"Content-Type": "application/json"},

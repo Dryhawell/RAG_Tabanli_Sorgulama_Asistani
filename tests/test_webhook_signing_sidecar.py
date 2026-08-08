@@ -60,6 +60,13 @@ def test_sign_and_forward_uses_upstream(monkeypatch, tmp_path: Path) -> None:
     )
     body = b'{"status":"firing","alerts":[]}'
     captured = {}
+    metrics: list[dict] = []
+    monkeypatch.setattr(
+        "rag.metrics.record_metric",
+        lambda kind, values=None, **kw: metrics.append(
+            {"kind": kind, "values": values or {}}
+        ),
+    )
 
     class _Resp:
         status = 200
@@ -73,7 +80,7 @@ def test_sign_and_forward_uses_upstream(monkeypatch, tmp_path: Path) -> None:
         def __exit__(self, *a):
             return False
 
-    def _urlopen(req, timeout=30):
+    def _urlopen(req, timeout=30, context=None):
         captured["url"] = req.full_url
         captured["headers"] = {k: v for k, v in req.header_items()}
         captured["data"] = req.data
@@ -89,6 +96,11 @@ def test_sign_and_forward_uses_upstream(monkeypatch, tmp_path: Path) -> None:
     assert "x-webhook-timestamp" in hdrs
     assert "x-webhook-nonce" in hdrs
     assert captured["data"] == body
+    assert any(
+        m["kind"] == "webhook_signing_sidecar_forward"
+        and m["values"].get("result") == "ok"
+        for m in metrics
+    )
 
 
 def test_cli_sign_once(monkeypatch, capsys) -> None:

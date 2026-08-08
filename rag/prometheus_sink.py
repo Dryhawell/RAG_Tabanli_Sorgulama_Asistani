@@ -49,6 +49,7 @@ _msgref_reconcile_total = None
 _msgref_reconcile_checked = None
 _msgref_reconcile_dropped = None
 _msgref_reconcile_repaired = None
+_sidecar_forward_total = None
 
 
 def prometheus_available() -> bool:
@@ -81,6 +82,7 @@ def _ensure_metrics():
     global _inhibit_equal_canary_silence_total
     global _msgref_reconcile_total
     global _msgref_reconcile_checked, _msgref_reconcile_dropped, _msgref_reconcile_repaired
+    global _sidecar_forward_total
     if _events_total is not None:
         return
     if not prometheus_available():
@@ -225,6 +227,11 @@ def _ensure_metrics():
     _msgref_reconcile_repaired = Gauge(
         "rag_judge_ack_digest_msgref_reconcile_repaired",
         "Last msgref reconcile repaired count",
+    )
+    _sidecar_forward_total = Counter(
+        "rag_webhook_signing_sidecar_forward_total",
+        "Alertmanager HMAC signing sidecar forward outcomes",
+        ["mode", "result"],
     )
 
 
@@ -454,6 +461,11 @@ def observe_metric(
                     _msgref_reconcile_repaired.set(float(vals.get("repaired") or 0))
                 except (TypeError, ValueError):
                     pass
+        elif kind == "webhook_signing_sidecar_forward":
+            assert _sidecar_forward_total is not None
+            mode = str(vals.get("mode") or "dlq_quarantine")
+            result = str(vals.get("result") or vals.get("error") or "unknown")
+            _sidecar_forward_total.labels(mode=mode, result=result).inc()
 
 
 def render_prometheus() -> bytes:

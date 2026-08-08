@@ -28,12 +28,17 @@ def test_rag_judge_grafana_dashboard_json():
     assert "rag_dual_write_webhook_dlq_depth" in joined
     assert "rag_dual_write_webhook_dlq_quarantine_depth" in joined
     assert "rag_inhibit_equal_canary_resolve_total" in joined
+    assert "rag_inhibit_equal_canary_silence_total" in joined
+    assert "rag_webhook_signing_sidecar_forward_total" in joined
     assert "rag_judge_ack_digest_msgref_reconcile_total" in joined
     assert "rag_judge_ack_digest_msgref_reconcile_checked" in joined
     assert any("DLQ" in (t or "") for t in titles)
     assert any("canary" in (t or "").lower() for t in titles)
     assert any("msgref" in (t or "").lower() for t in titles)
+    assert any("silence" in (t or "").lower() for t in titles)
+    assert any("sidecar" in (t or "").lower() for t in titles)
     assert "canary" in (data.get("tags") or [])
     assert "inhibit" in (data.get("tags") or [])
     assert "msgref" in (data.get("tags") or [])
     assert "mute" in (data.get("tags") or [])
+    assert "sidecar" in (data.get("tags") or [])
