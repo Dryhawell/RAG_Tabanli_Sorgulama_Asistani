@@ -295,6 +295,55 @@ def resolve_opsgenie_canary_targets() -> List[Dict[str, str]]:
     return [{"region": r, "api_key": og_key} for r in regions]
 
 
+def resolve_inhibit_equal_canary_pd_severity(
+    report: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Resolve PagerDuty severity for inhibit-equal canary from CI/env/reason.
+
+    Precedence:
+    1. ``INHIBIT_EQUAL_CANARY_PD_SEVERITY`` (explicit)
+    2. ``INHIBIT_EQUAL_CANARY_PD_SEVERITY_BY_REASON`` JSON map keyed by report.reason
+    3. Reason defaults (``amtool_regression`` → critical)
+    4. ``CI_TEST_RESULT`` bump (failure/cancelled → critical)
+    5. fallback ``error``
+    """
+    allowed = {"info", "warning", "error", "critical"}
+    explicit = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_PD_SEVERITY", "").strip().lower()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_PD_SEVERITY", "").strip().lower()
+    )
+    if explicit in allowed:
+        return explicit
+
+    reason = str((report or {}).get("reason") or "").strip()
+    raw_map = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_PD_SEVERITY_BY_REASON", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_PD_SEVERITY_BY_REASON", "").strip()
+    )
+    if raw_map:
+        try:
+            data = json.loads(raw_map)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict) and reason:
+            mapped = str(data.get(reason) or "").strip().lower()
+            if mapped in allowed:
+                return mapped
+
+    defaults = {
+        "amtool_regression": "critical",
+        "amtool_failed": "critical",
+        "post_check_failed": "error",
+    }
+    if reason in defaults:
+        return defaults[reason]
+
+    ci = (os.environ.get("CI_TEST_RESULT", "") or "").strip().lower()
+    if ci in {"failure", "cancelled", "timed_out"}:
+        return "critical"
+    return "error"
+
+
 def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, Any]:
     """Post canary Slack (+ optional PagerDuty / multi-region Opsgenie) on rollback."""
     if not report.get("rolled_back"):
@@ -342,6 +391,7 @@ def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, An
         "mode": "inhibit_equal_rollback",
     }
 
+    pd_severity = resolve_inhibit_equal_canary_pd_severity(report)
     pd_ok = False
     if pd_key:
         pd_ok = bool(
@@ -349,8 +399,7 @@ def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, An
                 routing_key=pd_key,
                 report=pd_report,
                 source="inhibit-equal-canary",
-                severity=os.environ.get("INHIBIT_EQUAL_CANARY_PD_SEVERITY", "error")
-                or "error",
+                severity=pd_severity,
             )
         )
 
@@ -379,6 +428,7 @@ def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, An
         "posted": posted,
         "slack": slack_ok if webhook else None,
         "pagerduty": pd_ok if pd_key else None,
+        "pagerduty_severity": pd_severity if pd_key else None,
         "opsgenie": og_ok if og_targets else None,
         "opsgenie_regions": og_by_region or None,
     }

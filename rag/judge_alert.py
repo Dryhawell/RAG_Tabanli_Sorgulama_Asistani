@@ -1499,6 +1499,43 @@ def _judge_ack_digest_quiet_spec(quiet_hours: Optional[str] = None) -> Optional[
     return (JUDGE_ACK_DIGEST_QUIET_HOURS or NOTIFY_DIGEST_QUIET_HOURS or None)
 
 
+def digest_snapshot_keep_on_mute_enabled() -> bool:
+    raw = os.environ.get("RAG_JUDGE_ACK_DIGEST_SNAPSHOT_KEEP_ON_MUTE", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def maybe_keep_digest_snapshot_on_mute(
+    summary: Dict[str, Any],
+    *,
+    tenant_id: Optional[str] = None,
+    base: Optional[str] = None,
+    include_diff: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Muted tenant digests still refresh snapshot so unmute Δ is not inflated."""
+    use_diff = digest_diff_enabled() if include_diff is None else bool(include_diff)
+    if not use_diff or not digest_snapshot_keep_on_mute_enabled():
+        return {
+            "ok": True,
+            "kept_snapshot": False,
+            "skipped": True,
+            "reason": "keep_on_mute_disabled" if use_diff else "diff_disabled",
+            "snapshot_path": None,
+        }
+    tid = (tenant_id or summary.get("tenant_id") or "").strip() or None
+    prev = load_judge_ack_digest_snapshot(tenant_id=tid, base=base)
+    diff = diff_judge_ack_digest(prev, summary)
+    path = save_judge_ack_digest_snapshot(
+        summary, tenant_id=tid, base=base, diff=diff
+    )
+    return {
+        "ok": True,
+        "kept_snapshot": True,
+        "skipped": False,
+        "snapshot_path": path,
+        "diff": diff,
+    }
+
+
 def dispatch_judge_ack_digest(
     summary: Dict[str, Any],
     *,
@@ -1515,6 +1552,9 @@ def dispatch_judge_ack_digest(
     """Haftalık ack audit özetini Slack webhook'a gönder (Block Kit + quiet hours + digest-diff)."""
     tid = (tenant_id or summary.get("tenant_id") or "").strip() or None
     if tid and is_judge_ack_digest_muted(tid, base=base):
+        kept = maybe_keep_digest_snapshot_on_mute(
+            summary, tenant_id=tid, base=base, include_diff=include_diff
+        )
         return {
             "ok": True,
             "skipped": True,
@@ -1523,6 +1563,9 @@ def dispatch_judge_ack_digest(
             "configured": bool(
                 resolve_judge_ack_digest_webhook(tid, url=webhook, base=base)
             ),
+            "kept_snapshot": bool(kept.get("kept_snapshot")),
+            "snapshot_path": kept.get("snapshot_path"),
+            "diff": kept.get("diff"),
         }
     if not ignore_quiet_hours:
         try:
@@ -1708,6 +1751,16 @@ def dispatch_judge_ack_digest_fanout(
     results: List[Dict[str, Any]] = []
     for tid, url in sorted(mapping.items()):
         if is_judge_ack_digest_muted(tid, mutes=mutes):
+            tenant_summary = summarize_judge_ack_audit(
+                path=path, since_hours=since_hours, tenant_id=tid
+            )
+            summary = tenant_summary if tenant_summary.get("total", 0) > 0 else {
+                **global_summary,
+                "tenant_id": tid,
+            }
+            kept = maybe_keep_digest_snapshot_on_mute(
+                summary, tenant_id=tid, base=base
+            )
             results.append(
                 {
                     "ok": True,
@@ -1715,6 +1768,8 @@ def dispatch_judge_ack_digest_fanout(
                     "reason": "muted",
                     "tenant_id": tid,
                     "configured": True,
+                    "kept_snapshot": bool(kept.get("kept_snapshot")),
+                    "snapshot_path": kept.get("snapshot_path"),
                 }
             )
             continue

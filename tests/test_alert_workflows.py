@@ -398,6 +398,30 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     assert "INHIBIT_EQUAL_CANARY_OPSGENIE_REGIONS" in text
     assert "INHIBIT_EQUAL_CANARY_CLOSE_ON_GREEN" in text
     assert "INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY" in text
+    assert "INHIBIT_EQUAL_CANARY_PD_SEVERITY" in text
+    assert "INHIBIT_EQUAL_CANARY_PD_SEVERITY_BY_REASON" in text
+    assert (
+        "INHIBIT_EQUAL_CANARY_PD_SEVERITY: "
+        "${{ vars.INHIBIT_EQUAL_CANARY_PD_SEVERITY || 'error' }}"
+    ) in text
+    assert (
+        "INHIBIT_EQUAL_CANARY_PD_SEVERITY_BY_REASON: "
+        "${{ vars.INHIBIT_EQUAL_CANARY_PD_SEVERITY_BY_REASON || '' }}"
+    ) in text
+
+
+def test_readme_sonraki_adaylar_after_keep_on_mute_blockkit_pd():
+    text = Path("README.md").read_text(encoding="utf-8")
+    assert "## Sonraki adaylar" in text
+    assert "presence multi-worker (Redis)" in text
+    assert "VAPID OIDC" in text
+    assert "unmute catch-up digest button" in text
+    assert "quarantine Grafana alert annotations" in text
+    assert "Slack thread reply on resolve" in text
+    # Completed this round — should not remain as next candidates
+    assert "digest-diff snapshot keep-on-mute" not in text
+    assert "quarantine Slack Block Kit status" not in text
+    assert "PD severity tune from CI" not in text
 
 
 def test_judge_ack_digest_mute_prune_workflow_yaml():

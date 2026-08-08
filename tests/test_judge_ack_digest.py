@@ -200,6 +200,62 @@ def test_tenant_mute_skips_digest(tmp_path: Path, monkeypatch) -> None:
     assert "acme" in fan["muted"]
 
 
+def test_digest_keep_snapshot_on_mute(tmp_path: Path, monkeypatch) -> None:
+    from rag.judge_alert import load_judge_ack_digest_snapshot
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE", "acme")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_DIFF", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_SNAPSHOT_KEEP_ON_MUTE", "1")
+    path = str(tmp_path / "ack.jsonl")
+    append_judge_ack_audit("ack", actor="a", path=path, extra={"tenant_id": "acme"})
+    summary = summarize_judge_ack_audit(path=path, since_hours=24 * 365, tenant_id="acme")
+    with patch("rag.judge_alert.post_slack", return_value=True) as post:
+        result = dispatch_judge_ack_digest(
+            summary,
+            webhook="https://hooks.slack.test/x",
+            tenant_id="acme",
+            base=str(tmp_path),
+            include_diff=True,
+        )
+    assert result["skipped"] is True
+    assert result["reason"] == "muted"
+    assert result["kept_snapshot"] is True
+    assert result.get("snapshot_path")
+    assert Path(str(result["snapshot_path"])).is_file()
+    assert result.get("diff") is not None
+    assert post.called is False
+    loaded = load_judge_ack_digest_snapshot(tenant_id="acme", base=str(tmp_path))
+    assert loaded is not None
+    assert (loaded.get("summary") or {}).get("total") == 1
+
+    (tmp_path / "judge_ack_digest_webhooks.json").write_text(
+        '{"acme": "https://hooks.slack.test/acme"}',
+        encoding="utf-8",
+    )
+    fan = dispatch_judge_ack_digest_fanout(
+        path=path, since_hours=24 * 365, dry_run=True, base=str(tmp_path)
+    )
+    by_tid = {r.get("tenant_id"): r for r in fan["results"]}
+    assert by_tid["acme"]["kept_snapshot"] is True
+    assert by_tid["acme"].get("snapshot_path")
+
+
+def test_digest_keep_snapshot_on_mute_can_disable(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE", "acme")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_DIFF", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_SNAPSHOT_KEEP_ON_MUTE", "0")
+    path = str(tmp_path / "ack.jsonl")
+    append_judge_ack_audit("ack", actor="a", path=path, extra={"tenant_id": "acme"})
+    summary = summarize_judge_ack_audit(path=path, since_hours=24 * 365, tenant_id="acme")
+    result = dispatch_judge_ack_digest(
+        summary, dry_run=True, tenant_id="acme", base=str(tmp_path), include_diff=True
+    )
+    assert result["skipped"] is True
+    assert result["reason"] == "muted"
+    assert result["kept_snapshot"] is False
+    assert not result.get("snapshot_path")
+
+
 def test_heatmap_zoom_interactive(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
     monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")

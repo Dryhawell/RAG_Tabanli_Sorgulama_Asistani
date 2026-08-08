@@ -512,6 +512,6 @@ GitHub Actions: push/PR'da hızlı testler; Actions → CI → Run workflow ile 
 ## Sonraki adaylar
 - Collab: presence multi-worker (Redis) backend
 - Push: VAPID OIDC / Deploy-key based secret store sync
-- Judge: digest mute digest-diff snapshot keep-on-mute
-- Ingest: dual-write DLQ quarantine Slack Block Kit status
-- Observability: inhibit equal canary PD severity tune from CI
+- Judge: digest mute unmute catch-up digest button
+- Ingest: dual-write DLQ quarantine Grafana alert annotations
+- Observability: inhibit equal canary Slack thread reply on resolve

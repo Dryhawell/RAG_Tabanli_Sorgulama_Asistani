@@ -308,6 +308,56 @@ def test_prune_dual_write_dlq_quarantine_aging(tmp_path: Path, monkeypatch) -> N
     assert "quarantine" in (post.call_args[0][1]["text"] or "").lower()
 
 
+def test_quarantine_slack_block_kit_status(tmp_path: Path, monkeypatch) -> None:
+    from rag.dual_write_webhook import (
+        build_dual_write_dlq_quarantine_slack_payload,
+        maybe_alert_dual_write_dlq_quarantine,
+    )
+
+    monkeypatch.setenv(
+        "RAG_DUAL_WRITE_WEBHOOK_DLQ_QUARANTINE", str(tmp_path / "quarantine.jsonl")
+    )
+    monkeypatch.setenv(
+        "RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_WEBHOOK", "https://hooks.slack.test/q"
+    )
+    monkeypatch.setenv("RAG_DUAL_WRITE_DLQ_QUARANTINE_BLOCK_KIT", "1")
+    entry = {
+        "payload_digest": "abc123",
+        "attempts": 3,
+        "quarantine_reason": "replay_exhausted",
+    }
+    payload = build_dual_write_dlq_quarantine_slack_payload(
+        mode="enqueue", entry=entry, path=str(tmp_path / "quarantine.jsonl"), depth=1
+    )
+    assert isinstance(payload.get("blocks"), list)
+    assert payload["blocks"][0]["type"] == "header"
+    assert "Dual-write DLQ quarantine" in payload["text"]
+
+    aging = build_dual_write_dlq_quarantine_slack_payload(
+        mode="aging",
+        path=str(tmp_path / "quarantine.jsonl"),
+        depth=2,
+        reasons=["depth `2` ≥ `1`"],
+        oldest_age_hours=50.0,
+    )
+    assert aging["blocks"][0]["type"] == "header"
+    assert "aging" in aging["text"].lower()
+    assert "50.0h" in aging["blocks"][1]["text"]["text"]
+
+    with patch("rag.judge_alert.post_slack", return_value=True) as post:
+        out = maybe_alert_dual_write_dlq_quarantine(entry=entry, depth=1)
+    assert out.get("ok") is True
+    assert out.get("block_kit") is True
+    assert out.get("posted") is True
+    assert post.call_args[0][1]["blocks"][0]["type"] == "header"
+
+    monkeypatch.setenv("RAG_DUAL_WRITE_DLQ_QUARANTINE_BLOCK_KIT", "0")
+    plain = build_dual_write_dlq_quarantine_slack_payload(
+        mode="enqueue", entry=entry, depth=1
+    )
+    assert "blocks" not in plain
+
+
 def test_replay_dual_write_dlq_quarantine(tmp_path: Path, monkeypatch) -> None:
     import json
 

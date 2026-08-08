@@ -225,6 +225,39 @@ def test_build_inhibit_equal_apply_comment() -> None:
     assert "No inhibit diff" in unchanged
 
 
+def test_resolve_inhibit_equal_canary_pd_severity(monkeypatch) -> None:
+    import json
+
+    from scripts.ci_inhibit_equal_apply import resolve_inhibit_equal_canary_pd_severity
+
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PD_SEVERITY", raising=False)
+    monkeypatch.delenv("RAG_INHIBIT_EQUAL_CANARY_PD_SEVERITY", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PD_SEVERITY_BY_REASON", raising=False)
+    monkeypatch.delenv("RAG_INHIBIT_EQUAL_CANARY_PD_SEVERITY_BY_REASON", raising=False)
+    monkeypatch.delenv("CI_TEST_RESULT", raising=False)
+
+    assert (
+        resolve_inhibit_equal_canary_pd_severity({"reason": "amtool_regression"})
+        == "critical"
+    )
+    assert resolve_inhibit_equal_canary_pd_severity({"reason": "unknown"}) == "error"
+    monkeypatch.setenv("CI_TEST_RESULT", "failure")
+    assert resolve_inhibit_equal_canary_pd_severity({"reason": "unknown"}) == "critical"
+    monkeypatch.setenv(
+        "INHIBIT_EQUAL_CANARY_PD_SEVERITY_BY_REASON",
+        json.dumps({"backup_missing": "warning"}),
+    )
+    assert (
+        resolve_inhibit_equal_canary_pd_severity({"reason": "backup_missing"})
+        == "warning"
+    )
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_PD_SEVERITY", "info")
+    assert (
+        resolve_inhibit_equal_canary_pd_severity({"reason": "amtool_regression"})
+        == "info"
+    )
+
+
 def test_notify_inhibit_equal_rollback_canary(monkeypatch) -> None:
     from scripts.ci_inhibit_equal_apply import notify_inhibit_equal_rollback_canary
 
@@ -242,6 +275,9 @@ def test_notify_inhibit_equal_rollback_canary(monkeypatch) -> None:
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON", raising=False)
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_REGIONS", raising=False)
     monkeypatch.delenv("RAG_INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEYS_JSON", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PD_SEVERITY", raising=False)
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PD_SEVERITY_BY_REASON", raising=False)
+    monkeypatch.delenv("CI_TEST_RESULT", raising=False)
     skipped = notify_inhibit_equal_rollback_canary(report)
     assert skipped["skipped"] is True
 
@@ -262,9 +298,19 @@ def test_notify_inhibit_equal_rollback_canary(monkeypatch) -> None:
             pd_out = notify_inhibit_equal_rollback_canary(report)
     assert pd_out["pagerduty"] is True
     assert pd_out["posted"] is True
+    assert pd_out.get("pagerduty_severity") == "critical"
     assert pd.called
     assert pd.call_args.kwargs.get("source") == "inhibit-equal-canary"
     assert pd.call_args.kwargs.get("routing_key") == "pd-key"
+    assert pd.call_args.kwargs.get("severity") == "critical"
+
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_PD_SEVERITY", "warning")
+    with patch("rag.judge_alert.post_pagerduty", return_value=True) as pd_warn:
+        with patch("rag.judge_alert.post_slack", return_value=False):
+            tuned = notify_inhibit_equal_rollback_canary(report)
+    assert tuned.get("pagerduty_severity") == "warning"
+    assert pd_warn.call_args.kwargs.get("severity") == "warning"
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PD_SEVERITY", raising=False)
 
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", raising=False)
     monkeypatch.setenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", "og-key")

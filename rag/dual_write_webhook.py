@@ -262,6 +262,85 @@ def record_dual_write_dlq_replay_budget(
     return budget
 
 
+def quarantine_block_kit_enabled() -> bool:
+    raw = os.environ.get("RAG_DUAL_WRITE_DLQ_QUARANTINE_BLOCK_KIT", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def build_dual_write_dlq_quarantine_slack_payload(
+    *,
+    mode: str = "enqueue",
+    entry: Optional[Dict[str, Any]] = None,
+    path: Optional[str] = None,
+    depth: int = 0,
+    reasons: Optional[List[str]] = None,
+    oldest_age_hours: Optional[float] = None,
+    prune_report: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Slack text (+ optional Block Kit) for quarantine enqueue/aging status."""
+    qpath = path or dual_write_webhook_dlq_quarantine_path()
+    row = entry or {}
+    if mode == "enqueue":
+        title = "Dual-write DLQ quarantine"
+        text = (
+            f"*{title}*\n"
+            f"digest=`{row.get('payload_digest')}` · attempts=`{row.get('attempts')}`\n"
+            f"reason=`{row.get('quarantine_reason') or row.get('reason')}`\n"
+            f"quarantine depth: *{depth}* · path=`{qpath}`"
+        )
+        body = (
+            f"*digest*: `{row.get('payload_digest') or '—'}`\n"
+            f"*attempts*: `{row.get('attempts')}`\n"
+            f"*reason*: `{row.get('quarantine_reason') or row.get('reason') or '—'}`\n"
+            f"*depth*: *{depth}*\n"
+            f"*path*: `{qpath}`"
+        )
+    else:
+        title = "Dual-write DLQ quarantine aging"
+        reason_bits = reasons or []
+        text = (
+            f"*{title} alert*\n"
+            + " · ".join(reason_bits)
+            + f"\nRemaining quarantine depth: *{depth}*"
+        )
+        if prune_report and prune_report.get("cutoff"):
+            text += f"\nCutoff: `{prune_report.get('cutoff')}`"
+        body = (
+            f"*status*: aging / threshold\n"
+            f"*depth*: *{depth}*\n"
+            f"*oldest*: `{oldest_age_hours:.1f}h`"
+            if oldest_age_hours is not None
+            else f"*status*: aging / threshold\n*depth*: *{depth}*"
+        )
+        if reason_bits:
+            body += "\n*reasons*: " + " · ".join(reason_bits)
+        if prune_report and prune_report.get("cutoff"):
+            body += f"\n*cutoff*: `{prune_report.get('cutoff')}`"
+        body += f"\n*path*: `{qpath}`"
+    payload: Dict[str, Any] = {"text": text}
+    if quarantine_block_kit_enabled():
+        payload["blocks"] = [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": title[:150], "emoji": False},
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": body[:2900]},
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"mode=`{mode}` · service=`rag-ingest`",
+                    }
+                ],
+            },
+        ]
+    return payload
+
+
 def maybe_alert_dual_write_dlq_quarantine(
     *,
     entry: Optional[Dict[str, Any]] = None,
@@ -284,20 +363,26 @@ def maybe_alert_dual_write_dlq_quarantine(
         if depth is not None
         else dual_write_dlq_quarantine_depth(path=qpath)
     )
+    use_blocks = quarantine_block_kit_enabled()
     # Enqueue path: single entry notification
     if entry is not None and removed <= 0 and oldest_age_hours is None and prune_report is None:
-        row = entry or {}
-        text = (
-            "*Dual-write DLQ quarantine*\n"
-            f"digest=`{row.get('payload_digest')}` · attempts=`{row.get('attempts')}`\n"
-            f"reason=`{row.get('quarantine_reason') or row.get('reason')}`\n"
-            f"quarantine depth: *{depth_n}* · path=`{qpath}`"
+        payload = build_dual_write_dlq_quarantine_slack_payload(
+            mode="enqueue",
+            entry=entry,
+            path=qpath,
+            depth=depth_n,
         )
         try:
             from rag.judge_alert import post_slack
 
-            ok = post_slack(webhook, {"text": text})
-            return {"ok": bool(ok), "skipped": False, "posted": bool(ok), "depth": depth_n}
+            ok = post_slack(webhook, payload)
+            return {
+                "ok": bool(ok),
+                "skipped": False,
+                "posted": bool(ok),
+                "depth": depth_n,
+                "block_kit": use_blocks,
+            }
         except Exception as exc:
             return {"ok": False, "error": type(exc).__name__, "detail": str(exc)}
 
@@ -324,23 +409,25 @@ def maybe_alert_dual_write_dlq_quarantine(
         )
     if not reasons:
         return {"ok": True, "skipped": True, "reason": "below_threshold", "depth": depth_n}
-    text = (
-        "*Dual-write DLQ quarantine aging alert*\n"
-        + " · ".join(reasons)
-        + f"\nRemaining quarantine depth: *{depth_n}*"
+    payload = build_dual_write_dlq_quarantine_slack_payload(
+        mode="aging",
+        path=qpath,
+        depth=depth_n,
+        reasons=reasons,
+        oldest_age_hours=oldest_age_hours,
+        prune_report=prune_report,
     )
-    if prune_report and prune_report.get("cutoff"):
-        text += f"\nCutoff: `{prune_report.get('cutoff')}`"
     try:
         from rag.judge_alert import post_slack
 
-        ok = post_slack(webhook, {"text": text})
+        ok = post_slack(webhook, payload)
         return {
             "ok": bool(ok),
             "skipped": False,
             "posted": bool(ok),
             "reasons": reasons,
             "depth": depth_n,
+            "block_kit": use_blocks,
         }
     except Exception as exc:
         return {"ok": False, "error": type(exc).__name__, "detail": str(exc)}
