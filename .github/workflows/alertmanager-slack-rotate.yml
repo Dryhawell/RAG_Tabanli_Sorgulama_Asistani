@@ -1,0 +1,91 @@
+"""Alertmanager Slack webhook rotate + GitHub Secrets sync."""
+
+name: Alertmanager Slack Rotate
+
+on:
+  workflow_dispatch:
+    inputs:
+      slack_webhook:
+        description: "Yeni Slack Incoming Webhook URL"
+        required: true
+        type: string
+      webhook_url:
+        description: "Opsiyonel RAG_ALERTMANAGER_WEBHOOK_URL"
+        required: false
+        default: ""
+        type: string
+      update_secrets:
+        description: "GitHub Actions secrets güncelle (GH_PAT gerekir)"
+        required: false
+        default: true
+        type: boolean
+      secrets_dry_run:
+        description: "Secret güncellemeyi dry-run yap"
+        required: false
+        default: false
+        type: boolean
+      github_environment:
+        description: "GitHub Environment adı (boş = repo secrets)"
+        required: false
+        default: ""
+        type: string
+      reload:
+        description: "Alertmanager /-/reload dene (genelde CI'da kapalı)"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pynacl
+      - name: Rotate Slack webhook
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          mkdir -p metadata
+          EXTRA="--no-reload"
+          if [ "${{ inputs.reload }}" = "true" ]; then
+            EXTRA=""
+          fi
+          if [ "${{ inputs.update_secrets }}" = "true" ]; then
+            EXTRA="$EXTRA --update-github-secrets"
+            if [ "${{ inputs.secrets_dry_run }}" = "true" ]; then
+              EXTRA="$EXTRA --secrets-dry-run"
+            fi
+            if [ -n "${{ inputs.github_environment }}" ]; then
+              EXTRA="$EXTRA --github-environment ${{ inputs.github_environment }}"
+            fi
+          fi
+          WH_EXTRA=""
+          if [ -n "${{ inputs.webhook_url }}" ]; then
+            WH_EXTRA="--webhook-url ${{ inputs.webhook_url }}"
+          fi
+          # shellcheck disable=SC2086
+          python -m rag.cli alertmanager \
+            --rotate-slack-webhook "${{ inputs.slack_webhook }}" \
+            --write-env metadata/alertmanager.slack.env \
+            --output metadata/alertmanager.rendered.yml \
+            $WH_EXTRA $EXTRA | tee metadata/alertmanager_rotate_out.json
+      - name: Upload rotate artifact (no secret body)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alertmanager-rotate
+          path: |
+            metadata/alertmanager_rotate_out.json
+            grafana/alertmanager.yml.template
+          if-no-files-found: ignore
