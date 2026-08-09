@@ -998,6 +998,65 @@ def test_export_mute_snapshots_csv(tmp_path: Path, monkeypatch) -> None:
         ["judge-ack-digest", "--upload-mute-snapshots", "--tenant", "acme"]
     )
     assert up_args.upload_mute_snapshots is True
+    assert (tmp_path / "mute_exports").is_dir()
+
+
+def test_mute_export_retention_and_signed_url(tmp_path: Path, monkeypatch) -> None:
+    import os
+    import time
+
+    from rag.judge_alert import (
+        build_mute_export_signed_url,
+        export_judge_ack_digest_mute_snapshots,
+        prune_judge_ack_digest_mute_exports,
+        set_judge_ack_digest_mute,
+        verify_mute_export_signature,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SIGNING_SECRET", "mute-secret")
+    monkeypatch.setenv("RAG_JUDGE_ACK_PUBLIC_URL", "http://example.test/judge/ack-form")
+    set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path))
+    out = export_judge_ack_digest_mute_snapshots(
+        fmt="csv", base=str(tmp_path), output=str(tmp_path / "mutes.csv")
+    )
+    assert out["ok"] is True
+    assert out.get("archive", {}).get("filename")
+    assert out.get("signed_url")
+    assert "/judge/mute-snapshots?" in out["signed_url"]
+    assert "sig=" in out["signed_url"]
+    fname = out["archive"]["filename"]
+    signed = build_mute_export_signed_url(fname, public_base="http://example.test")
+    assert signed["ok"] is True
+    assert verify_mute_export_signature(
+        fname, signed["expires"], signed["sig"], secret="mute-secret"
+    )
+    assert not verify_mute_export_signature(
+        fname, int(time.time()) - 10, signed["sig"], secret="mute-secret"
+    )
+
+    export_dir = tmp_path / "mute_exports"
+    old = export_dir / "judge_ack_digest_mute_snapshots_20000101T000000Z.csv"
+    old.write_text("tenant_id\nold\n", encoding="utf-8")
+    old_mtime = time.time() - 40 * 86400
+    os.utime(old, (old_mtime, old_mtime))
+    pruned = prune_judge_ack_digest_mute_exports(days=30, keep=50, base=str(tmp_path))
+    assert pruned["ok"] is True
+    assert pruned["removed"] >= 1
+    assert not old.exists()
+
+    from rag.cli import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "judge-ack-digest",
+            "--export-mute-snapshots",
+            "--prune-mute-exports",
+            "--sign-mute-export",
+        ]
+    )
+    assert args.prune_mute_exports is True
+    assert args.sign_mute_export is True
 
 
 def test_digest_message_ref_prune_ttl(tmp_path: Path, monkeypatch) -> None:

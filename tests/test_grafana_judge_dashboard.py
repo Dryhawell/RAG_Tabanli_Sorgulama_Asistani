@@ -30,6 +30,7 @@ def test_rag_judge_grafana_dashboard_json():
     assert "rag_inhibit_equal_canary_resolve_total" in joined
     assert "rag_inhibit_equal_canary_silence_total" in joined
     assert "rag_webhook_signing_sidecar_forward_total" in joined
+    assert "rag_webhook_signing_sidecar_cert_expiry_days" in joined
     assert "rag:inhibit_equal_canary_silence_fail_ratio:1h" in joined
     assert "rag_judge_ack_digest_msgref_reconcile_total" in joined
     assert "rag_judge_ack_digest_msgref_reconcile_checked" in joined
@@ -39,6 +40,7 @@ def test_rag_judge_grafana_dashboard_json():
     assert any("silence" in (t or "").lower() for t in titles)
     assert any("sidecar" in (t or "").lower() for t in titles)
     assert any("silence burn" in (t or "").lower() for t in titles)
+    assert any("cert expiry" in (t or "").lower() for t in titles)
     assert "canary" in (data.get("tags") or [])
     assert "inhibit" in (data.get("tags") or [])
     assert "msgref" in (data.get("tags") or [])

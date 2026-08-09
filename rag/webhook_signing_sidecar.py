@@ -11,6 +11,7 @@ import os
 import secrets
 import ssl
 import time
+from datetime import timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional, Tuple
 from urllib.error import HTTPError, URLError
@@ -155,10 +156,117 @@ def build_upstream_ssl_context() -> Optional[ssl.SSLContext]:
     return ctx
 
 
+def inspect_pem_cert_expiry(
+    path: str,
+    *,
+    role: str = "server",
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Parse PEM cert notAfter → days_left for Grafana cert-expiry alerts."""
+    out: Dict[str, Any] = {
+        "ok": False,
+        "role": role,
+        "path": path or "",
+        "configured": bool(path),
+    }
+    if not path:
+        out["error"] = "not_configured"
+        return out
+    if not os.path.isfile(path):
+        out["error"] = "missing_file"
+        return out
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+    except Exception as exc:
+        out["error"] = f"cryptography_unavailable:{exc}"
+        return out
+    try:
+        raw = open(path, "rb").read()
+        cert = x509.load_pem_x509_certificate(raw, default_backend())
+    except Exception as exc:
+        out["error"] = f"parse_failed:{exc}"
+        return out
+    try:
+        not_after = cert.not_valid_after_utc  # type: ignore[attr-defined]
+    except Exception:
+        not_after = cert.not_valid_after.replace(tzinfo=timezone.utc)
+    try:
+        not_before = cert.not_valid_before_utc  # type: ignore[attr-defined]
+    except Exception:
+        not_before = cert.not_valid_before.replace(tzinfo=timezone.utc)
+    ts_now = float(now if now is not None else time.time())
+    days_left = (not_after.timestamp() - ts_now) / 86400.0
+    out.update(
+        {
+            "ok": True,
+            "not_before": not_before.isoformat(),
+            "not_after": not_after.isoformat(),
+            "days_left": round(days_left, 3),
+            "expired": days_left < 0,
+        }
+    )
+    return out
+
+
+def inspect_sidecar_certs(*, now: Optional[float] = None) -> Dict[str, Any]:
+    """Inspect server + upstream client cert expiry (mTLS / upstream client-cert)."""
+    server = inspect_pem_cert_expiry(
+        sidecar_tls_cert_path(), role="server", now=now
+    )
+    upstream = inspect_pem_cert_expiry(
+        sidecar_upstream_client_cert_path(),
+        role="upstream_client",
+        now=now,
+    )
+    ca = inspect_pem_cert_expiry(sidecar_tls_ca_path(), role="ca", now=now)
+    certs = [c for c in (server, upstream, ca) if c.get("configured")]
+    days_values = [
+        float(c["days_left"])
+        for c in certs
+        if c.get("ok") and c.get("days_left") is not None
+    ]
+    min_days = min(days_values) if days_values else None
+    return {
+        "ok": True,
+        "server": server,
+        "upstream_client": upstream,
+        "ca": ca,
+        "min_days_left": min_days,
+        "certs": certs,
+    }
+
+
+def emit_sidecar_cert_metrics(report: Optional[Dict[str, Any]] = None) -> None:
+    """Prometheus: rag_webhook_signing_sidecar_cert_expiry_days{role}."""
+    try:
+        from rag.metrics import record_metric
+    except Exception:
+        return
+    data = report or inspect_sidecar_certs()
+    for role_key in ("server", "upstream_client", "ca"):
+        item = data.get(role_key) or {}
+        if not item.get("ok"):
+            continue
+        try:
+            days = float(item.get("days_left"))
+        except (TypeError, ValueError):
+            continue
+        try:
+            record_metric(
+                "webhook_signing_sidecar_cert_expiry",
+                values={"role": role_key, "days_left": days},
+            )
+        except Exception:
+            pass
+
+
 def sidecar_tls_status() -> Dict[str, Any]:
     enabled = sidecar_tls_enabled()
     mtls = bool(enabled and sidecar_mtls_required())
     upstream_client = sidecar_upstream_client_cert_enabled()
+    certs = inspect_sidecar_certs()
+    emit_sidecar_cert_metrics(certs)
     return {
         "tls": enabled,
         "mtls": mtls,
@@ -166,6 +274,14 @@ def sidecar_tls_status() -> Dict[str, Any]:
         "ca": sidecar_tls_ca_path() if mtls else "",
         "upstream_client_cert": upstream_client,
         "upstream_ca": bool(sidecar_upstream_ca_path()),
+        "cert_expiry": {
+            "server_days_left": (certs.get("server") or {}).get("days_left"),
+            "upstream_client_days_left": (certs.get("upstream_client") or {}).get(
+                "days_left"
+            ),
+            "ca_days_left": (certs.get("ca") or {}).get("days_left"),
+            "min_days_left": certs.get("min_days_left"),
+        },
     }
 
 
@@ -443,9 +559,20 @@ class _SigningSidecarHandler(BaseHTTPRequestHandler):
                     "mtls": tls.get("mtls"),
                     "upstream_client_cert": tls.get("upstream_client_cert"),
                     "upstream_ca": tls.get("upstream_ca"),
+                    "cert_expiry": tls.get("cert_expiry"),
                 },
                 ensure_ascii=False,
             ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path in {"/certs", "/check-certs"}:
+            report = inspect_sidecar_certs()
+            emit_sidecar_cert_metrics(report)
+            body = json.dumps(report, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))

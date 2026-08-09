@@ -90,6 +90,52 @@ def test_handle_judge_ack_export_tenant(tmp_path, monkeypatch):
     assert b"beta" not in body
 
 
+def test_handle_judge_mute_snapshots_signed(tmp_path, monkeypatch):
+    from rag.collab_http import handle_judge_mute_snapshots
+    from rag.judge_alert import (
+        build_mute_export_signed_url,
+        export_judge_ack_digest_mute_snapshots,
+        set_judge_ack_digest_mute,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SIGNING_SECRET", "s3cret")
+    set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path))
+    exported = export_judge_ack_digest_mute_snapshots(fmt="csv", base=str(tmp_path))
+    fname = exported["archive"]["filename"]
+    signed = build_mute_export_signed_url(fname, public_base="http://example.test")
+    code, headers, body = handle_judge_mute_snapshots(
+        query={
+            "file": [fname],
+            "expires": [str(signed["expires"])],
+            "sig": [signed["sig"]],
+        }
+    )
+    assert code == 200
+    assert "text/csv" in headers["Content-Type"]
+    assert b"tenant_id" in body
+    bad = handle_judge_mute_snapshots(
+        query={"file": [fname], "expires": [str(signed["expires"])], "sig": ["v0=bad"]}
+    )
+    assert bad[0] == 403
+
+
+def test_ops_amtool_and_silence_burn_pages():
+    from rag.collab_http import handle_ops_amtool_page, handle_ops_silence_burn_page
+
+    code, headers, body = handle_ops_amtool_page()
+    assert code == 200
+    assert "text/html" in headers["Content-Type"]
+    assert b"amtool" in body
+    assert b"--check-config" in body
+    assert b"/ops/silence-burn" in body
+    code2, _, body2 = handle_ops_silence_burn_page()
+    assert code2 == 200
+    assert b"RagInhibitEqualCanarySilenceBurn" in body2
+    assert b"--list-silences" in body2
+    assert b"/ops/amtool" in body2
+
+
 def test_handle_judge_slack_interactive(tmp_path, monkeypatch):
     import hashlib
     import hmac

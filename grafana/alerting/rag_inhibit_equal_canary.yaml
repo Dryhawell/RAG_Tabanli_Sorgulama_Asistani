@@ -171,7 +171,11 @@ groups:
           description: >
             Silence fail ratio elevated (1h or 6h window).
             Dashboard: rag-judge (Inhibit equal canary silence panel).
+            Runbook: /ops/silence-burn (amtool: /ops/amtool).
+            python -m rag.cli alertmanager --list-silences
+            python -m rag.cli alertmanager --check-config
             Check INHIBIT_EQUAL_CANARY_AUTO_SILENCE + Alertmanager silences API.
+          runbook_url: /ops/silence-burn
         labels:
           severity: critical
           service: rag

@@ -162,6 +162,137 @@ def handle_judge_ack_export(
     )
 
 
+def handle_judge_mute_snapshots(
+    *,
+    query: Optional[Dict[str, List[str]]] = None,
+) -> Tuple[int, Dict[str, str], bytes]:
+    """GET: HMAC-signed mute snapshot export download."""
+    from rag.judge_alert import (
+        read_judge_ack_digest_mute_export_file,
+        verify_mute_export_signature,
+    )
+
+    qs = query or {}
+    filename = ((qs.get("file") or qs.get("filename") or [""])[0] or "").strip()
+    expires = ((qs.get("expires") or qs.get("exp") or [""])[0] or "").strip()
+    sig = ((qs.get("sig") or qs.get("signature") or [""])[0] or "").strip()
+    if not filename or not expires or not sig:
+        return (
+            400,
+            {"Content-Type": "application/json"},
+            json.dumps(
+                {"ok": False, "error": "file_expires_sig_required"},
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        )
+    if not verify_mute_export_signature(filename, expires, sig):
+        return (
+            403,
+            {"Content-Type": "application/json"},
+            json.dumps(
+                {"ok": False, "error": "invalid_or_expired_signature"},
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        )
+    report = read_judge_ack_digest_mute_export_file(filename)
+    if not report.get("ok"):
+        return (
+            404,
+            {"Content-Type": "application/json"},
+            json.dumps(report, ensure_ascii=False).encode("utf-8"),
+        )
+    kind = report.get("format") or "csv"
+    ctype = (
+        "text/csv; charset=utf-8"
+        if kind == "csv"
+        else "application/x-ndjson; charset=utf-8"
+    )
+    headers = {
+        "Content-Type": ctype,
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store",
+        "X-Mute-Export-Expires": str(expires),
+    }
+    return 200, headers, (report.get("text") or "").encode("utf-8")
+
+
+def handle_ops_amtool_page() -> Tuple[int, Dict[str, str], bytes]:
+    """GET: amtool / silence burn ops runbook page."""
+    html = """<!DOCTYPE html>
+<html lang="tr"><head><meta charset="utf-8"/><title>RAG amtool / silence burn</title>
+<style>
+body{font-family:ui-sans-serif,system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;line-height:1.5;color:#1a1a1a;background:linear-gradient(180deg,#f7fafc 0%,#eef2f7 100%);min-height:100vh}
+h1{font-size:1.6rem;margin-bottom:0.25rem}
+h2{font-size:1.15rem;margin-top:1.75rem}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.88rem}
+pre{background:#0f172a;color:#e2e8f0;padding:12px 14px;overflow:auto}
+.note{color:#475569;font-size:0.95rem}
+a{color:#0f766e}
+</style></head><body>
+<h1>Inhibit equal — amtool &amp; silence burn</h1>
+<p class="note">Runbook for <code>RagInhibitEqualCanarySilenceBurn</code> and Alertmanager equal apply gates.</p>
+<p><a href="/ops/silence-burn">Silence burn runbook →</a></p>
+<h2>amtool check-config</h2>
+<pre>python -m rag.cli alertmanager --check-config
+# veya
+amtool check-config grafana/alertmanager.yml</pre>
+<h2>List / inspect silences</h2>
+<pre>python -m rag.cli alertmanager --list-silences
+python -m rag.cli alertmanager --list-alerts</pre>
+<h2>Equal apply gate</h2>
+<pre>python -m rag.cli alertmanager --apply-equal --require-amtool
+# CI: INHIBIT_EQUAL_REQUIRE_AMTOOL=1</pre>
+<h2>Canary auto-silence knobs</h2>
+<pre>INHIBIT_EQUAL_CANARY_AUTO_SILENCE=1
+INHIBIT_EQUAL_CANARY_AUTO_SILENCE_DURATION=2h
+# expiry webhook:
+python -m rag.cli alertmanager --canary-silence-expiry</pre>
+<p class="note">Dashboard: Grafana <code>rag-judge</code> → Inhibit equal canary silence / burn panels.</p>
+</body></html>
+"""
+    return (
+        200,
+        {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache"},
+        html.encode("utf-8"),
+    )
+
+
+def handle_ops_silence_burn_page() -> Tuple[int, Dict[str, str], bytes]:
+    """GET: silence burn-rate triage runbook."""
+    html = """<!DOCTYPE html>
+<html lang="tr"><head><meta charset="utf-8"/><title>Silence burn runbook</title>
+<style>
+body{font-family:ui-sans-serif,system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;line-height:1.5;color:#1a1a1a;background:linear-gradient(180deg,#fff7ed 0%,#f8fafc 55%);min-height:100vh}
+h1{font-size:1.6rem}
+ol{padding-left:1.2rem}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.88rem}
+pre{background:#111827;color:#f3f4f6;padding:12px 14px;overflow:auto}
+a{color:#b45309}
+</style></head><body>
+<h1>Silence burn-rate runbook</h1>
+<p>Alert: <code>RagInhibitEqualCanarySilenceBurn</code> — fail ratio on <code>rag_inhibit_equal_canary_silence_total</code>.</p>
+<ol>
+<li>Confirm burn windows: <code>rag:inhibit_equal_canary_silence_fail_ratio:1h/6h</code> on Grafana rag-judge.</li>
+<li>List silences and recent canary outcomes:</li>
+</ol>
+<pre>python -m rag.cli alertmanager --list-silences
+python -m rag.cli alertmanager --check-config
+# artifact: metadata/inhibit_equal_canary_silence.json</pre>
+<ol start="3">
+<li>If Alertmanager API rejects silences, fix auth/URL then re-run equal apply with amtool gate.</li>
+<li>Expiry path: <code>--canary-silence-expiry</code> + <code>INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK</code>.</li>
+<li>Disable temporarily only if needed: <code>INHIBIT_EQUAL_CANARY_AUTO_SILENCE=0</code>.</li>
+</ol>
+<p><a href="/ops/amtool">amtool ops page →</a></p>
+</body></html>
+"""
+    return (
+        200,
+        {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache"},
+        html.encode("utf-8"),
+    )
+
+
 def handle_judge_slack_interactive(
     body: bytes,
     *,
@@ -603,6 +734,16 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query or "")
             self._send(*handle_judge_ack_export(query=qs))
             return
+        if path == "/judge/mute-snapshots":
+            qs = parse_qs(parsed.query or "")
+            self._send(*handle_judge_mute_snapshots(query=qs))
+            return
+        if path in {"/ops/amtool", "/ops/amtool/"}:
+            self._send(*handle_ops_amtool_page())
+            return
+        if path in {"/ops/silence-burn", "/ops/silence-burn/"}:
+            self._send(*handle_ops_silence_burn_page())
+            return
         if path in {"/judge/alert", "/judge/alert-state"}:
             self._send(*handle_judge_alert_state())
             return
@@ -618,8 +759,11 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
                         "/judge/ack",
                         "/judge/ack-form",
                         "/judge/ack-export",
+                        "/judge/mute-snapshots",
                         "/judge/slack-interactive",
                         "/judge/alert",
+                        "/ops/amtool",
+                        "/ops/silence-burn",
                         "/alertmanager",
                         "/hooks/dual-write-catch-up",
                         "/hooks/dual-write-dlq-quarantine",

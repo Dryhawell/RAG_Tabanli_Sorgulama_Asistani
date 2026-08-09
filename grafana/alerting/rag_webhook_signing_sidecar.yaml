@@ -108,3 +108,102 @@ groups:
           severity: critical
           service: rag-ingest
           team: rag
+      - uid: rag-webhook-signing-sidecar-cert-expiry-soon
+        title: RAG webhook signing sidecar cert expiry soon
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: rag_webhook_signing_sidecar_cert_expiry_days
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [14]
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 30m
+        annotations:
+          summary: Signing sidecar mTLS cert expiry soon
+          description: >
+            Sidecar PEM cert days_left < 14.
+            Check: python -m rag.cli webhook-signing-sidecar --check-certs
+        labels:
+          severity: warning
+          service: rag-ingest
+          team: rag
+      - uid: rag-webhook-signing-sidecar-cert-expired
+        title: RAG webhook signing sidecar cert expired
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: rag_webhook_signing_sidecar_cert_expiry_days
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [0]
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Signing sidecar mTLS cert expired
+          description: >
+            Sidecar PEM cert already expired. Rotate metadata/sidecar-tls and restart.
+        labels:
+          severity: critical
+          service: rag-ingest
+          team: rag

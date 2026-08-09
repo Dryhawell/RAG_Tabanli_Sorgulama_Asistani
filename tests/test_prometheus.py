@@ -127,6 +127,11 @@ def test_prometheus_observe_and_dump(monkeypatch):
         values={"mode": "dlq_quarantine", "result": "ok"},
         enabled=True,
     )
+    observe_metric(
+        "webhook_signing_sidecar_cert_expiry",
+        values={"role": "server", "days_left": 12.5},
+        enabled=True,
+    )
     body = render_prometheus().decode("utf-8")
     assert "rag_queries_total" in body
     assert "rag_ingest_total" in body
@@ -152,6 +157,7 @@ def test_prometheus_observe_and_dump(monkeypatch):
     assert "rag_judge_ack_digest_msgref_reconcile_dropped" in body
     assert "rag_judge_ack_digest_msgref_reconcile_repaired" in body
     assert "rag_webhook_signing_sidecar_forward_total" in body
+    assert "rag_webhook_signing_sidecar_cert_expiry_days" in body
 
 
 def test_record_metric_forwards_to_prometheus(tmp_path, monkeypatch):

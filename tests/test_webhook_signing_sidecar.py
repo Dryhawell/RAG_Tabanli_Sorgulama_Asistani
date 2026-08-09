@@ -328,3 +328,40 @@ def test_sidecar_mtls_requires_ca(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_MTLS", "1")
     with pytest.raises(ValueError, match="mtls_requires_ca"):
         build_sidecar_ssl_context()
+
+
+def test_sidecar_cert_expiry_inspect(tmp_path: Path, monkeypatch) -> None:
+    cryptography = pytest.importorskip("cryptography")
+    _ = cryptography
+    from rag.webhook_signing_sidecar import (
+        inspect_sidecar_certs,
+        sidecar_tls_status,
+    )
+
+    cert, key, ca, client_cert, client_key = _write_self_signed_pair(tmp_path)
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT", str(cert))
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_KEY", str(key))
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CA", str(ca))
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_MTLS", "1")
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT", str(client_cert)
+    )
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_KEY", str(client_key)
+    )
+    report = inspect_sidecar_certs()
+    assert report["ok"] is True
+    assert report["server"]["ok"] is True
+    assert report["server"]["days_left"] > 0
+    assert report["upstream_client"]["ok"] is True
+    assert report["min_days_left"] is not None
+    status = sidecar_tls_status()
+    assert status["cert_expiry"]["server_days_left"] is not None
+    assert status["cert_expiry"]["min_days_left"] is not None
+
+    from rag.cli import build_parser
+
+    args = build_parser().parse_args(
+        ["webhook-signing-sidecar", "--check-certs", "--tls-cert", str(cert)]
+    )
+    assert args.check_certs is True

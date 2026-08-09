@@ -50,6 +50,7 @@ _msgref_reconcile_checked = None
 _msgref_reconcile_dropped = None
 _msgref_reconcile_repaired = None
 _sidecar_forward_total = None
+_sidecar_cert_expiry_days = None
 
 
 def prometheus_available() -> bool:
@@ -83,6 +84,7 @@ def _ensure_metrics():
     global _msgref_reconcile_total
     global _msgref_reconcile_checked, _msgref_reconcile_dropped, _msgref_reconcile_repaired
     global _sidecar_forward_total
+    global _sidecar_cert_expiry_days
     if _events_total is not None:
         return
     if not prometheus_available():
@@ -232,6 +234,11 @@ def _ensure_metrics():
         "rag_webhook_signing_sidecar_forward_total",
         "Alertmanager HMAC signing sidecar forward outcomes",
         ["mode", "result"],
+    )
+    _sidecar_cert_expiry_days = Gauge(
+        "rag_webhook_signing_sidecar_cert_expiry_days",
+        "Days until webhook signing sidecar PEM cert notAfter",
+        ["role"],
     )
 
 
@@ -466,6 +473,14 @@ def observe_metric(
             mode = str(vals.get("mode") or "dlq_quarantine")
             result = str(vals.get("result") or vals.get("error") or "unknown")
             _sidecar_forward_total.labels(mode=mode, result=result).inc()
+        elif kind == "webhook_signing_sidecar_cert_expiry":
+            assert _sidecar_cert_expiry_days is not None
+            role = str(vals.get("role") or "server")
+            try:
+                days = float(vals.get("days_left"))
+            except (TypeError, ValueError):
+                return
+            _sidecar_cert_expiry_days.labels(role=role).set(days)
 
 
 def render_prometheus() -> bytes:

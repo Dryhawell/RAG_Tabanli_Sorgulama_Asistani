@@ -788,6 +788,25 @@
           "refId": "B"
         }
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Signing sidecar cert expiry",
+      "description": "rag_webhook_signing_sidecar_cert_expiry_days by role (RagWebhookSigningSidecarCertExpirySoon)",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 86
+      },
+      "id": 26,
+      "targets": [
+        {
+          "expr": "rag_webhook_signing_sidecar_cert_expiry_days",
+          "legendFormat": "{{role}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "schemaVersion": 39,

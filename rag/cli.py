@@ -1267,6 +1267,8 @@ def cmd_prometheus(args: argparse.Namespace) -> int:
 def cmd_webhook_signing_sidecar(args: argparse.Namespace) -> int:
     from rag.webhook_signing_sidecar import (
         build_signed_webhook_headers,
+        emit_sidecar_cert_metrics,
+        inspect_sidecar_certs,
         run_webhook_signing_sidecar,
         sidecar_listen_host,
         sidecar_listen_port,
@@ -1296,6 +1298,22 @@ def cmd_webhook_signing_sidecar(args: argparse.Namespace) -> int:
         )
     if getattr(args, "upstream_ca", None):
         os.environ["RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CA"] = str(args.upstream_ca)
+
+    if getattr(args, "check_certs", False):
+        report = inspect_sidecar_certs()
+        emit_sidecar_cert_metrics(report)
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        min_days = report.get("min_days_left")
+        warn_raw = os.environ.get(
+            "RAG_WEBHOOK_SIGNING_SIDECAR_CERT_EXPIRY_WARN_DAYS", "14"
+        ).strip()
+        try:
+            warn_days = float(warn_raw or 14)
+        except Exception:
+            warn_days = 14.0
+        if min_days is not None and float(min_days) < warn_days:
+            return 2
+        return 0 if report.get("ok") else 1
 
     if getattr(args, "sign_once", False):
         body = sys.stdin.buffer.read() or b"{}"
@@ -1530,6 +1548,10 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
     if getattr(args, "export_mute_snapshots", False) or getattr(
         args, "upload_mute_snapshots", False
     ):
+        from rag.judge_alert import maybe_prune_judge_ack_digest_mute_exports
+
+        if getattr(args, "prune_mute_exports", False):
+            os.environ.setdefault("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_PRUNE", "1")
         if getattr(args, "upload_mute_snapshots", False):
             from rag.judge_alert import upload_judge_ack_digest_mute_snapshots_slack
 
@@ -1537,6 +1559,9 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
                 tenant_id=getattr(args, "tenant", None),
                 fmt=getattr(args, "export_format", None) or "csv",
                 channel_id=getattr(args, "upload_channel", None),
+            )
+            report["mute_export_prune"] = maybe_prune_judge_ack_digest_mute_exports(
+                dry_run=dry_run
             )
             print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
             return 0 if report.get("ok") and (
@@ -1548,7 +1573,20 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
             output=getattr(args, "export_output", None),
             tenant_id=getattr(args, "tenant", None),
         )
-        if report.get("output"):
+        report["mute_export_prune"] = maybe_prune_judge_ack_digest_mute_exports(
+            dry_run=dry_run
+        )
+        if getattr(args, "sign_mute_export", False) and not report.get("signed_url"):
+            from rag.judge_alert import build_mute_export_signed_url
+
+            arch = report.get("archive") or {}
+            fname = arch.get("filename")
+            if fname:
+                signed = build_mute_export_signed_url(str(fname))
+                report["signed"] = signed
+                if signed.get("ok"):
+                    report["signed_url"] = signed.get("url")
+        if report.get("output") or getattr(args, "sign_mute_export", False):
             print(
                 json.dumps(
                     {k: v for k, v in report.items() if k != "text"},
@@ -2195,6 +2233,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="--export-mute-snapshots dosya yolu (yoksa stdout)",
     )
+    p_jdig.add_argument(
+        "--prune-mute-exports",
+        action="store_true",
+        help="Mute export artifact retention (mute_exports/)",
+    )
+    p_jdig.add_argument(
+        "--sign-mute-export",
+        action="store_true",
+        help="Export raporuna HMAC signed download URL ekle",
+    )
     p_jdig.set_defaults(func=cmd_judge_ack_digest)
 
     p_wss = sub.add_parser(
@@ -2262,6 +2310,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--upstream-ca",
         default=None,
         help="Upstream CA PEM (RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CA)",
+    )
+    p_wss.add_argument(
+        "--check-certs",
+        action="store_true",
+        help="mTLS/server/upstream cert expiry JSON (exit 2 if days_left < warn)",
     )
     p_wss.set_defaults(func=cmd_webhook_signing_sidecar)
 

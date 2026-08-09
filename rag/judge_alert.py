@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import time
@@ -1392,6 +1394,16 @@ def export_judge_ack_digest_mute_snapshots(
         os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
         with open(output, "w", encoding="utf-8") as f:
             f.write(text)
+    archive = archive_judge_ack_digest_mute_export(
+        text=text, fmt=kind, base=base, source_output=output
+    )
+    signed: Optional[Dict[str, Any]] = None
+    if archive.get("filename"):
+        signed = build_mute_export_signed_url(
+            str(archive["filename"]), base=base, public_base=None
+        )
+        if not signed.get("ok"):
+            signed = None
     return {
         "ok": True,
         "format": kind,
@@ -1401,6 +1413,304 @@ def export_judge_ack_digest_mute_snapshots(
         "tenant_id": want or None,
         "muted_count": sum(1 for r in rows if r.get("active") in {True, "True", "true", 1, "1"}),
         "snapshot_count": sum(1 for r in rows if r.get("snapshot_saved_at")),
+        "archive": archive,
+        "signed_url": (signed or {}).get("url"),
+        "signed": signed,
+    }
+
+
+def judge_ack_digest_mute_exports_dir(*, base: Optional[str] = None) -> str:
+    try:
+        from app.config import METADATA_DIR
+    except ImportError:
+        METADATA_DIR = "metadata"
+    root = (
+        base
+        or os.environ.get("RAG_JUDGE_ACK_DIGEST_BASE", "").strip()
+        or METADATA_DIR
+    )
+    return os.path.join(root, "mute_exports")
+
+
+def archive_judge_ack_digest_mute_export(
+    *,
+    text: str,
+    fmt: str = "csv",
+    base: Optional[str] = None,
+    source_output: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Timestamped copy under metadata/mute_exports/ for retention + signed URL."""
+    kind = (fmt or "csv").strip().lower()
+    if kind not in {"csv", "jsonl"}:
+        kind = "csv"
+    export_dir = judge_ack_digest_mute_exports_dir(base=base)
+    os.makedirs(export_dir, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    filename = f"judge_ack_digest_mute_snapshots_{stamp}.{kind}"
+    path = os.path.join(export_dir, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    # Also refresh stable latest name for convenience
+    latest = os.path.join(export_dir, f"judge_ack_digest_mute_snapshots.{kind}")
+    with open(latest, "w", encoding="utf-8") as f:
+        f.write(text)
+    return {
+        "ok": True,
+        "dir": export_dir,
+        "path": path,
+        "filename": filename,
+        "latest": latest,
+        "source_output": source_output,
+        "format": kind,
+        "bytes": len(text.encode("utf-8")),
+    }
+
+
+def mute_export_signing_secret() -> str:
+    return (
+        os.environ.get("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SIGNING_SECRET", "").strip()
+        or os.environ.get("RAG_JUDGE_ACK_TOKEN", "").strip()
+    )
+
+
+def mute_export_signed_url_ttl_sec() -> int:
+    raw = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_URL_TTL_SEC", ""
+    ).strip()
+    try:
+        return max(60, int(raw or 86400))
+    except Exception:
+        return 86400
+
+
+def build_mute_export_signature(
+    filename: str,
+    expires: int,
+    *,
+    secret: str,
+) -> str:
+    base = f"v0:{int(expires)}:{filename}"
+    digest = hmac.new(
+        secret.encode("utf-8"), base.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return f"v0={digest}"
+
+
+def verify_mute_export_signature(
+    filename: str,
+    expires: str | int,
+    signature: str,
+    *,
+    secret: Optional[str] = None,
+    now: Optional[float] = None,
+) -> bool:
+    sec = secret if secret is not None else mute_export_signing_secret()
+    if not sec or not filename or not signature:
+        return False
+    try:
+        exp = int(str(expires).strip())
+    except (TypeError, ValueError):
+        return False
+    ts_now = int(now if now is not None else time.time())
+    if exp < ts_now:
+        return False
+    expected = build_mute_export_signature(filename, exp, secret=sec)
+    return hmac.compare_digest(expected, str(signature).strip())
+
+
+def build_mute_export_signed_url(
+    filename: str,
+    *,
+    base: Optional[str] = None,
+    public_base: Optional[str] = None,
+    ttl_sec: Optional[int] = None,
+    secret: Optional[str] = None,
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """HMAC signed download URL for /judge/mute-snapshots."""
+    from urllib.parse import quote
+
+    name = os.path.basename((filename or "").strip())
+    if not name or name != os.path.basename(name) or ".." in name:
+        return {"ok": False, "error": "filename_invalid"}
+    sec = secret if secret is not None else mute_export_signing_secret()
+    if not sec:
+        return {"ok": False, "error": "signing_secret_missing", "filename": name}
+    ttl = int(ttl_sec if ttl_sec is not None else mute_export_signed_url_ttl_sec())
+    exp = int(now if now is not None else time.time()) + max(60, ttl)
+    sig = build_mute_export_signature(name, exp, secret=sec)
+    pub = (public_base or "").strip()
+    if not pub:
+        pub = os.environ.get("RAG_JUDGE_ACK_PUBLIC_URL", "").strip()
+        if pub.endswith("/judge/ack-form"):
+            pub = pub[: -len("/judge/ack-form")]
+        elif pub.endswith("/judge/ack-ui"):
+            pub = pub[: -len("/judge/ack-ui")]
+    if not pub:
+        try:
+            from app.config import COLLAB_HTTP_HOST, COLLAB_HTTP_PORT
+
+            host = COLLAB_HTTP_HOST or "127.0.0.1"
+            port = int(COLLAB_HTTP_PORT or 8765)
+            pub = f"http://{host}:{port}"
+        except Exception:
+            pub = "http://127.0.0.1:8765"
+    url = (
+        f"{pub.rstrip('/')}/judge/mute-snapshots"
+        f"?file={quote(name)}&expires={exp}&sig={quote(sig)}"
+    )
+    _ = base  # reserved for future path-scoped signing
+    return {
+        "ok": True,
+        "url": url,
+        "filename": name,
+        "expires": exp,
+        "ttl_sec": ttl,
+        "sig": sig,
+    }
+
+
+def prune_judge_ack_digest_mute_exports(
+    *,
+    days: Optional[float] = None,
+    keep: Optional[int] = None,
+    base: Optional[str] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Remove aged timestamped mute export artifacts under mute_exports/."""
+    export_dir = judge_ack_digest_mute_exports_dir(base=base)
+    if days is None and keep is None:
+        return {
+            "ok": False,
+            "error": "days_or_keep_required",
+            "dir": export_dir,
+            "dry_run": bool(dry_run),
+        }
+    if not os.path.isdir(export_dir):
+        return {
+            "ok": True,
+            "dir": export_dir,
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "dry_run": bool(dry_run),
+            "missing": True,
+        }
+    entries: List[Tuple[float, str]] = []
+    for name in os.listdir(export_dir):
+        if not name.startswith("judge_ack_digest_mute_snapshots_"):
+            continue
+        if not (name.endswith(".csv") or name.endswith(".jsonl")):
+            continue
+        path = os.path.join(export_dir, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        entries.append((mtime, path))
+    entries.sort(key=lambda x: x[0], reverse=True)  # newest first
+    before = len(entries)
+    cutoff_ts: Optional[float] = None
+    if days is not None:
+        cutoff_ts = time.time() - float(days) * 86400.0
+    kept: List[Tuple[float, str]] = []
+    for mtime, path in entries:
+        if cutoff_ts is not None and mtime < cutoff_ts:
+            continue
+        kept.append((mtime, path))
+    if keep is not None and len(kept) > int(keep):
+        kept = kept[: int(keep)]
+    kept_set = {p for _, p in kept}
+    uniq_removed = [p for _, p in entries if p not in kept_set]
+    if not dry_run:
+        for path in uniq_removed:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    return {
+        "ok": True,
+        "dir": export_dir,
+        "before": before,
+        "after": len(kept_set),
+        "removed": len(uniq_removed),
+        "removed_paths": [os.path.basename(p) for p in uniq_removed],
+        "dry_run": bool(dry_run),
+        "days": float(days) if days is not None else None,
+        "keep": int(keep) if keep is not None else None,
+        "cutoff": (
+            datetime.fromtimestamp(cutoff_ts, tz=timezone.utc).isoformat()
+            if cutoff_ts is not None
+            else None
+        ),
+    }
+
+
+def maybe_prune_judge_ack_digest_mute_exports(
+    *,
+    base: Optional[str] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Env: RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_RETENTION_DAYS / _KEEP / _PRUNE."""
+    prune_flag = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_PRUNE", ""
+    ).strip().lower()
+    if prune_flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "prune_disabled"}
+    days_raw = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_RETENTION_DAYS", ""
+    ).strip()
+    keep_raw = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_KEEP", ""
+    ).strip()
+    days: Optional[float] = None
+    keep: Optional[int] = None
+    if days_raw:
+        try:
+            days = float(days_raw)
+        except Exception:
+            return {"ok": False, "skipped": True, "reason": "days_invalid"}
+    if keep_raw:
+        try:
+            keep = int(keep_raw)
+        except Exception:
+            return {"ok": False, "skipped": True, "reason": "keep_invalid"}
+    if days is None and keep is None:
+        if prune_flag not in {"1", "true", "yes", "on"}:
+            return {"ok": True, "skipped": True, "reason": "retention_not_configured"}
+        days = 30.0
+        keep = 50
+    return prune_judge_ack_digest_mute_exports(
+        days=days, keep=keep, base=base, dry_run=dry_run
+    )
+
+
+def read_judge_ack_digest_mute_export_file(
+    filename: str,
+    *,
+    base: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Load a mute export artifact by basename from mute_exports/."""
+    name = os.path.basename((filename or "").strip())
+    if not name or name != os.path.basename(name) or ".." in name:
+        return {"ok": False, "error": "filename_invalid"}
+    if not name.startswith("judge_ack_digest_mute_snapshots"):
+        return {"ok": False, "error": "filename_not_allowed"}
+    path = os.path.join(judge_ack_digest_mute_exports_dir(base=base), name)
+    if not os.path.isfile(path):
+        return {"ok": False, "error": "not_found", "path": path}
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+    kind = "jsonl" if name.endswith(".jsonl") else "csv"
+    return {
+        "ok": True,
+        "filename": name,
+        "path": path,
+        "text": text,
+        "format": kind,
+        "bytes": len(text.encode("utf-8")),
     }
 
 
