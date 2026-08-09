@@ -82,6 +82,31 @@ jobs:
           # shellcheck disable=SC2086
           python -m rag.cli judge-ack-digest --hours "$HOURS" $FANOUT $EXTRA \
             | tee metadata/judge_ack_digest.json
+      - name: Export mute snapshots
+        id: mute_export
+        env:
+          RAG_JUDGE_SLACK_BOT_TOKEN: ${{ secrets.RAG_JUDGE_SLACK_BOT_TOKEN }}
+          RAG_JUDGE_ACK_DIGEST_MUTE_UPLOAD_CHANNEL: ${{ vars.RAG_JUDGE_ACK_DIGEST_MUTE_UPLOAD_CHANNEL }}
+        run: |
+          mkdir -p metadata
+          python -m rag.cli judge-ack-digest \
+            --export-mute-snapshots \
+            --export-format csv \
+            --export-output metadata/judge_ack_digest_mute_snapshots.csv \
+            | tee metadata/judge_ack_digest_mute_export.json
+          if [ -n "${RAG_JUDGE_SLACK_BOT_TOKEN}" ]; then
+            EXTRA_UPLOAD=""
+            if [ -n "${RAG_JUDGE_ACK_DIGEST_MUTE_UPLOAD_CHANNEL}" ]; then
+              EXTRA_UPLOAD="--upload-channel ${RAG_JUDGE_ACK_DIGEST_MUTE_UPLOAD_CHANNEL}"
+            fi
+            # shellcheck disable=SC2086
+            python -m rag.cli judge-ack-digest --upload-mute-snapshots --export-format csv \
+              $EXTRA_UPLOAD \
+              | tee metadata/judge_ack_digest_mute_upload.json
+          else
+            echo '{"ok":true,"skipped":true,"reason":"no_bot_token"}' \
+              | tee metadata/judge_ack_digest_mute_upload.json
+          fi
       - name: Upload digest report
         if: always()
         uses: actions/upload-artifact@v4
@@ -92,4 +117,7 @@ jobs:
             metadata/judge_ack_audit.jsonl
             metadata/judge_ack_digest_last.json
             metadata/judge_ack_digest_messages.json
+            metadata/judge_ack_digest_mute_snapshots.csv
+            metadata/judge_ack_digest_mute_export.json
+            metadata/judge_ack_digest_mute_upload.json
           if-no-files-found: ignore

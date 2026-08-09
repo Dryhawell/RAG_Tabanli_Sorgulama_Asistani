@@ -426,23 +426,29 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_upload_forward_silence_panel():
+def test_readme_sonraki_adaylar_after_mute_export_ci_sidecar_alerts_silence_burn():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
-    assert "mute snapshot export schedule CI" in text
-    assert "sidecar Grafana alerts" in text
-    assert "canary silence burn-rate rule" in text
+    assert "mute snapshot export retention" in text
+    assert "sidecar mTLS cert-expiry alert" in text
+    assert "silence burn runbook" in text
     # Completed this round — should not remain as next candidates
-    assert "mute snapshot Slack files.upload" not in text
-    assert "sidecar forward metrics" not in text
-    assert "canary silence Grafana panel" not in text
+    assert "mute snapshot export schedule CI" not in text
+    assert "sidecar Grafana alerts" not in text
+    assert "canary silence burn-rate rule" not in text
     assert "webhook-signing-sidecar" in text
     assert "--export-mute-snapshots" in text
     assert "--upload-mute-snapshots" in text
     assert "judge_ack_digest_export_mute_snapshots" in text
+    assert "judge-ack-digest.yml" in text
+    assert "RAG_JUDGE_ACK_DIGEST_MUTE_UPLOAD_CHANNEL" in text
     assert "rag_webhook_signing_sidecar_forward_total" in text
+    assert "RagWebhookSigningSidecarForwardFail" in text
+    assert "rag_webhook_signing_sidecar.yml" in text
+    assert "RagInhibitEqualCanarySilenceBurn" in text
+    assert "rag:inhibit_equal_canary_silence_fail_ratio" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT" in text
     assert "INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK" in text
     assert "--canary-silence-expiry" in text
@@ -477,6 +483,11 @@ def test_judge_ack_digest_mute_prune_workflow_yaml():
     assert "RAG_JUDGE_ACK_DIGEST_HISTORY_RECONCILE" in text
     assert "RAG_JUDGE_SLACK_BOT_TOKEN" in text
     assert "judge_ack_digest_messages.json" in text
+    assert "--export-mute-snapshots" in text
+    assert "--upload-mute-snapshots" in text
+    assert "judge_ack_digest_mute_snapshots.csv" in text
+    assert "RAG_JUDGE_ACK_DIGEST_MUTE_UPLOAD_CHANNEL" in text
+    assert "Export mute snapshots" in text
 
 
 def test_canary_silence_expiry_workflow_yaml():
@@ -571,13 +582,20 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "rag_inhibit_equal_canary_resolve_total" in rules
     assert 'result="fail"' in rules
     assert "dashboard_uid: rag-judge" in rules
+    assert "RagInhibitEqualCanarySilenceBurn" in rules
+    assert "rag:inhibit_equal_canary_silence_fail_ratio:1h" in rules
+    assert "rag:inhibit_equal_canary_silence_fail_ratio:6h" in rules
+    assert "rag_inhibit_equal_canary_silence_total" in rules
+    assert 'panel_id: "22"' in rules
     alerting = Path("grafana/alerting/rag_inhibit_equal_canary.yaml").read_text(
         encoding="utf-8"
     )
     assert "rag-inhibit-equal-canary-resolve-fail" in alerting
     assert "rag-inhibit-equal-canary-resolve-fail-burst" in alerting
+    assert "rag-inhibit-equal-canary-silence-burn" in alerting
     assert "rag_inhibit_equal_canary_resolve_total" in alerting
     assert "Inhibit equal canary resolve" in alerting
+    assert "silence burn-rate" in alerting
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
     assert "webhook-signing-sidecar" in compose
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM" in compose
@@ -585,6 +603,25 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "webhook-signing-sidecar" in am
     tmpl = Path("grafana/alertmanager.yml.template").read_text(encoding="utf-8")
     assert "signing sidecar" in tmpl
+
+
+def test_webhook_signing_sidecar_grafana_alert_artifacts():
+    rules = Path("grafana/rules/rag_webhook_signing_sidecar.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "RagWebhookSigningSidecarForwardFail" in rules
+    assert "RagWebhookSigningSidecarForwardFailBurst" in rules
+    assert "rag_webhook_signing_sidecar_forward_total" in rules
+    assert 'result!~"ok|dry_run"' in rules
+    assert 'panel_id: "24"' in rules
+    assert "rag-ingest" in rules
+    alerting = Path("grafana/alerting/rag_webhook_signing_sidecar.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "rag-webhook-signing-sidecar-forward-fail" in alerting
+    assert "rag-webhook-signing-sidecar-forward-fail-burst" in alerting
+    assert "Signing sidecar forward" in alerting
+    assert "rag-ingest" in alerting
 
 
 def test_suggest_equal_labels_and_from_live(tmp_path, monkeypatch):

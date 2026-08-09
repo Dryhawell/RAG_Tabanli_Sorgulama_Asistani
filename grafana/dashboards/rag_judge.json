@@ -752,7 +752,7 @@
       "description": "rag_webhook_signing_sidecar_forward_total by mode/result",
       "gridPos": {
         "h": 7,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 79
       },
@@ -762,6 +762,30 @@
           "expr": "sum by (mode, result) (rate(rag_webhook_signing_sidecar_forward_total[5m]))",
           "legendFormat": "{{mode}}/{{result}}",
           "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Inhibit equal canary silence burn",
+      "description": "rag:inhibit_equal_canary_silence_fail_ratio (RagInhibitEqualCanarySilenceBurn)",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 79
+      },
+      "id": 25,
+      "targets": [
+        {
+          "expr": "rag:inhibit_equal_canary_silence_fail_ratio:1h",
+          "legendFormat": "fail ratio 1h",
+          "refId": "A"
+        },
+        {
+          "expr": "rag:inhibit_equal_canary_silence_fail_ratio:6h",
+          "legendFormat": "fail ratio 6h",
+          "refId": "B"
         }
       ]
     }

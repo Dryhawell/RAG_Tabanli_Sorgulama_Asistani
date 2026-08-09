@@ -1,0 +1,38 @@
+groups:
+  - name: rag_webhook_signing_sidecar
+    interval: 30s
+    rules:
+      - record: rag:webhook_signing_sidecar_forward_fail:1h
+        expr: |
+          sum(increase(rag_webhook_signing_sidecar_forward_total{result!~"ok|dry_run"}[1h]))
+      - record: rag:webhook_signing_sidecar_forward_fail:6h
+        expr: |
+          sum(increase(rag_webhook_signing_sidecar_forward_total{result!~"ok|dry_run"}[6h]))
+      - alert: RagWebhookSigningSidecarForwardFail
+        expr: rag:webhook_signing_sidecar_forward_fail:1h > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: rag-ingest
+        annotations:
+          summary: "Signing sidecar forward failures"
+          description: >
+            Sidecar forward fail count {{ $value | humanize }} in the last 1h
+            (mode={{ $labels.mode }}). Used by dual-write DLQ quarantine HMAC path.
+            Dashboard: rag-judge (Signing sidecar forward panel).
+            Check: docker compose --profile obs logs webhook-signing-sidecar
+          dashboard_uid: rag-judge
+          panel_id: "24"
+      - alert: RagWebhookSigningSidecarForwardFailBurst
+        expr: rag:webhook_signing_sidecar_forward_fail:6h >= 3
+        for: 10m
+        labels:
+          severity: critical
+          service: rag-ingest
+        annotations:
+          summary: "Signing sidecar forward fail burst"
+          description: >
+            ≥3 sidecar forward failures in 6h (value={{ $value | humanize }}).
+            Quarantine Alertmanager → sidecar → upstream path degraded.
+          dashboard_uid: rag-judge
+          panel_id: "24"
