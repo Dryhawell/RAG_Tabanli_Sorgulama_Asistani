@@ -1,0 +1,72 @@
+groups:
+  - name: rag_inhibit_equal
+    interval: 30s
+    rules:
+      - alert: RagInhibitEqualCanaryResolveFail
+        expr: increase(rag_inhibit_equal_canary_resolve_total{result="fail"}[1h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: rag
+        annotations:
+          summary: "Inhibit equal canary resolve failed"
+          description: >
+            Canary resolve fail count {{ $value | humanize }} in the last 1h
+            (via={{ $labels.via }}).
+            Dashboard: rag-judge (Inhibit equal canary resolve panel).
+            CI: scripts/ci_inhibit_equal_apply.py close-on-green / thread resolve.
+          dashboard_uid: rag-judge
+          panel_id: "18"
+      - alert: RagInhibitEqualCanaryResolveFailBurst
+        expr: sum(increase(rag_inhibit_equal_canary_resolve_total{result="fail"}[6h])) >= 3
+        for: 10m
+        labels:
+          severity: critical
+          service: rag
+        annotations:
+          summary: "Inhibit equal canary resolve fail burst"
+          description: >
+            ≥3 canary resolve failures in 6h (value={{ $value | humanize }}).
+            Check Slack thread / webhook close path and CI inhibit-equal canary.
+          dashboard_uid: rag-judge
+          panel_id: "18"
+      # Silence burn-rate: fail ratio over short (1h) + long (6h) windows
+      - record: rag:inhibit_equal_canary_silence_fail_ratio:1h
+        expr: |
+          sum(increase(rag_inhibit_equal_canary_silence_total{result="fail"}[1h]))
+          /
+          clamp_min(sum(increase(rag_inhibit_equal_canary_silence_total[1h])), 1)
+      - record: rag:inhibit_equal_canary_silence_fail_ratio:6h
+        expr: |
+          sum(increase(rag_inhibit_equal_canary_silence_total{result="fail"}[6h]))
+          /
+          clamp_min(sum(increase(rag_inhibit_equal_canary_silence_total[6h])), 1)
+      - alert: RagInhibitEqualCanarySilenceBurn
+        expr: |
+          (
+            rag:inhibit_equal_canary_silence_fail_ratio:1h > 0.2
+            and sum(increase(rag_inhibit_equal_canary_silence_total[1h])) >= 3
+          )
+          or
+          (
+            rag:inhibit_equal_canary_silence_fail_ratio:6h > 0.1
+            and sum(increase(rag_inhibit_equal_canary_silence_total[6h])) >= 5
+          )
+        for: 10m
+        labels:
+          severity: critical
+          service: rag
+        annotations:
+          summary: "Inhibit equal canary silence burn-rate"
+          description: >
+            Silence fail ratio elevated (1h or 6h window).
+            Dashboard: rag-judge (Inhibit equal canary silence panel).
+            Runbook: /ops/silence-burn (amtool: /ops/amtool).
+            Slack canary button + PagerDuty/Opsgenie details.runbook_url
+            (INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL).
+            python -m rag.cli alertmanager --list-silences
+            python -m rag.cli alertmanager --check-config
+            Check INHIBIT_EQUAL_CANARY_AUTO_SILENCE + Alertmanager silences API.
+          runbook_url: /ops/silence-burn
+          dashboard_uid: rag-judge
+          panel_id: "22"
