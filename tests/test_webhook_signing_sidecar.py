@@ -414,3 +414,30 @@ def test_sidecar_cert_expiry_inspect(tmp_path: Path, monkeypatch) -> None:
     assert notified.get("posted") is True
     assert posts and posts[0][0].endswith("/rotate-notify")
     assert "rotated" in str(posts[0][1].get("text") or "").lower()
+
+    from rag.webhook_signing_sidecar import maybe_notify_sidecar_cert_rotate_fail
+
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PAGERDUTY_ROUTING_KEY", "pd-rotate-key"
+    )
+    pd_calls: list = []
+
+    def _fake_pd(**kwargs):
+        pd_calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr("rag.judge_alert.post_pagerduty", _fake_pd)
+    skipped_ok = maybe_notify_sidecar_cert_rotate_fail(
+        {"ok": True, "rotated": ["server"]}, force=True
+    )
+    assert skipped_ok.get("skipped") is True
+    failed = maybe_notify_sidecar_cert_rotate_fail(
+        {"ok": False, "error": "RotateBoom", "rotated": []},
+        force=True,
+    )
+    assert failed.get("ok") is True
+    assert failed.get("pagerduty") is True
+    assert failed.get("skipped") is not True
+    assert pd_calls
+    assert pd_calls[0].get("routing_key") == "pd-rotate-key"
+    assert pd_calls[0].get("source") == "webhook-signing-sidecar-rotate"

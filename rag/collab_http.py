@@ -282,14 +282,17 @@ a{color:#b45309}
 <h1>Silence burn-rate runbook</h1>
 <p>Alert: <code>RagInhibitEqualCanarySilenceBurn</code> — fail ratio on <code>rag_inhibit_equal_canary_silence_total</code>.</p>
 <p>Slack canary button + PagerDuty/Opsgenie <code>details.runbook_url</code> (<code>INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL</code>) deep-link here.</p>
+<p>Opsgenie alert deep-link (alias list): <code>details.opsgenie_url</code> via <code>opsgenie_alert_deep_link</code>
+(<code>INHIBIT_EQUAL_CANARY_OPSGENIE_ALERT_URL</code> / Grafana annotation <code>opsgenie_url</code>).</p>
 <ol>
 <li>Confirm burn windows: <code>rag:inhibit_equal_canary_silence_fail_ratio:1h/6h</code> on Grafana rag-judge.</li>
+<li>Open Opsgenie alias list for <code>rag-judge-soft-fail/inhibit-equal-canary</code> (US/EU app host).</li>
 <li>List silences and recent canary outcomes:</li>
 </ol>
 <pre>python -m rag.cli alertmanager --list-silences
 python -m rag.cli alertmanager --check-config
 # artifact: metadata/inhibit_equal_canary_silence.json</pre>
-<ol start="3">
+<ol start="4">
 <li>If Alertmanager API rejects silences, fix auth/URL then re-run equal apply with amtool gate.</li>
 <li>Expiry path: <code>--canary-silence-expiry</code> + <code>INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK</code>.</li>
 <li>Disable temporarily only if needed: <code>INHIBIT_EQUAL_CANARY_AUTO_SILENCE=0</code>.</li>
@@ -506,13 +509,25 @@ def handle_judge_slack_interactive(
                 b"{}",
             )
         err = str(result.get("error") or "ack_failed")
+        # Revoke confirm modal: field errors on revoke_note_block when present
+        err_block = (
+            "revoke_note_block"
+            if result.get("confirm") == "mute_export_revoke"
+            or result.get("callback_id") == "judge_mute_export_revoke_modal"
+            else "ack_note_block"
+        )
+        label = (
+            "Revoke failed"
+            if err_block == "revoke_note_block"
+            else "Ack failed"
+        )
         return (
             200,
             {"Content-Type": "application/json"},
             json.dumps(
                 {
                     "response_action": "errors",
-                    "errors": {"ack_note_block": f"Ack failed: {err}"},
+                    "errors": {err_block: f"{label}: {err}"},
                 }
             ).encode("utf-8"),
         )

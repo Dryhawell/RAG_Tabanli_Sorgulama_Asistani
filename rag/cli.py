@@ -1270,6 +1270,7 @@ def cmd_webhook_signing_sidecar(args: argparse.Namespace) -> int:
         emit_sidecar_cert_metrics,
         inspect_sidecar_certs,
         maybe_notify_sidecar_cert_rotate,
+        maybe_notify_sidecar_cert_rotate_fail,
         rotate_sidecar_certs,
         run_webhook_signing_sidecar,
         sidecar_listen_host,
@@ -1311,22 +1312,36 @@ def cmd_webhook_signing_sidecar(args: argparse.Namespace) -> int:
             warn_days = float(warn_raw or 14)
         except Exception:
             warn_days = 14.0
-        report = rotate_sidecar_certs(
-            days=int(getattr(args, "cert_days", None) or 90),
-            dry_run=bool(getattr(args, "dry_run", False)),
-            if_expiring_days=(
-                warn_days
-                if getattr(args, "rotate_certs_if_expiring", False)
-                else None
-            ),
-        )
+        try:
+            report = rotate_sidecar_certs(
+                days=int(getattr(args, "cert_days", None) or 90),
+                dry_run=bool(getattr(args, "dry_run", False)),
+                if_expiring_days=(
+                    warn_days
+                    if getattr(args, "rotate_certs_if_expiring", False)
+                    else None
+                ),
+            )
+        except Exception as exc:
+            report = {
+                "ok": False,
+                "error": type(exc).__name__,
+                "detail": str(exc)[:500],
+                "rotated": [],
+            }
         notify_force = bool(getattr(args, "notify", False))
         if notify_force:
             os.environ.setdefault(
                 "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY", "1"
             )
+            os.environ.setdefault(
+                "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_NOTIFY", "1"
+            )
         report["notify"] = maybe_notify_sidecar_cert_rotate(
             report, force=notify_force
+        )
+        report["notify_pd"] = maybe_notify_sidecar_cert_rotate_fail(
+            report, force=notify_force or not bool(report.get("ok"))
         )
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0 if report.get("ok") else 1

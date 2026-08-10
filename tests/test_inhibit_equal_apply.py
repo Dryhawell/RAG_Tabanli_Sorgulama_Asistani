@@ -402,6 +402,27 @@ def test_post_opsgenie_silence_burn_runbook_tags(monkeypatch) -> None:
     assert "silence" in tags
     assert body.get("details", {}).get("runbook_url")
     assert "silence-burn" in str(body["details"]["runbook_url"])
+    assert body.get("details", {}).get("opsgenie_url")
+    assert "opsgenie.com/alert/list" in str(body["details"]["opsgenie_url"])
+    assert "inhibit-equal-canary" in str(body["details"]["opsgenie_url"])
+    # EU region → eu.app host
+    assert "eu.app.opsgenie.com" in str(body["details"]["opsgenie_url"])
+
+
+def test_opsgenie_alert_deep_link_regions(monkeypatch) -> None:
+    from rag.judge_alert import opsgenie_alert_deep_link
+
+    monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_ALERT_URL", raising=False)
+    monkeypatch.delenv("RAG_OPSGENIE_ALERT_URL", raising=False)
+    us = opsgenie_alert_deep_link(source="inhibit-equal-canary", region="us")
+    assert us.startswith("https://app.opsgenie.com/alert/list?")
+    eu = opsgenie_alert_deep_link(source="inhibit-equal-canary", region="eu")
+    assert eu.startswith("https://eu.app.opsgenie.com/alert/list?")
+    monkeypatch.setenv(
+        "INHIBIT_EQUAL_CANARY_OPSGENIE_ALERT_URL",
+        "https://ops.example/alert/custom",
+    )
+    assert opsgenie_alert_deep_link() == "https://ops.example/alert/custom"
 
 
 def test_notify_inhibit_equal_close_on_green(monkeypatch) -> None:

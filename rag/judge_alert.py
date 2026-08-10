@@ -2793,6 +2793,7 @@ def build_judge_ack_digest_slack_blocks(
                     "text": {"type": "plain_text", "text": "Revoke export"},
                     "action_id": "judge_ack_digest_revoke_mute_export",
                     "value": tid or "latest",
+                    "style": "danger",
                 }
             )
         else:
@@ -2989,7 +2990,7 @@ def handle_slack_mute_export_revoke(
     value: str = "",
     base: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Slack Block Kit: revoke latest (or explicit) mute export signed URL."""
+    """Slack Block Kit / modal submit: revoke latest (or explicit) mute export signed URL."""
     actor = slack_interactive_actor(payload)
     resolved = resolve_mute_export_revoke_ref(value, base=base)
     if not resolved.get("ok"):
@@ -3002,10 +3003,24 @@ def handle_slack_mute_export_revoke(
             "actor": actor,
         }
     ref = str(resolved.get("ref") or "")
+    note = "slack_block_kit"
+    # Optional note from confirm modal
+    try:
+        view = payload.get("view") or {}
+        state = (view.get("state") or {}).get("values") or {}
+        block = state.get("revoke_note_block") or {}
+        field = block.get("revoke_note") or {}
+        modal_note = str(field.get("value") or "").strip()
+        if modal_note:
+            note = f"slack_confirm_modal:{modal_note[:400]}"
+        elif str(view.get("callback_id") or "") == "judge_mute_export_revoke_modal":
+            note = "slack_confirm_modal"
+    except Exception:
+        pass
     result = revoke_mute_export_signed_url(
         ref,
         actor=actor or "slack",
-        note="slack_block_kit",
+        note=note,
         base=base,
     )
     text = (
@@ -3042,6 +3057,136 @@ def handle_slack_mute_export_revoke(
             "error": ephemeral.get("error"),
         },
         "channel_id": channel_id,
+    }
+
+
+def build_mute_export_revoke_modal_view(
+    *,
+    ref: str,
+    filename: Optional[str] = None,
+    channel_id: Optional[str] = None,
+    message_ts: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Slack confirm modal before mute export signed URL revoke."""
+    meta: Dict[str, Any] = {"ref": str(ref or "").strip()}
+    if filename:
+        meta["filename"] = str(filename)
+    if channel_id:
+        meta["channel_id"] = str(channel_id)
+    if message_ts:
+        meta["message_ts"] = str(message_ts)
+    fname = str(filename or "").strip()
+    body = f"Revoke mute export signed URL jti=`{ref}`"
+    if fname:
+        body += f" · file=`{fname}`"
+    body += "?\nThis invalidates the download link immediately."
+    return {
+        "type": "modal",
+        "callback_id": "judge_mute_export_revoke_modal",
+        "title": {"type": "plain_text", "text": "Revoke mute export"},
+        "submit": {"type": "plain_text", "text": "Revoke"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "private_metadata": json.dumps(meta, ensure_ascii=False),
+        "blocks": [
+            {
+                "type": "section",
+                "block_id": "revoke_confirm_block",
+                "text": {"type": "mrkdwn", "text": body},
+            },
+            {
+                "type": "input",
+                "block_id": "revoke_note_block",
+                "optional": True,
+                "label": {"type": "plain_text", "text": "Note"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "revoke_note",
+                    "multiline": False,
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": "optional revoke reason",
+                    },
+                },
+            },
+        ],
+    }
+
+
+def parse_mute_export_revoke_modal_metadata(payload: Dict[str, Any]) -> Dict[str, str]:
+    view = payload.get("view") or {}
+    raw = str(view.get("private_metadata") or "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for key in ("ref", "filename", "channel_id", "message_ts"):
+        val = str(data.get(key) or "").strip()
+        if val:
+            out[key] = val
+    return out
+
+
+def open_mute_export_revoke_confirm_modal(
+    payload: Dict[str, Any],
+    *,
+    value: str = "",
+    base: Optional[str] = None,
+) -> Dict[str, Any]:
+    """block_actions → views.open confirm modal (does not revoke yet)."""
+    resolved = resolve_mute_export_revoke_ref(value, base=base)
+    channel_id = str(
+        ((payload.get("channel") or {}).get("id"))
+        or ((payload.get("container") or {}).get("channel_id"))
+        or ""
+    ).strip() or None
+    message_ts = str(
+        ((payload.get("message") or {}).get("ts"))
+        or ((payload.get("container") or {}).get("message_ts"))
+        or ""
+    ).strip() or None
+    if not resolved.get("ok"):
+        text = "No active mute export signed URL to revoke."
+        return {
+            "ok": False,
+            "mode": "digest_mute_export_revoke",
+            "error": resolved.get("error") or "not_found",
+            "text": text,
+            "channel_id": channel_id,
+        }
+    ref = str(resolved.get("ref") or "")
+    trigger_id = str(payload.get("trigger_id") or "").strip()
+    # Allow skipping modal when explicitly disabled (tests / break-glass)
+    confirm = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_CONFIRM", "1"
+    ).strip().lower()
+    if confirm in {"0", "false", "no", "off"}:
+        out = handle_slack_mute_export_revoke(payload, value=ref, base=base)
+        return out
+    opened = open_slack_modal(
+        trigger_id=trigger_id,
+        view=build_mute_export_revoke_modal_view(
+            ref=ref,
+            filename=str(resolved.get("filename") or "") or None,
+            channel_id=channel_id,
+            message_ts=message_ts,
+        ),
+    )
+    return {
+        "ok": bool(opened.get("ok")),
+        "mode": "modal_open",
+        "confirm": "mute_export_revoke",
+        "ref": ref,
+        "resolved": resolved.get("resolved"),
+        "error": opened.get("error"),
+        "opened": opened,
+        "channel_id": channel_id,
+        "message_ts": message_ts,
+        "text": f"Confirm revoke modal for jti=`{ref}`",
     }
 
 
@@ -3972,7 +4117,16 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     if ptype == "view_submission":
         view = payload.get("view") or {}
-        if str(view.get("callback_id") or "") != "judge_ack_modal":
+        callback_id = str(view.get("callback_id") or "")
+        if callback_id == "judge_mute_export_revoke_modal":
+            meta = parse_mute_export_revoke_modal_metadata(payload)
+            ref = str(meta.get("ref") or "").strip()
+            result = handle_slack_mute_export_revoke(payload, value=ref)
+            result["mode"] = "modal_submit"
+            result["confirm"] = "mute_export_revoke"
+            result["callback_id"] = callback_id
+            return result
+        if callback_id != "judge_ack_modal":
             return {"ok": False, "error": "unknown_view"}
         actor = slack_interactive_actor(payload) or "slack"
         note = extract_modal_ack_note(payload) or "slack modal ack"
@@ -4411,7 +4565,7 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             if str(act.get("action_id") or "") == "judge_ack_digest_revoke_mute_export":
                 ref_val = str(act.get("value") or "").strip()
                 break
-        return handle_slack_mute_export_revoke(payload, value=ref_val)
+        return open_mute_export_revoke_confirm_modal(payload, value=ref_val)
 
     if (
         "judge_ack_digest_reexport" in action_ids
@@ -5358,6 +5512,35 @@ def silence_burn_ops_public_url(
     return f"{pub.rstrip('/')}/ops/silence-burn"
 
 
+def opsgenie_alert_deep_link(
+    *,
+    source: str = "inhibit-equal-canary",
+    region: Optional[str] = None,
+) -> str:
+    """Web UI deep-link to Opsgenie alert list filtered by soft-fail alias."""
+    explicit = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_OPSGENIE_ALERT_URL", "").strip()
+        or os.environ.get("RAG_OPSGENIE_ALERT_URL", "").strip()
+    )
+    if explicit:
+        return explicit
+    reg = (
+        region
+        or os.environ.get("INHIBIT_EQUAL_CANARY_OPSGENIE_REGION", "").strip()
+        or os.environ.get("RAG_OPSGENIE_REGION", "").strip()
+        or "us"
+    ).strip().lower()
+    host = (
+        "https://eu.app.opsgenie.com"
+        if reg in {"eu", "europe"}
+        else "https://app.opsgenie.com"
+    )
+    alias = f"rag-judge-soft-fail/{source or 'inhibit-equal-canary'}"
+    from urllib.parse import quote
+
+    return f"{host}/alert/list?query={quote(f'alias:\"{alias}\"')}"
+
+
 def post_pagerduty(
     *,
     routing_key: str,
@@ -5495,6 +5678,11 @@ def post_opsgenie(
         if "silence-burn" in rb_l or "/ops/silence-burn" in rb_l:
             if "runbook:silence-burn" not in tags:
                 tags.append("runbook:silence-burn")
+    # Grafana annotation ↔ Opsgenie deep-link (alias list)
+    og_link = opsgenie_alert_deep_link(source=source, region=region)
+    if og_link:
+        details["opsgenie_url"] = og_link
+        details["opsgenie_deep_link"] = og_link
     extra_tags = (
         os.environ.get("INHIBIT_EQUAL_CANARY_OPSGENIE_TAGS", "").strip()
         or os.environ.get("RAG_OPSGENIE_EXTRA_TAGS", "").strip()

@@ -1130,7 +1130,10 @@ def test_mute_export_retention_and_signed_url(tmp_path: Path, monkeypatch) -> No
 
 
 def test_mute_export_revoke_block_kit_action(tmp_path: Path, monkeypatch) -> None:
+    from unittest.mock import patch
+
     from rag.judge_alert import (
+        build_mute_export_revoke_modal_view,
         build_mute_export_signed_url,
         export_judge_ack_digest_mute_snapshots,
         handle_slack_interactive_ack,
@@ -1145,6 +1148,7 @@ def test_mute_export_revoke_block_kit_action(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setenv("RAG_JUDGE_ACK_PUBLIC_URL", "http://example.test/judge/ack-form")
     monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
     monkeypatch.setenv("RAG_JUDGE_SLACK_INTERACTIVE", "1")
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
     set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path))
     out = export_judge_ack_digest_mute_snapshots(
         fmt="csv", base=str(tmp_path), output=str(tmp_path / "mutes.csv")
@@ -1159,24 +1163,71 @@ def test_mute_export_revoke_block_kit_action(tmp_path: Path, monkeypatch) -> Non
     assert resolved["ok"] is True
     assert resolved["ref"] == signed["jti"]
 
-    revoked = handle_slack_mute_export_revoke(
-        {
-            "actions": [
-                {
-                    "action_id": "judge_ack_digest_revoke_mute_export",
-                    "value": "latest",
-                }
-            ],
-            "user": {"username": "bob", "id": "U2"},
-            "channel": {"id": "C1"},
-        },
-        value="latest",
+    view = build_mute_export_revoke_modal_view(
+        ref=signed["jti"], filename=fname, channel_id="C1"
+    )
+    assert view["callback_id"] == "judge_mute_export_revoke_modal"
+    assert "Revoke" in view["submit"]["text"]
+
+    # Button → confirm modal open (does not revoke yet)
+    with patch(
+        "rag.judge_alert.open_slack_modal",
+        return_value={"ok": True, "response": {"ok": True}},
+    ) as opened:
+        wired = handle_slack_interactive_ack(
+            {
+                "type": "block_actions",
+                "trigger_id": "trig-1",
+                "actions": [
+                    {
+                        "action_id": "judge_ack_digest_revoke_mute_export",
+                        "value": signed["jti"],
+                    }
+                ],
+                "user": {"id": "U1", "username": "ops"},
+                "channel": {"id": "C1"},
+                "message": {"ts": "9.9"},
+            }
+        )
+    assert wired.get("mode") == "modal_open"
+    assert wired.get("confirm") == "mute_export_revoke"
+    assert wired.get("ok") is True
+    assert wired.get("ref") == signed["jti"]
+    assert opened.called
+    assert verify_mute_export_signature(
+        fname,
+        signed["expires"],
+        signed["sig"],
+        jti=signed["jti"],
+        secret="mute-secret",
         base=str(tmp_path),
     )
-    assert revoked.get("ok") is True
-    assert revoked.get("mode") == "digest_mute_export_revoke"
-    assert revoked.get("ref") == signed["jti"]
-    assert "revoked" in str(revoked.get("text") or "").lower()
+
+    # Modal submit → actual revoke
+    submitted = handle_slack_interactive_ack(
+        {
+            "type": "view_submission",
+            "user": {"id": "U1", "username": "ops"},
+            "view": {
+                "callback_id": "judge_mute_export_revoke_modal",
+                "private_metadata": (
+                    '{"ref":"%s","filename":"%s","channel_id":"C1"}'
+                    % (signed["jti"], fname)
+                ),
+                "state": {
+                    "values": {
+                        "revoke_note_block": {
+                            "revoke_note": {"value": "leak"}
+                        }
+                    }
+                },
+            },
+        }
+    )
+    assert submitted.get("mode") == "modal_submit"
+    assert submitted.get("confirm") == "mute_export_revoke"
+    assert submitted.get("ok") is True
+    assert submitted.get("ref") == signed["jti"]
     assert not verify_mute_export_signature(
         fname,
         signed["expires"],
@@ -1186,28 +1237,27 @@ def test_mute_export_revoke_block_kit_action(tmp_path: Path, monkeypatch) -> Non
         base=str(tmp_path),
     )
 
-    # Wire through interactive ack with explicit jti (idempotent re-revoke ok)
-    wired = handle_slack_interactive_ack(
+    # Break-glass: confirm disabled → immediate revoke path
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_CONFIRM", "0")
+    signed2 = build_mute_export_signed_url(
+        fname, public_base="http://example.test", base=str(tmp_path), actor="tester2"
+    )
+    immediate = handle_slack_mute_export_revoke(
         {
-            "type": "block_actions",
             "actions": [
                 {
                     "action_id": "judge_ack_digest_revoke_mute_export",
-                    "value": signed["jti"],
+                    "value": signed2["jti"],
                 }
             ],
-            "user": {"id": "U1", "username": "ops"},
+            "user": {"username": "bob", "id": "U2"},
             "channel": {"id": "C1"},
-        }
+        },
+        value=signed2["jti"],
+        base=str(tmp_path),
     )
-    assert wired.get("mode") == "digest_mute_export_revoke"
-    assert wired.get("ok") is True
-    assert wired.get("ref") == signed["jti"]
-
-    # "latest" may still resolve another auto-signed export link; explicit jti stays revoked
-    again = resolve_mute_export_revoke_ref(signed["jti"], base=str(tmp_path))
-    assert again.get("ok") is True
-    assert again.get("resolved") == "explicit"
+    assert immediate.get("ok") is True
+    assert immediate.get("mode") == "digest_mute_export_revoke"
 
 
 def test_digest_message_ref_prune_ttl(tmp_path: Path, monkeypatch) -> None:

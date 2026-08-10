@@ -172,12 +172,15 @@ groups:
             Silence fail ratio elevated (1h or 6h window).
             Dashboard: rag-judge (Inhibit equal canary silence panel).
             Runbook: /ops/silence-burn (amtool: /ops/amtool).
+            Opsgenie deep-link: app.opsgenie.com/alert/list?query=alias:"rag-judge-soft-fail/inhibit-equal-canary"
+            (INHIBIT_EQUAL_CANARY_OPSGENIE_ALERT_URL).
             Slack canary button + PagerDuty/Opsgenie details.runbook_url
             (INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL).
             python -m rag.cli alertmanager --list-silences
             python -m rag.cli alertmanager --check-config
             Check INHIBIT_EQUAL_CANARY_AUTO_SILENCE + Alertmanager silences API.
           runbook_url: /ops/silence-burn
+          opsgenie_url: https://app.opsgenie.com/alert/list?query=alias%3A%22rag-judge-soft-fail%2Finhibit-equal-canary%22
         labels:
           severity: critical
           service: rag

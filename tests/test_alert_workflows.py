@@ -431,18 +431,18 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_mute_revoke_blockkit_rotate_notify_og_tags():
+def test_readme_sonraki_adaylar_after_mute_revoke_confirm_rotate_pd_og_deeplink():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
-    assert "mute export revoke confirm modal" in text
-    assert "sidecar rotate PagerDuty on fail" in text
-    assert "Grafana annotation Opsgenie deep-link" in text
+    assert "mute export revoke audit Slack thread reply" in text
+    assert "sidecar rotate PD severity by error" in text
+    assert "Opsgenie close on recover deep-link" in text
     # Completed this round — should not remain as next candidates
-    assert "mute export revoke Slack Block Kit action" not in text
-    assert "sidecar rotate notify on rotate" not in text
-    assert "Opsgenie runbook tags" not in text
+    assert "mute export revoke confirm modal" not in text.split("## Sonraki adaylar")[1].split("##")[0]
+    assert "sidecar rotate PagerDuty on fail" not in text.split("## Sonraki adaylar")[1].split("##")[0]
+    assert "Grafana annotation Opsgenie deep-link" not in text.split("## Sonraki adaylar")[1].split("##")[0]
     assert "webhook-signing-sidecar" in text
     assert "--export-mute-snapshots" in text
     assert "--upload-mute-snapshots" in text
@@ -452,6 +452,7 @@ def test_readme_sonraki_adaylar_after_mute_revoke_blockkit_rotate_notify_og_tags
     assert "--sweep-mute-export-urls" in text
     assert "/judge/mute-export-revoke" in text
     assert "judge_ack_digest_revoke_mute_export" in text
+    assert "judge_mute_export_revoke_modal" in text
     assert "mute_export_sign" in text
     assert "mute_export_revoke" in text
     assert "mute_export_sweep" in text
@@ -460,6 +461,7 @@ def test_readme_sonraki_adaylar_after_mute_revoke_blockkit_rotate_notify_og_tags
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SIGNING_SECRET" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_RETENTION_DAYS" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SWEEP" in text
+    assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_CONFIRM" in text
     assert "judge_ack_digest_export_mute_snapshots" in text
     assert "judge-ack-digest.yml" in text
     assert "webhook-signing-sidecar-rotate.yml" in text
@@ -472,8 +474,13 @@ def test_readme_sonraki_adaylar_after_mute_revoke_blockkit_rotate_notify_og_tags
     assert "--rotate-certs-if-expiring" in text
     assert "--notify" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK" in text
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PAGERDUTY_ROUTING_KEY" in text
+    assert "notify_pd" in text
     assert "runbook:silence-burn" in text
     assert "INHIBIT_EQUAL_CANARY_OPSGENIE_TAGS" in text
+    assert "opsgenie_alert_deep_link" in text
+    assert "INHIBIT_EQUAL_CANARY_OPSGENIE_ALERT_URL" in text
+    assert "opsgenie_url" in text
     assert "RagWebhookSigningSidecarForwardFail" in text
     assert "rag_webhook_signing_sidecar.yml" in text
     assert "RagInhibitEqualCanarySilenceBurn" in text
@@ -506,6 +513,8 @@ def test_webhook_signing_sidecar_rotate_workflow_yaml():
     assert "--notify" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK" in text
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PAGERDUTY_ROUTING_KEY" in text
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_NOTIFY" in text
     assert "webhook-signing-sidecar" in text
     assert "metadata/sidecar-tls" in text
     assert "sidecar_cert_rotate.json" in text
@@ -645,8 +654,10 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "rag:inhibit_equal_canary_silence_fail_ratio:1h" in rules
     assert "rag:inhibit_equal_canary_silence_fail_ratio:6h" in rules
     assert "rag_inhibit_equal_canary_silence_total" in rules
-    assert 'panel_id: "22"' in rules
+    assert 'panel_id: "25"' in rules
     assert "runbook_url: /ops/silence-burn" in rules
+    assert "opsgenie_url:" in rules
+    assert "rag-judge-soft-fail/inhibit-equal-canary" in rules
     assert "--list-silences" in rules
     assert "--check-config" in rules
     assert "INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL" in rules
@@ -661,6 +672,7 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "Inhibit equal canary resolve" in alerting
     assert "silence burn-rate" in alerting
     assert "runbook_url: /ops/silence-burn" in alerting
+    assert "opsgenie_url:" in alerting
     assert "/ops/amtool" in alerting
     assert "INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL" in alerting
     assert "Opsgenie" in alerting or "details.runbook_url" in alerting
@@ -671,6 +683,10 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "webhook-signing-sidecar" in am
     tmpl = Path("grafana/alertmanager.yml.template").read_text(encoding="utf-8")
     assert "signing sidecar" in tmpl
+    dash = Path("grafana/dashboards/rag_judge.json").read_text(encoding="utf-8")
+    assert "Silence burn" in dash
+    assert "opsgenie.com/alert/list" in dash
+    assert "rag:inhibit_equal_canary_silence_fail_ratio:1h > 0.2" in dash
 
 
 def test_webhook_signing_sidecar_grafana_alert_artifacts():

@@ -24,6 +24,18 @@
         "name": "DLQ quarantine depth",
         "titleFormat": "quarantine depth",
         "textFormat": "Dual-write DLQ quarantine not empty — replay/prune via CLI"
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "enable": true,
+        "expr": "rag:inhibit_equal_canary_silence_fail_ratio:1h > 0.2",
+        "iconColor": "semi-dark-red",
+        "name": "Silence burn",
+        "titleFormat": "silence burn",
+        "textFormat": "Opsgenie: https://app.opsgenie.com/alert/list?query=alias%3A%22rag-judge-soft-fail%2Finhibit-equal-canary%22 · runbook /ops/silence-burn"
       }
     ]
   },

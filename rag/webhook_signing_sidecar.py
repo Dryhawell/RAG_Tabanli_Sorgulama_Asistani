@@ -566,6 +566,70 @@ def maybe_notify_sidecar_cert_rotate(
         }
 
 
+def maybe_notify_sidecar_cert_rotate_fail(
+    report: Dict[str, Any],
+    *,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """PagerDuty when sidecar cert rotate fails (DLQ quarantine HMAC path)."""
+    if report.get("ok") and not report.get("error"):
+        return {"ok": True, "skipped": True, "reason": "rotate_ok"}
+    flag = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_NOTIFY", ""
+    ).strip().lower()
+    if not force and flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "pd_notify_disabled"}
+    key = (
+        os.environ.get(
+            "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PAGERDUTY_ROUTING_KEY", ""
+        ).strip()
+        or os.environ.get("RAG_JUDGE_PAGERDUTY_ROUTING_KEY", "").strip()
+        or os.environ.get("RAG_PAGERDUTY_ROUTING_KEY", "").strip()
+    )
+    if not key:
+        return {"ok": True, "skipped": True, "reason": "pd_key_missing"}
+    severity = (
+        os.environ.get("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_SEVERITY", "").strip()
+        or "error"
+    )
+    err = str(report.get("error") or report.get("detail") or "rotate_failed")
+    pd_report = {
+        "summary": {
+            "ok": False,
+            "mode": "sidecar_cert_rotate",
+            "failed": 1,
+            "total": 1,
+            "error": err,
+            "rotated": report.get("rotated"),
+        },
+        "mode": "sidecar_cert_rotate",
+        "error": err,
+    }
+    try:
+        from rag.judge_alert import post_pagerduty
+
+        ok = post_pagerduty(
+            routing_key=key,
+            report=pd_report,
+            source="webhook-signing-sidecar-rotate",
+            severity=severity,
+        )
+        return {
+            "ok": bool(ok),
+            "skipped": False,
+            "pagerduty": bool(ok),
+            "severity": severity,
+            "error": err,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "skipped": False,
+            "pagerduty": False,
+            "error": type(exc).__name__,
+        }
+
+
 def build_signed_webhook_headers(
     body: bytes,
     *,
