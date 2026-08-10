@@ -369,6 +369,41 @@ def test_opsgenie_api_base_regions() -> None:
     assert opsgenie_api_base(base_url="https://example.test/og") == "https://example.test/og"
 
 
+def test_post_opsgenie_silence_burn_runbook_tags(monkeypatch) -> None:
+    from rag.judge_alert import post_opsgenie
+
+    calls: list = []
+
+    class FakeResp:
+        status_code = 202
+
+    def fake_post(url, json=None, headers=None, timeout=10):
+        calls.append({"url": url, "json": json, "headers": headers})
+        return FakeResp()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_OPSGENIE_TAGS", "canary,silence")
+    ok = post_opsgenie(
+        report={"summary": {"ok": False, "accuracy": 0.1, "failed": 1, "total": 2}},
+        source="inhibit-equal-canary",
+        api_key="og-key",
+        region="eu",
+        runbook_url="https://ops.example.test/ops/silence-burn#silence-burn-rate--multi-region",
+    )
+    assert ok is True
+    assert calls
+    body = calls[0]["json"]
+    tags = [str(t) for t in (body.get("tags") or [])]
+    assert "silence-burn" in tags
+    assert "runbook" in tags
+    assert "runbook:silence-burn" in tags
+    assert "region:eu" in tags
+    assert "canary" in tags
+    assert "silence" in tags
+    assert body.get("details", {}).get("runbook_url")
+    assert "silence-burn" in str(body["details"]["runbook_url"])
+
+
 def test_notify_inhibit_equal_close_on_green(monkeypatch) -> None:
     from scripts.ci_inhibit_equal_apply import (
         build_inhibit_equal_resolve_canary_payload,

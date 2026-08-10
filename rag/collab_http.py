@@ -530,6 +530,22 @@ def handle_judge_slack_interactive(
             json.dumps(resp, ensure_ascii=False).encode("utf-8"),
         )
 
+    if result.get("mode") in {
+        "digest_mute_export_revoke",
+        "digest_mute_snapshot_upload",
+    }:
+        text = str(result.get("text") or result.get("mode") or "Mute export updated")
+        resp = {
+            "response_type": "ephemeral",
+            "replace_original": False,
+            "text": text[:2900],
+        }
+        return (
+            200 if result.get("ok") or result.get("mode") == "digest_mute_snapshot_upload" else 400,
+            {"Content-Type": "application/json"},
+            json.dumps(resp, ensure_ascii=False).encode("utf-8"),
+        )
+
     if result.get("mode") in {"digest_mute", "digest_catch_up"}:
         text = str(result.get("text") or result.get("mode") or "Digest mute updated")
         if result.get("ok"):

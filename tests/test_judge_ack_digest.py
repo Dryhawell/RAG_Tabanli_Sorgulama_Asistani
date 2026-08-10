@@ -944,7 +944,15 @@ def test_export_mute_snapshots_csv(tmp_path: Path, monkeypatch) -> None:
     actions = next(b for b in blocks if b.get("type") == "actions")
     ids = {e.get("action_id") for e in actions["elements"]}
     assert "judge_ack_digest_export_mute_snapshots" in ids
+    assert "judge_ack_digest_revoke_mute_export" in ids
     assert "judge_ack_digest_reexport" not in ids
+    assert len(actions["elements"]) <= 5
+    ctx_texts = [
+        str((b.get("elements") or [{}])[0].get("text") or "")
+        for b in blocks
+        if isinstance(b, dict) and b.get("type") == "context"
+    ]
+    assert any("Revoke UI:" in t for t in ctx_texts)
 
     monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
     with patch(
@@ -1119,6 +1127,87 @@ def test_mute_export_retention_and_signed_url(tmp_path: Path, monkeypatch) -> No
         ["judge-ack-digest", "--sweep-mute-export-urls"]
     )
     assert sweep_args.sweep_mute_export_urls is True
+
+
+def test_mute_export_revoke_block_kit_action(tmp_path: Path, monkeypatch) -> None:
+    from rag.judge_alert import (
+        build_mute_export_signed_url,
+        export_judge_ack_digest_mute_snapshots,
+        handle_slack_interactive_ack,
+        handle_slack_mute_export_revoke,
+        resolve_mute_export_revoke_ref,
+        set_judge_ack_digest_mute,
+        verify_mute_export_signature,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SIGNING_SECRET", "mute-secret")
+    monkeypatch.setenv("RAG_JUDGE_ACK_PUBLIC_URL", "http://example.test/judge/ack-form")
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
+    monkeypatch.setenv("RAG_JUDGE_SLACK_INTERACTIVE", "1")
+    set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path))
+    out = export_judge_ack_digest_mute_snapshots(
+        fmt="csv", base=str(tmp_path), output=str(tmp_path / "mutes.csv")
+    )
+    assert out["ok"] is True
+    fname = out["archive"]["filename"]
+    signed = build_mute_export_signed_url(
+        fname, public_base="http://example.test", base=str(tmp_path), actor="tester"
+    )
+    assert signed["ok"] is True
+    resolved = resolve_mute_export_revoke_ref("latest", base=str(tmp_path))
+    assert resolved["ok"] is True
+    assert resolved["ref"] == signed["jti"]
+
+    revoked = handle_slack_mute_export_revoke(
+        {
+            "actions": [
+                {
+                    "action_id": "judge_ack_digest_revoke_mute_export",
+                    "value": "latest",
+                }
+            ],
+            "user": {"username": "bob", "id": "U2"},
+            "channel": {"id": "C1"},
+        },
+        value="latest",
+        base=str(tmp_path),
+    )
+    assert revoked.get("ok") is True
+    assert revoked.get("mode") == "digest_mute_export_revoke"
+    assert revoked.get("ref") == signed["jti"]
+    assert "revoked" in str(revoked.get("text") or "").lower()
+    assert not verify_mute_export_signature(
+        fname,
+        signed["expires"],
+        signed["sig"],
+        jti=signed["jti"],
+        secret="mute-secret",
+        base=str(tmp_path),
+    )
+
+    # Wire through interactive ack with explicit jti (idempotent re-revoke ok)
+    wired = handle_slack_interactive_ack(
+        {
+            "type": "block_actions",
+            "actions": [
+                {
+                    "action_id": "judge_ack_digest_revoke_mute_export",
+                    "value": signed["jti"],
+                }
+            ],
+            "user": {"id": "U1", "username": "ops"},
+            "channel": {"id": "C1"},
+        }
+    )
+    assert wired.get("mode") == "digest_mute_export_revoke"
+    assert wired.get("ok") is True
+    assert wired.get("ref") == signed["jti"]
+
+    # "latest" may still resolve another auto-signed export link; explicit jti stays revoked
+    again = resolve_mute_export_revoke_ref(signed["jti"], base=str(tmp_path))
+    assert again.get("ok") is True
+    assert again.get("resolved") == "explicit"
 
 
 def test_digest_message_ref_prune_ttl(tmp_path: Path, monkeypatch) -> None:

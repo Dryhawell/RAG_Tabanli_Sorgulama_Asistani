@@ -2786,6 +2786,15 @@ def build_judge_ack_digest_slack_blocks(
                 "value": tid or "all",
                 "style": "primary",
             }
+            elements.append(export_btn)
+            elements.append(
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Revoke export"},
+                    "action_id": "judge_ack_digest_revoke_mute_export",
+                    "value": tid or "latest",
+                }
+            )
         else:
             export_btn = {
                 "type": "button",
@@ -2794,9 +2803,9 @@ def build_judge_ack_digest_slack_blocks(
                 "value": "jsonl",
                 "style": "primary",
             }
-        elements.append(export_btn)
+            elements.append(export_btn)
         # CSV only when mute button is absent (room under 5-cap with form+zoom).
-        if not tid:
+        if not tid and not is_muted:
             elements.append(
                 {
                     "type": "button",
@@ -2813,29 +2822,38 @@ def build_judge_ack_digest_slack_blocks(
                 "value": "ack",
             }
         )
-        elements.append(
-            {
-                "type": "button",
-                "text": {
-                    "type": "plain_text",
-                    "text": f"Heatmap {zoom_target}",
-                },
-                "action_id": "judge_ack_digest_heatmap_zoom",
-                "value": zoom_value,
-            }
-        )
+        # Heatmap zoom: drop when muted+revoke already fills the 5-cap
+        if not (is_muted and tid):
+            elements.append(
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": f"Heatmap {zoom_target}",
+                    },
+                    "action_id": "judge_ack_digest_heatmap_zoom",
+                    "value": zoom_value,
+                }
+            )
     ack_urls = judge_ack_canvas_urls(
         tenant_id=tid, hours=summary.get("since_hours")
     )
     ack_url = ack_urls.get("form") or judge_ack_public_url()
     if ack_url:
-        # Prefer mute/catch-up/mute-snapshots/zoom + form: drop CSV / audit export if needed
+        # Prefer mute/catch-up/mute-snapshots/revoke + form: drop CSV / audit export
         if len(elements) >= 4:
-            drop_ids = {"judge_ack_digest_reexport_csv"}
+            drop_ids = {
+                "judge_ack_digest_reexport_csv",
+            }
             if any(
-                e.get("action_id") == "judge_ack_digest_catch_up" for e in elements
+                e.get("action_id")
+                in {
+                    "judge_ack_digest_catch_up",
+                    "judge_ack_digest_revoke_mute_export",
+                }
+                for e in elements
             ):
-                # Keep mute-snapshots when muted; drop audit JSONL reexport only
+                # Keep mute-snapshots/revoke when muted; drop audit JSONL reexport
                 drop_ids.add("judge_ack_digest_reexport")
             elements = [
                 e for e in elements if e.get("action_id") not in drop_ids
@@ -2873,6 +2891,9 @@ def build_judge_ack_digest_slack_blocks(
         ctx_bits.append(f"tenant `{tid}`")
         if is_muted:
             ctx_bits.append("*muted*")
+            revoke_ui = mute_export_revoke_public_url()
+            if revoke_ui:
+                ctx_bits.append(f"Revoke UI: <{revoke_ui}|open>")
     ctx_bits.append(f"heatmap=`{bucket}`")
     if ctx_bits:
         blocks.append(
@@ -2907,6 +2928,121 @@ def judge_ack_export_public_url() -> str:
         if pub:
             return f"{pub}/judge/ack-export"
     return ""
+
+
+def mute_export_revoke_public_url() -> str:
+    """Admin UI deep-link for mute export signed URL revoke."""
+    explicit = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_PUBLIC_URL", ""
+    ).strip()
+    if explicit:
+        return explicit.rstrip("/")
+    base = judge_ack_public_url()
+    if base:
+        if base.endswith("/judge/ack-form"):
+            return base[: -len("/judge/ack-form")] + "/judge/mute-export-revoke"
+        if base.endswith("/judge/ack-ui"):
+            return base[: -len("/judge/ack-ui")] + "/judge/mute-export-revoke"
+        return base.rstrip("/") + "/judge/mute-export-revoke"
+    try:
+        from app.config import COLLAB_HTTP_PORT, COLLAB_WS_PUBLIC_HOST
+
+        host = (COLLAB_WS_PUBLIC_HOST or "localhost").strip() or "localhost"
+        port = int(COLLAB_HTTP_PORT or 8766)
+        return f"http://{host}:{port}/judge/mute-export-revoke"
+    except Exception:
+        pub = os.environ.get("RAG_PUBLIC_BASE_URL", "").strip().rstrip("/")
+        if pub:
+            return f"{pub}/judge/mute-export-revoke"
+    return ""
+
+
+def resolve_mute_export_revoke_ref(
+    value: str = "",
+    *,
+    base: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Map Slack button value → jti/filename for revoke (latest active if empty)."""
+    raw = (value or "").strip()
+    if raw and raw.lower() not in {"latest", "all", "*", "csv"}:
+        return {"ok": True, "ref": raw, "resolved": "explicit"}
+    listed = list_mute_export_signed_urls(
+        base=base, include_revoked=False, include_expired=False, limit=20
+    )
+    for row in listed.get("links") or []:
+        if row.get("revoked") or row.get("expired"):
+            continue
+        jti = str(row.get("jti") or "").strip()
+        if jti:
+            return {
+                "ok": True,
+                "ref": jti,
+                "resolved": "latest",
+                "filename": row.get("filename"),
+            }
+    return {"ok": False, "error": "no_active_signed_url"}
+
+
+def handle_slack_mute_export_revoke(
+    payload: Dict[str, Any],
+    *,
+    value: str = "",
+    base: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Slack Block Kit: revoke latest (or explicit) mute export signed URL."""
+    actor = slack_interactive_actor(payload)
+    resolved = resolve_mute_export_revoke_ref(value, base=base)
+    if not resolved.get("ok"):
+        text = "No active mute export signed URL to revoke."
+        return {
+            "ok": False,
+            "mode": "digest_mute_export_revoke",
+            "error": resolved.get("error") or "not_found",
+            "text": text,
+            "actor": actor,
+        }
+    ref = str(resolved.get("ref") or "")
+    result = revoke_mute_export_signed_url(
+        ref,
+        actor=actor or "slack",
+        note="slack_block_kit",
+        base=base,
+    )
+    text = (
+        f"Mute export signed URL revoked · jti=`{ref}` · by *{actor or 'slack'}*"
+        if result.get("ok")
+        else f"Mute export revoke failed: `{result.get('error')}`"
+    )
+    channel_id = str(
+        ((payload.get("channel") or {}).get("id"))
+        or ((payload.get("container") or {}).get("channel_id"))
+        or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "")
+        or ""
+    ).strip() or None
+    user_id = slack_interactive_user_id(payload)
+    token = os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
+    ephemeral: Dict[str, Any] = {"ok": False, "skipped": True}
+    if token and channel_id and user_id:
+        ephemeral = slack_api(
+            "chat.postEphemeral",
+            bot_token=token,
+            json_body={"channel": channel_id, "user": user_id, "text": text},
+        )
+    return {
+        "ok": bool(result.get("ok")),
+        "mode": "digest_mute_export_revoke",
+        "actor": actor,
+        "ref": ref,
+        "resolved": resolved.get("resolved"),
+        "revoke": result,
+        "text": text,
+        "ephemeral": {
+            "ok": bool(ephemeral.get("ok")),
+            "skipped": bool(ephemeral.get("skipped")),
+            "error": ephemeral.get("error"),
+        },
+        "channel_id": channel_id,
+    }
 
 
 def build_judge_ack_digest_text(
@@ -4267,6 +4403,16 @@ def handle_slack_interactive_ack(payload: Dict[str, Any]) -> Dict[str, Any]:
             payload=payload, tenant_id=tid or None
         )
 
+    if "judge_ack_digest_revoke_mute_export" in action_ids:
+        ref_val = ""
+        for act in actions:
+            if not isinstance(act, dict):
+                continue
+            if str(act.get("action_id") or "") == "judge_ack_digest_revoke_mute_export":
+                ref_val = str(act.get("value") or "").strip()
+                break
+        return handle_slack_mute_export_revoke(payload, value=ref_val)
+
     if (
         "judge_ack_digest_reexport" in action_ids
         or "judge_ack_digest_reexport_csv" in action_ids
@@ -5341,6 +5487,23 @@ def post_opsgenie(
     )
     if rb:
         details["runbook_url"] = str(rb)
+        # Silence-burn multi-region runbook tags (alongside region:*)
+        for t in ("silence-burn", "runbook"):
+            if t not in tags:
+                tags.append(t)
+        rb_l = str(rb).lower()
+        if "silence-burn" in rb_l or "/ops/silence-burn" in rb_l:
+            if "runbook:silence-burn" not in tags:
+                tags.append("runbook:silence-burn")
+    extra_tags = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_OPSGENIE_TAGS", "").strip()
+        or os.environ.get("RAG_OPSGENIE_EXTRA_TAGS", "").strip()
+    )
+    if extra_tags:
+        for part in extra_tags.replace(";", ",").split(","):
+            p = part.strip()
+            if p and p not in tags:
+                tags.append(p)
     body = {
         "message": text[:130],
         "alias": f"rag-judge-soft-fail/{source}",

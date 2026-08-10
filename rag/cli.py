@@ -1269,6 +1269,7 @@ def cmd_webhook_signing_sidecar(args: argparse.Namespace) -> int:
         build_signed_webhook_headers,
         emit_sidecar_cert_metrics,
         inspect_sidecar_certs,
+        maybe_notify_sidecar_cert_rotate,
         rotate_sidecar_certs,
         run_webhook_signing_sidecar,
         sidecar_listen_host,
@@ -1318,6 +1319,14 @@ def cmd_webhook_signing_sidecar(args: argparse.Namespace) -> int:
                 if getattr(args, "rotate_certs_if_expiring", False)
                 else None
             ),
+        )
+        notify_force = bool(getattr(args, "notify", False))
+        if notify_force:
+            os.environ.setdefault(
+                "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY", "1"
+            )
+        report["notify"] = maybe_notify_sidecar_cert_rotate(
+            report, force=notify_force
         )
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0 if report.get("ok") else 1
@@ -2413,6 +2422,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Rotate dry-run (yazmadan plan)",
+    )
+    p_wss.add_argument(
+        "--notify",
+        action="store_true",
+        help="Rotate sonrası Slack notify (RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY)",
     )
     p_wss.set_defaults(func=cmd_webhook_signing_sidecar)
 

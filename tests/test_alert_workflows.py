@@ -431,18 +431,18 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_mute_revoke_ui_sidecar_rotate_ci_og_runbook():
+def test_readme_sonraki_adaylar_after_mute_revoke_blockkit_rotate_notify_og_tags():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
-    assert "mute export revoke Slack Block Kit" in text
-    assert "sidecar rotate notify on rotate" in text
-    assert "Opsgenie runbook tags" in text
+    assert "mute export revoke confirm modal" in text
+    assert "sidecar rotate PagerDuty on fail" in text
+    assert "Grafana annotation Opsgenie deep-link" in text
     # Completed this round — should not remain as next candidates
-    assert "mute export revoke admin UI + TTL sweep" not in text
-    assert "sidecar rotate GitHub Actions schedule" not in text
-    assert "silence burn Opsgenie runbook deep-link" not in text
+    assert "mute export revoke Slack Block Kit action" not in text
+    assert "sidecar rotate notify on rotate" not in text
+    assert "Opsgenie runbook tags" not in text
     assert "webhook-signing-sidecar" in text
     assert "--export-mute-snapshots" in text
     assert "--upload-mute-snapshots" in text
@@ -451,6 +451,7 @@ def test_readme_sonraki_adaylar_after_mute_revoke_ui_sidecar_rotate_ci_og_runboo
     assert "--revoke-mute-export" in text
     assert "--sweep-mute-export-urls" in text
     assert "/judge/mute-export-revoke" in text
+    assert "judge_ack_digest_revoke_mute_export" in text
     assert "mute_export_sign" in text
     assert "mute_export_revoke" in text
     assert "mute_export_sweep" in text
@@ -469,6 +470,10 @@ def test_readme_sonraki_adaylar_after_mute_revoke_ui_sidecar_rotate_ci_og_runboo
     assert "--check-certs" in text
     assert "--rotate-certs" in text
     assert "--rotate-certs-if-expiring" in text
+    assert "--notify" in text
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK" in text
+    assert "runbook:silence-burn" in text
+    assert "INHIBIT_EQUAL_CANARY_OPSGENIE_TAGS" in text
     assert "RagWebhookSigningSidecarForwardFail" in text
     assert "rag_webhook_signing_sidecar.yml" in text
     assert "RagInhibitEqualCanarySilenceBurn" in text
@@ -498,6 +503,9 @@ def test_webhook_signing_sidecar_rotate_workflow_yaml():
     assert "--rotate-certs-if-expiring" in text
     assert "--rotate-certs" in text
     assert "--check-certs" in text
+    assert "--notify" in text
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY" in text
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK" in text
     assert "webhook-signing-sidecar" in text
     assert "metadata/sidecar-tls" in text
     assert "sidecar_cert_rotate.json" in text

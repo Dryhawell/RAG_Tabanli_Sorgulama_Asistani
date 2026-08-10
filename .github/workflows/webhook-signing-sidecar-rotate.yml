@@ -52,6 +52,8 @@ jobs:
           RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT: metadata/sidecar-tls/client.crt
           RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_KEY: metadata/sidecar-tls/client.key
           RAG_WEBHOOK_SIGNING_SIDECAR_CERT_EXPIRY_WARN_DAYS: ${{ vars.RAG_WEBHOOK_SIGNING_SIDECAR_CERT_EXPIRY_WARN_DAYS || '14' }}
+          RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY: ${{ vars.RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY || '1' }}
+          RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK: ${{ secrets.RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK || secrets.RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_WEBHOOK }}
         run: |
           mkdir -p metadata/sidecar-tls
           EXTRA=""
@@ -65,7 +67,7 @@ jobs:
             MODE="--rotate-certs-if-expiring"
           fi
           # shellcheck disable=SC2086
-          python -m rag.cli webhook-signing-sidecar $MODE --cert-days "$CERT_DAYS" $EXTRA \
+          python -m rag.cli webhook-signing-sidecar $MODE --cert-days "$CERT_DAYS" --notify $EXTRA \
             | tee metadata/sidecar_cert_rotate.json
           python -m rag.cli webhook-signing-sidecar --check-certs \
             | tee metadata/sidecar_cert_check.json || true

@@ -492,6 +492,80 @@ def rotate_sidecar_certs(
     }
 
 
+def maybe_notify_sidecar_cert_rotate(
+    report: Dict[str, Any],
+    *,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Slack notify after successful sidecar PEM rotate (DLQ quarantine path)."""
+    flag = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY", ""
+    ).strip().lower()
+    if not force and flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "notify_disabled"}
+    if not force and flag not in {"1", "true", "yes", "on", ""}:
+        # empty = allow when webhook present
+        pass
+    if report.get("dry_run"):
+        return {"ok": True, "skipped": True, "reason": "dry_run"}
+    if report.get("skipped") and not report.get("rotated"):
+        return {"ok": True, "skipped": True, "reason": "not_rotated"}
+    rotated = report.get("rotated") or []
+    if not rotated and not report.get("written"):
+        return {"ok": True, "skipped": True, "reason": "no_roles"}
+    webhook = (
+        os.environ.get("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK", "").strip()
+        or os.environ.get("RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_WEBHOOK", "").strip()
+        or os.environ.get("RAG_DUAL_WRITE_DLQ_SLACK_WEBHOOK", "").strip()
+    )
+    if not webhook:
+        return {"ok": True, "skipped": True, "reason": "webhook_missing"}
+    roles = ", ".join(rotated) if isinstance(rotated, list) else str(rotated)
+    stamp = report.get("stamp") or ""
+    after = report.get("after") or {}
+    min_days = after.get("min_days_left")
+    text = (
+        "*Webhook signing sidecar certs rotated*\n"
+        f"roles=`{roles or '—'}` · stamp=`{stamp or '—'}`"
+        + (f" · min_days_left=`{min_days}`" if min_days is not None else "")
+        + "\nDual-write DLQ quarantine HMAC path — restart sidecar if live."
+    )
+    payload = {
+        "text": text,
+        "blocks": [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": "Sidecar cert rotate",
+                },
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": text},
+            },
+        ],
+    }
+    try:
+        from rag.judge_alert import post_slack
+
+        ok = post_slack(webhook, payload)
+        return {
+            "ok": bool(ok),
+            "skipped": False,
+            "posted": bool(ok),
+            "roles": rotated,
+            "stamp": stamp,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "skipped": False,
+            "posted": False,
+            "error": type(exc).__name__,
+        }
+
+
 def build_signed_webhook_headers(
     body: bytes,
     *,

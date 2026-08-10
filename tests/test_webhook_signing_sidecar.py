@@ -380,3 +380,37 @@ def test_sidecar_cert_expiry_inspect(tmp_path: Path, monkeypatch) -> None:
     assert rotated["ok"] is True
     assert "server" in (rotated.get("rotated") or rotated.get("would_rotate") or [])
     assert (rotated.get("after") or {}).get("server", {}).get("days_left", 0) > 30
+
+    from rag.cli import build_parser as _bp
+    from rag.webhook_signing_sidecar import maybe_notify_sidecar_cert_rotate
+
+    notify_args = _bp().parse_args(
+        ["webhook-signing-sidecar", "--rotate-certs", "--notify"]
+    )
+    assert notify_args.notify is True
+
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK",
+        "https://hooks.slack.test/rotate-notify",
+    )
+    posts: list = []
+
+    def _fake_slack(url, payload):
+        posts.append((url, payload))
+        return True
+
+    monkeypatch.setattr("rag.judge_alert.post_slack", _fake_slack)
+    notified = maybe_notify_sidecar_cert_rotate(
+        {
+            "ok": True,
+            "rotated": ["server", "upstream_client"],
+            "stamp": "20990101T000000Z",
+            "after": {"min_days_left": 60.0},
+        },
+        force=True,
+    )
+    assert notified.get("ok") is True
+    assert notified.get("skipped") is not True
+    assert notified.get("posted") is True
+    assert posts and posts[0][0].endswith("/rotate-notify")
+    assert "rotated" in str(posts[0][1].get("text") or "").lower()
