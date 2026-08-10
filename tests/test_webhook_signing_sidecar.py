@@ -441,3 +441,28 @@ def test_sidecar_cert_expiry_inspect(tmp_path: Path, monkeypatch) -> None:
     assert pd_calls
     assert pd_calls[0].get("routing_key") == "pd-rotate-key"
     assert pd_calls[0].get("source") == "webhook-signing-sidecar-rotate"
+    assert failed.get("severity") == "error"
+
+    from rag.webhook_signing_sidecar import resolve_sidecar_cert_rotate_pd_severity
+
+    monkeypatch.delenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_SEVERITY", raising=False)
+    assert (
+        resolve_sidecar_cert_rotate_pd_severity({"error": "PermissionError"})
+        == "critical"
+    )
+    assert resolve_sidecar_cert_rotate_pd_severity({"error": "Timeout"}) == "warning"
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_SEVERITY_BY_ERROR",
+        '{"RotateBoom":"critical","timeout":"info"}',
+    )
+    assert (
+        resolve_sidecar_cert_rotate_pd_severity({"error": "RotateBoom"}) == "critical"
+    )
+    pd_calls.clear()
+    monkeypatch.delenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_SEVERITY", raising=False)
+    sev_out = maybe_notify_sidecar_cert_rotate_fail(
+        {"ok": False, "error": "RotateBoom", "rotated": []},
+        force=True,
+    )
+    assert sev_out.get("severity") == "critical"
+    assert pd_calls[0].get("severity") == "critical"

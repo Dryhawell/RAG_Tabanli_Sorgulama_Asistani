@@ -566,6 +566,69 @@ def maybe_notify_sidecar_cert_rotate(
         }
 
 
+def resolve_sidecar_cert_rotate_pd_severity(
+    report: Optional[Dict[str, Any]] = None,
+) -> str:
+    """PagerDuty severity for sidecar rotate fail, keyed by error/env.
+
+    Precedence:
+    1. ``RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_SEVERITY`` (explicit)
+    2. ``RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_SEVERITY_BY_ERROR`` JSON map
+    3. Error-class defaults (PermissionError/OSError → critical, …)
+    4. fallback ``error``
+    """
+    allowed = {"info", "warning", "error", "critical"}
+    explicit = (
+        os.environ.get("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_SEVERITY", "")
+        .strip()
+        .lower()
+    )
+    if explicit in allowed:
+        return explicit
+
+    err = str(
+        (report or {}).get("error")
+        or (report or {}).get("detail")
+        or (report or {}).get("reason")
+        or ""
+    ).strip()
+    err_l = err.lower()
+    raw_map = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_SEVERITY_BY_ERROR", ""
+    ).strip()
+    if raw_map:
+        try:
+            data = json.loads(raw_map)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict) and err:
+            # exact key, then case-insensitive, then substring
+            mapped = str(data.get(err) or data.get(err_l) or "").strip().lower()
+            if mapped in allowed:
+                return mapped
+            for key, val in data.items():
+                k = str(key or "").strip().lower()
+                if k and k in err_l:
+                    mv = str(val or "").strip().lower()
+                    if mv in allowed:
+                        return mv
+
+    defaults = (
+        ("permissionerror", "critical"),
+        ("permission", "critical"),
+        ("oserror", "critical"),
+        ("filenotfound", "error"),
+        ("certificate", "error"),
+        ("cryptography", "error"),
+        ("timeout", "warning"),
+        ("valueerror", "warning"),
+    )
+    for needle, sev in defaults:
+        if needle in err_l:
+            return sev
+    return "error"
+
+
 def maybe_notify_sidecar_cert_rotate_fail(
     report: Dict[str, Any],
     *,
@@ -588,10 +651,7 @@ def maybe_notify_sidecar_cert_rotate_fail(
     )
     if not key:
         return {"ok": True, "skipped": True, "reason": "pd_key_missing"}
-    severity = (
-        os.environ.get("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_SEVERITY", "").strip()
-        or "error"
-    )
+    severity = resolve_sidecar_cert_rotate_pd_severity(report)
     err = str(report.get("error") or report.get("detail") or "rotate_failed")
     pd_report = {
         "summary": {
@@ -601,6 +661,7 @@ def maybe_notify_sidecar_cert_rotate_fail(
             "total": 1,
             "error": err,
             "rotated": report.get("rotated"),
+            "pd_severity": severity,
         },
         "mode": "sidecar_cert_rotate",
         "error": err,

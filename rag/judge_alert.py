@@ -3028,10 +3028,26 @@ def handle_slack_mute_export_revoke(
         if result.get("ok")
         else f"Mute export revoke failed: `{result.get('error')}`"
     )
+    meta = {}
+    try:
+        if str((payload.get("view") or {}).get("callback_id") or "") == (
+            "judge_mute_export_revoke_modal"
+        ):
+            meta = parse_mute_export_revoke_modal_metadata(payload)
+    except Exception:
+        meta = {}
     channel_id = str(
-        ((payload.get("channel") or {}).get("id"))
+        meta.get("channel_id")
+        or ((payload.get("channel") or {}).get("id"))
         or ((payload.get("container") or {}).get("channel_id"))
         or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "")
+        or ""
+    ).strip() or None
+    thread_ts = str(
+        meta.get("message_ts")
+        or ((payload.get("message") or {}).get("ts"))
+        or ((payload.get("container") or {}).get("message_ts"))
+        or ((payload.get("container") or {}).get("thread_ts"))
         or ""
     ).strip() or None
     user_id = slack_interactive_user_id(payload)
@@ -3042,6 +3058,22 @@ def handle_slack_mute_export_revoke(
             "chat.postEphemeral",
             bot_token=token,
             json_body={"channel": channel_id, "user": user_id, "text": text},
+        )
+    thread_reply: Dict[str, Any] = {"ok": False, "skipped": True}
+    if result.get("ok"):
+        thread_reply = post_mute_export_revoke_thread_reply(
+            ref=ref,
+            actor=actor or "slack",
+            note=note,
+            filename=str(
+                resolved.get("filename")
+                or meta.get("filename")
+                or ""
+            )
+            or None,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            bot_token=token or None,
         )
     return {
         "ok": bool(result.get("ok")),
@@ -3056,8 +3088,46 @@ def handle_slack_mute_export_revoke(
             "skipped": bool(ephemeral.get("skipped")),
             "error": ephemeral.get("error"),
         },
+        "thread_reply": thread_reply,
         "channel_id": channel_id,
+        "thread_ts": thread_ts,
     }
+
+
+def post_mute_export_revoke_thread_reply(
+    *,
+    ref: str,
+    actor: str = "slack",
+    note: str = "",
+    filename: Optional[str] = None,
+    channel_id: Optional[str] = None,
+    thread_ts: Optional[str] = None,
+    bot_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Mute export revoke audit → digest message thread reply."""
+    flag = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_THREAD", "1"
+    ).strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "thread_disabled"}
+    text = (
+        f"Mute export *revoked* · jti=`{ref}` · by *{actor or 'slack'}*"
+    )
+    if filename:
+        text += f" · file=`{filename}`"
+    if note and note not in {"slack_block_kit", "slack_confirm_modal"}:
+        # Strip prefix for display
+        display = note
+        if display.startswith("slack_confirm_modal:"):
+            display = display[len("slack_confirm_modal:") :]
+        if display:
+            text += f"\n> {display[:400]}"
+    return post_slack_thread_message(
+        text=text,
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+        bot_token=bot_token,
+    )
 
 
 def build_mute_export_revoke_modal_view(
@@ -5725,12 +5795,21 @@ def post_opsgenie_close(
     source: str,
     region: Optional[str] = None,
     base_url: Optional[str] = None,
+    note: Optional[str] = None,
 ) -> bool:
     key = (api_key or "").strip()
     if not key:
         return False
     alias = f"rag-judge-soft-fail/{source}"
     host = opsgenie_api_base(region=region, base_url=base_url)
+    deep = ""
+    try:
+        deep = opsgenie_alert_deep_link(source=source, region=region)
+    except Exception:
+        deep = ""
+    close_note = (note or "").strip() or "RAG judge soft-fail resolved in CI"
+    if deep and deep not in close_note:
+        close_note = f"{close_note} · Opsgenie: {deep}"
     try:
         import requests
         from urllib.parse import quote
@@ -5742,7 +5821,7 @@ def post_opsgenie_close(
                 "Authorization": f"GenieKey {key}",
                 "Content-Type": "application/json",
             },
-            json={"note": "RAG judge soft-fail resolved in CI"},
+            json={"note": close_note[:1000]},
             timeout=10,
         )
         return r.status_code < 300

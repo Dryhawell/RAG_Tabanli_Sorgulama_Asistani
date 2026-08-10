@@ -582,10 +582,16 @@ def build_inhibit_equal_resolve_canary_payload(report: Dict[str, Any]) -> Dict[s
     equal = (report.get("generated") or {}).get("equal") or []
     if not isinstance(equal, list):
         equal = [str(equal)]
+    from rag.judge_alert import opsgenie_alert_deep_link, silence_burn_ops_public_url
+
+    og_link = opsgenie_alert_deep_link(source="inhibit-equal-canary")
+    runbook = silence_burn_ops_public_url()
     text = (
         "Inhibit equal apply *resolved* (green CI · canary close)\n"
         f"equal=`{', '.join(equal) or '—'}` · applied=`{report.get('applied')}`"
     )
+    if og_link:
+        text += f"\nOpsgenie: {og_link}"
     blocks: list = [
         {
             "type": "header",
@@ -603,11 +609,18 @@ def build_inhibit_equal_resolve_canary_payload(report: Dict[str, Any]) -> Dict[s
                     f"*equal*: `{', '.join(equal) or '—'}`\n"
                     f"*backup*: `{report.get('backup') or '—'}`\n"
                     f"*git*: `{(report.get('git') or {}).get('ok')}`"
+                    + (f"\n*Opsgenie*: <{og_link}|open alert list>" if og_link else "")
+                    + (f"\n*runbook*: <{runbook}|silence-burn>" if runbook else "")
                 ),
             },
         },
     ]
-    return {"text": text, "blocks": blocks}
+    out: Dict[str, Any] = {"text": text, "blocks": blocks}
+    if og_link:
+        out["opsgenie_url"] = og_link
+    if runbook:
+        out["runbook_url"] = runbook
+    return out
 
 
 def emit_inhibit_equal_canary_resolve_metric(
@@ -989,6 +1002,7 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
         return {"ok": True, "skipped": True, "reason": "targets_missing"}
 
     from rag.judge_alert import (
+        opsgenie_alert_deep_link,
         post_opsgenie_close,
         post_pagerduty,
         post_slack,
@@ -1010,6 +1024,11 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
     }
 
     resolve_payload = build_inhibit_equal_resolve_canary_payload(report)
+    og_deep_link = str(
+        resolve_payload.get("opsgenie_url")
+        or opsgenie_alert_deep_link(source="inhibit-equal-canary")
+        or ""
+    ).strip()
     bot_token = resolve_inhibit_equal_canary_slack_bot_token()
     state = load_inhibit_equal_canary_slack_state()
     thread_ts = (
@@ -1058,6 +1077,9 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
         )
 
     og_by_region: Dict[str, bool] = {}
+    close_note = "RAG inhibit-equal canary resolved (green apply · silence-burn recover)"
+    if og_deep_link:
+        close_note = f"{close_note} · {og_deep_link}"
     for t in og_targets:
         region = t.get("region") or "us"
         ok = bool(
@@ -1065,6 +1087,7 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
                 api_key=t["api_key"],
                 source="inhibit-equal-canary",
                 region=region,
+                note=close_note,
             )
         )
         og_by_region[region] = ok
@@ -1091,6 +1114,8 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
         "slack": slack_ok if has_slack else None,
         "slack_via": slack_via,
         "slack_thread_reply": slack_thread_reply,
+        "opsgenie_url": og_deep_link or None,
+        "opsgenie_deep_link": og_deep_link or None,
         "slack_thread_ts": thread_ts or None,
         "pagerduty": pd_ok if pd_key else None,
         "opsgenie": og_ok if og_targets else None,

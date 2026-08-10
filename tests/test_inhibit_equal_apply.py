@@ -450,14 +450,19 @@ def test_notify_inhibit_equal_close_on_green(monkeypatch) -> None:
     payload = build_inhibit_equal_resolve_canary_payload(report)
     assert "resolved" in payload["text"].lower()
     assert "green" in payload["text"].lower()
+    assert payload.get("opsgenie_url")
+    assert "opsgenie.com/alert/list" in str(payload.get("opsgenie_url"))
+    assert "Opsgenie:" in payload["text"] or "opsgenie" in payload["text"].lower()
 
     monkeypatch.setenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", "https://hooks.slack.test/r")
     with patch("rag.judge_alert.post_slack", return_value=True) as slack:
         slack_out = notify_inhibit_equal_close_on_green(report)
     assert slack_out["closed"] is True
     assert slack_out["slack"] is True
+    assert slack_out.get("opsgenie_url")
     assert slack.called
     assert "resolved" in slack.call_args[0][1]["text"].lower()
+    assert "opsgenie.com" in slack.call_args[0][1]["text"].lower()
 
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", raising=False)
     monkeypatch.setenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", "og-key")
@@ -466,11 +471,16 @@ def test_notify_inhibit_equal_close_on_green(monkeypatch) -> None:
         out = notify_inhibit_equal_close_on_green(report)
     assert out["closed"] is True
     assert out["opsgenie"] is True
+    assert out.get("opsgenie_deep_link")
     assert out["opsgenie_regions"]["us"] is True
     assert out["opsgenie_regions"]["eu"] is True
     assert close.call_count == 2
     assert all(
         c.kwargs.get("source") == "inhibit-equal-canary" for c in close.call_args_list
+    )
+    assert all(
+        "opsgenie.com" in str(c.kwargs.get("note") or "").lower()
+        for c in close.call_args_list
     )
 
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", raising=False)

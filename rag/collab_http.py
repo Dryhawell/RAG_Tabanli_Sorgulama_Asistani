@@ -283,7 +283,8 @@ a{color:#b45309}
 <p>Alert: <code>RagInhibitEqualCanarySilenceBurn</code> — fail ratio on <code>rag_inhibit_equal_canary_silence_total</code>.</p>
 <p>Slack canary button + PagerDuty/Opsgenie <code>details.runbook_url</code> (<code>INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL</code>) deep-link here.</p>
 <p>Opsgenie alert deep-link (alias list): <code>details.opsgenie_url</code> via <code>opsgenie_alert_deep_link</code>
-(<code>INHIBIT_EQUAL_CANARY_OPSGENIE_ALERT_URL</code> / Grafana annotation <code>opsgenie_url</code>).</p>
+(<code>INHIBIT_EQUAL_CANARY_OPSGENIE_ALERT_URL</code> / Grafana annotation <code>opsgenie_url</code>).
+Green recover close: <code>post_opsgenie_close</code> note + Slack resolve payload include the same deep-link.</p>
 <ol>
 <li>Confirm burn windows: <code>rag:inhibit_equal_canary_silence_fail_ratio:1h/6h</code> on Grafana rag-judge.</li>
 <li>Open Opsgenie alias list for <code>rag-judge-soft-fail/inhibit-equal-canary</code> (US/EU app host).</li>

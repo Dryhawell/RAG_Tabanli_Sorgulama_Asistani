@@ -1203,31 +1203,42 @@ def test_mute_export_revoke_block_kit_action(tmp_path: Path, monkeypatch) -> Non
         base=str(tmp_path),
     )
 
-    # Modal submit → actual revoke
-    submitted = handle_slack_interactive_ack(
-        {
-            "type": "view_submission",
-            "user": {"id": "U1", "username": "ops"},
-            "view": {
-                "callback_id": "judge_mute_export_revoke_modal",
-                "private_metadata": (
-                    '{"ref":"%s","filename":"%s","channel_id":"C1"}'
-                    % (signed["jti"], fname)
-                ),
-                "state": {
-                    "values": {
-                        "revoke_note_block": {
-                            "revoke_note": {"value": "leak"}
-                        }
-                    }
-                },
-            },
-        }
-    )
+    # Modal submit → actual revoke + audit thread reply
+    with patch(
+        "rag.judge_alert.post_slack_thread_message",
+        return_value={"ok": True, "ts": "9.91"},
+    ) as thread:
+        with patch("rag.judge_alert.slack_api", return_value={"ok": True}):
+            submitted = handle_slack_interactive_ack(
+                {
+                    "type": "view_submission",
+                    "user": {"id": "U1", "username": "ops"},
+                    "view": {
+                        "callback_id": "judge_mute_export_revoke_modal",
+                        "private_metadata": (
+                            '{"ref":"%s","filename":"%s","channel_id":"C1","message_ts":"9.9"}'
+                            % (signed["jti"], fname)
+                        ),
+                        "state": {
+                            "values": {
+                                "revoke_note_block": {
+                                    "revoke_note": {"value": "leak"}
+                                }
+                            }
+                        },
+                    },
+                }
+            )
     assert submitted.get("mode") == "modal_submit"
     assert submitted.get("confirm") == "mute_export_revoke"
     assert submitted.get("ok") is True
     assert submitted.get("ref") == signed["jti"]
+    assert submitted.get("thread_reply", {}).get("ok") is True
+    assert thread.called
+    thread_text = str(thread.call_args.kwargs.get("text") or "")
+    assert "revoked" in thread_text.lower()
+    assert signed["jti"] in thread_text
+    assert "leak" in thread_text
     assert not verify_mute_export_signature(
         fname,
         signed["expires"],
@@ -1242,22 +1253,28 @@ def test_mute_export_revoke_block_kit_action(tmp_path: Path, monkeypatch) -> Non
     signed2 = build_mute_export_signed_url(
         fname, public_base="http://example.test", base=str(tmp_path), actor="tester2"
     )
-    immediate = handle_slack_mute_export_revoke(
-        {
-            "actions": [
-                {
-                    "action_id": "judge_ack_digest_revoke_mute_export",
-                    "value": signed2["jti"],
-                }
-            ],
-            "user": {"username": "bob", "id": "U2"},
-            "channel": {"id": "C1"},
-        },
-        value=signed2["jti"],
-        base=str(tmp_path),
-    )
+    with patch(
+        "rag.judge_alert.post_slack_thread_message",
+        return_value={"ok": True, "ts": "9.92"},
+    ):
+        immediate = handle_slack_mute_export_revoke(
+            {
+                "actions": [
+                    {
+                        "action_id": "judge_ack_digest_revoke_mute_export",
+                        "value": signed2["jti"],
+                    }
+                ],
+                "user": {"username": "bob", "id": "U2"},
+                "channel": {"id": "C1"},
+                "message": {"ts": "9.9"},
+            },
+            value=signed2["jti"],
+            base=str(tmp_path),
+        )
     assert immediate.get("ok") is True
     assert immediate.get("mode") == "digest_mute_export_revoke"
+    assert immediate.get("thread_reply", {}).get("ok") is True
 
 
 def test_digest_message_ref_prune_ttl(tmp_path: Path, monkeypatch) -> None:
