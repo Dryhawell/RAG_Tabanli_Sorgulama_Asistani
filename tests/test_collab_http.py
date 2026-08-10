@@ -1,0 +1,258 @@
+"""Collab HTTP (Web Push SW / register) testleri."""
+
+import json
+import threading
+from http.client import HTTPConnection
+
+from rag.collab_http import (
+    handle_judge_ack,
+    handle_judge_alert_state,
+    handle_sw_js,
+    handle_webpush_register,
+)
+from rag.collab_notify_push import list_device_tokens, summarize_user_devices
+
+
+def test_handle_sw_js():
+    code, headers, body = handle_sw_js()
+    assert code == 200
+    assert "javascript" in headers["Content-Type"]
+    assert b"push" in body
+
+
+def test_handle_judge_ack(tmp_path, monkeypatch):
+    from rag.judge_alert import save_judge_alert_state
+
+    state = str(tmp_path / "judge_state.json")
+    save_judge_alert_state(
+        {
+            "soft_fail": True,
+            "source": "report",
+            "acknowledged": False,
+            "last_action": "alert",
+        },
+        state,
+    )
+    monkeypatch.setenv("RAG_JUDGE_ACK_TOKEN", "secret-ack")
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", state)
+    monkeypatch.delenv("RAG_JUDGE_SLACK_WEBHOOK", raising=False)
+    monkeypatch.delenv("RAG_JUDGE_PAGERDUTY_ROUTING_KEY", raising=False)
+    monkeypatch.delenv("RAG_JUDGE_OPSGENIE_API_KEY", raising=False)
+
+    code, _, body = handle_judge_ack(b'{"actor":"alice"}')
+    assert code == 401
+
+    code, _, body = handle_judge_ack(
+        json.dumps({"actor": "alice", "token": "secret-ack", "note": "looking"}).encode()
+    )
+    assert code == 200
+    data = json.loads(body.decode("utf-8"))
+    assert data["ok"] is True
+    assert data["state"]["acknowledged_by"] == "alice"
+
+    code, _, body = handle_judge_alert_state()
+    assert code == 200
+    st = json.loads(body.decode("utf-8"))["state"]
+    assert st["soft_fail"] is True
+    assert st["acknowledged"] is True
+
+
+def test_handle_judge_ack_form():
+    from rag.collab_http import handle_judge_ack_form
+
+    code, headers, body = handle_judge_ack_form()
+    assert code == 200
+    assert "text/html" in headers["Content-Type"]
+    assert b"/judge/ack" in body
+    assert b"Acknowledge" in body
+
+    code2, _, body2 = handle_judge_ack_form(query={"tenant": ["acme"]})
+    assert code2 == 200
+    assert b"acme" in body2
+    assert b"tenant_id" in body2
+
+
+def test_handle_judge_ack_export_tenant(tmp_path, monkeypatch):
+    from rag.collab_http import handle_judge_ack_export
+    from rag.judge_alert import append_judge_ack_audit
+
+    path = str(tmp_path / "ack.jsonl")
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", path)
+    append_judge_ack_audit("ack", actor="a", path=path, extra={"tenant_id": "acme"})
+    append_judge_ack_audit("ack", actor="b", path=path, extra={"tenant_id": "beta"})
+    code, headers, body = handle_judge_ack_export(
+        query={"format": ["jsonl"], "tenant": ["acme"]}
+    )
+    assert code == 200
+    assert headers.get("X-Export-Tenant") == "acme"
+    assert headers.get("X-Export-Count") == "1"
+    assert b"acme" in body
+    assert b"beta" not in body
+
+
+def test_handle_judge_mute_snapshots_signed(tmp_path, monkeypatch):
+    from rag.collab_http import handle_judge_mute_snapshots
+    from rag.judge_alert import (
+        build_mute_export_signed_url,
+        export_judge_ack_digest_mute_snapshots,
+        set_judge_ack_digest_mute,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SIGNING_SECRET", "s3cret")
+    set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path))
+    exported = export_judge_ack_digest_mute_snapshots(fmt="csv", base=str(tmp_path))
+    fname = exported["archive"]["filename"]
+    signed = build_mute_export_signed_url(
+        fname, public_base="http://example.test", base=str(tmp_path)
+    )
+    code, headers, body = handle_judge_mute_snapshots(
+        query={
+            "file": [fname],
+            "expires": [str(signed["expires"])],
+            "jti": [signed["jti"]],
+            "sig": [signed["sig"]],
+        }
+    )
+    assert code == 200
+    assert "text/csv" in headers["Content-Type"]
+    assert b"tenant_id" in body
+    bad = handle_judge_mute_snapshots(
+        query={
+            "file": [fname],
+            "expires": [str(signed["expires"])],
+            "jti": [signed["jti"]],
+            "sig": ["v1=bad"],
+        }
+    )
+    assert bad[0] == 403
+    from rag.judge_alert import revoke_mute_export_signed_url
+
+    revoke_mute_export_signed_url(signed["jti"], base=str(tmp_path), actor="ops")
+    revoked = handle_judge_mute_snapshots(
+        query={
+            "file": [fname],
+            "expires": [str(signed["expires"])],
+            "jti": [signed["jti"]],
+            "sig": [signed["sig"]],
+        }
+    )
+    assert revoked[0] == 403
+    assert b"revoked" in revoked[2]
+
+
+def test_ops_amtool_and_silence_burn_pages():
+    from rag.collab_http import handle_ops_amtool_page, handle_ops_silence_burn_page
+
+    code, headers, body = handle_ops_amtool_page()
+    assert code == 200
+    assert "text/html" in headers["Content-Type"]
+    assert b"amtool" in body
+    assert b"--check-config" in body
+    assert b"/ops/silence-burn" in body
+    code2, _, body2 = handle_ops_silence_burn_page()
+    assert code2 == 200
+    assert b"RagInhibitEqualCanarySilenceBurn" in body2
+    assert b"--list-silences" in body2
+    assert b"/ops/amtool" in body2
+
+
+def test_handle_judge_slack_interactive(tmp_path, monkeypatch):
+    import hashlib
+    import hmac
+    import time
+    from urllib.parse import quote
+
+    from rag.collab_http import handle_judge_slack_interactive
+    from rag.judge_alert import save_judge_alert_state
+
+    state = str(tmp_path / "state.json")
+    save_judge_alert_state(
+        {"soft_fail": True, "source": "report", "acknowledged": False},
+        state,
+    )
+    secret = "slack-secret"
+    monkeypatch.setenv("RAG_JUDGE_SLACK_SIGNING_SECRET", secret)
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", state)
+    payload = {
+        "type": "block_actions",
+        "user": {"username": "ops"},
+        "actions": [{"action_id": "judge_ack_interactive", "value": "ack"}],
+    }
+    form = f"payload={quote(json.dumps(payload))}".encode("utf-8")
+    ts = str(int(time.time()))
+    base = f"v0:{ts}:{form.decode()}"
+    sig = "v0=" + hmac.new(secret.encode(), base.encode(), hashlib.sha256).hexdigest()
+    code, _, body = handle_judge_slack_interactive(
+        form,
+        headers={
+            "X-Slack-Request-Timestamp": ts,
+            "X-Slack-Signature": sig,
+        },
+    )
+    assert code == 200
+    data = json.loads(body.decode("utf-8"))
+    assert "acknowledged" in data.get("text", "").lower() or data.get("text")
+
+
+def test_handle_webpush_register(tmp_path, monkeypatch):
+    monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
+    sub = {
+        "endpoint": "https://push.example.com/x",
+        "keys": {"p256dh": "p", "auth": "a"},
+    }
+    code, headers, body = handle_webpush_register(
+        json.dumps({"username": "alice", "subscription": sub}).encode("utf-8")
+    )
+    assert code == 200
+    data = json.loads(body.decode("utf-8"))
+    assert data["ok"] is True
+    tokens = list_device_tokens("alice")
+    assert len(tokens) == 1
+    assert tokens[0]["platform"] == "webpush"
+
+
+def test_collab_http_server_get_sw(tmp_path, monkeypatch):
+    monkeypatch.setattr("rag.collab_notify_push.METADATA_DIR", str(tmp_path))
+    from http.server import ThreadingHTTPServer
+
+    from rag.collab_http import CollabHTTPHandler
+
+    class H(CollabHTTPHandler):
+        public_base = "http://127.0.0.1:0"
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        conn = HTTPConnection("127.0.0.1", port, timeout=3)
+        conn.request("GET", "/sw.js")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        body = resp.read()
+        assert b"addEventListener" in body
+        conn.close()
+
+        sub = {
+            "endpoint": "https://push.example.com/y",
+            "keys": {"p256dh": "pp", "auth": "aa"},
+        }
+        conn = HTTPConnection("127.0.0.1", port, timeout=3)
+        payload = json.dumps({"username": "carol", "subscription": sub})
+        conn.request(
+            "POST",
+            "/webpush/register",
+            body=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        resp = conn.getresponse()
+        assert resp.status == 200
+        data = json.loads(resp.read().decode("utf-8"))
+        assert data["ok"] is True
+        conn.close()
+        devices = summarize_user_devices("carol")
+        assert devices and devices[0]["platform"] == "webpush"
+    finally:
+        server.shutdown()
+        server.server_close()
