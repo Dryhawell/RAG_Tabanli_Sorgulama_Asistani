@@ -11,6 +11,10 @@ __pycache__/
 
 # Env
 .env
+*.vapid.env
+vapid_keys.json
+grafana/alertmanager.rendered.yml
+grafana/inhibit_rules.generated.yml
 
 # Runtime data (not tracked)
 data/
