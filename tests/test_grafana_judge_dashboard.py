@@ -1,0 +1,48 @@
+"""Grafana dashboard artifact smoke."""
+
+import json
+from pathlib import Path
+
+
+def test_rag_judge_grafana_dashboard_json():
+    path = Path("grafana/dashboards/rag_judge.json")
+    assert path.is_file()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data.get("uid") == "rag-judge-soft-fail"
+    titles = [p.get("title") for p in data.get("panels") or []]
+    assert any("accuracy" in (t or "").lower() for t in titles)
+    assert any("soft-fail" in (t or "").lower() or "Soft-fail" in (t or "") for t in titles)
+    exprs = []
+    for panel in data.get("panels") or []:
+        for t in panel.get("targets") or []:
+            if t.get("expr"):
+                exprs.append(t["expr"])
+    joined = "\n".join(exprs)
+    assert "rag_judge_accuracy" in joined
+    assert "rag_judge_soft_fail_total" in joined
+    assert "rag_judge_runs_total" in joined
+    assert "rag_judge_ack_audit_total" in joined
+    assert "rag_vector_dual_write_shadow_overlap" in joined
+    assert "rag:dual_write_lag:avg1h" in joined
+    assert "rag:dual_write_shadow_burn:1h" in joined
+    assert "rag_dual_write_webhook_dlq_depth" in joined
+    assert "rag_dual_write_webhook_dlq_quarantine_depth" in joined
+    assert "rag_inhibit_equal_canary_resolve_total" in joined
+    assert "rag_inhibit_equal_canary_silence_total" in joined
+    assert "rag_webhook_signing_sidecar_forward_total" in joined
+    assert "rag_webhook_signing_sidecar_cert_expiry_days" in joined
+    assert "rag:inhibit_equal_canary_silence_fail_ratio:1h" in joined
+    assert "rag_judge_ack_digest_msgref_reconcile_total" in joined
+    assert "rag_judge_ack_digest_msgref_reconcile_checked" in joined
+    assert any("DLQ" in (t or "") for t in titles)
+    assert any("canary" in (t or "").lower() for t in titles)
+    assert any("msgref" in (t or "").lower() for t in titles)
+    assert any("silence" in (t or "").lower() for t in titles)
+    assert any("sidecar" in (t or "").lower() for t in titles)
+    assert any("silence burn" in (t or "").lower() for t in titles)
+    assert any("cert expiry" in (t or "").lower() for t in titles)
+    assert "canary" in (data.get("tags") or [])
+    assert "inhibit" in (data.get("tags") or [])
+    assert "msgref" in (data.get("tags") or [])
+    assert "mute" in (data.get("tags") or [])
+    assert "sidecar" in (data.get("tags") or [])

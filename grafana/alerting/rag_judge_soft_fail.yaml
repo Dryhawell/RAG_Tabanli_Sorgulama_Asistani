@@ -1,0 +1,61 @@
+# Grafana unified alerting — RAG judge soft-fail örnek kuralı
+# Provisioning: grafana/provisioning/alerting/ altına kopyalanabilir.
+# Contact point (Slack webhook) ayrı provision edilmeli; URL commit edilmez.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: rag-judge
+    folder: RAG
+    interval: 5m
+    rules:
+      - uid: rag-judge-soft-fail-rate
+        title: RAG judge soft-fail rate high
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: sum(rate(rag_judge_soft_fail_total[1h])) / clamp_min(sum(rate(rag_judge_runs_total[1h])), 1e-9)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0.3]
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 15m
+        annotations:
+          summary: RAG judge soft-fail oranı yüksek
+          description: >
+            soft-fail rate (1h) 0.30 eşiğini aştı. Dashboard:
+            rag-judge-soft-fail. CI script: scripts/ci_judge_slack_alert.py
+        labels:
+          severity: warning
+          service: rag-judge
+          team: rag
