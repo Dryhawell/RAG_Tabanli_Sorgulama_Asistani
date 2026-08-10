@@ -286,6 +286,9 @@ def test_notify_inhibit_equal_rollback_canary(monkeypatch) -> None:
     assert skipped["skipped"] is True
 
     monkeypatch.setenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", "https://hooks.slack.test/x")
+    monkeypatch.setenv(
+        "INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL", "https://ops.example.test/ops/silence-burn"
+    )
     with patch("rag.judge_alert.post_slack", return_value=True) as post:
         out = notify_inhibit_equal_rollback_canary(report)
     assert out["ok"] is True
@@ -294,6 +297,12 @@ def test_notify_inhibit_equal_rollback_canary(monkeypatch) -> None:
     assert post.called
     payload = post.call_args[0][1]
     assert "rolled back" in payload["text"].lower() or "rollback" in payload["text"].lower()
+    assert payload.get("runbook_url")
+    assert "/ops/silence-burn" in str(payload.get("runbook_url"))
+    assert any(
+        (b.get("type") == "actions")
+        for b in (payload.get("blocks") or [])
+    )
 
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", raising=False)
     monkeypatch.setenv("INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY", "pd-key")
@@ -307,6 +316,9 @@ def test_notify_inhibit_equal_rollback_canary(monkeypatch) -> None:
     assert pd.call_args.kwargs.get("source") == "inhibit-equal-canary"
     assert pd.call_args.kwargs.get("routing_key") == "pd-key"
     assert pd.call_args.kwargs.get("severity") == "critical"
+    assert pd.call_args.kwargs.get("runbook_url")
+    assert "silence-burn" in str(pd.call_args.kwargs.get("runbook_url"))
+    assert (pd.call_args.kwargs.get("report") or {}).get("runbook_url")
 
     monkeypatch.setenv("INHIBIT_EQUAL_CANARY_PD_SEVERITY", "warning")
     with patch("rag.judge_alert.post_pagerduty", return_value=True) as pd_warn:

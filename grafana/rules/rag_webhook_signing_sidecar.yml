@@ -48,6 +48,7 @@ groups:
             Sidecar cert role={{ $labels.role }} expires in {{ $value | humanize }} days (<14).
             Dual-write DLQ quarantine HMAC path uses server/upstream client certs.
             Check: python -m rag.cli webhook-signing-sidecar --check-certs
+            Auto-rotate: python -m rag.cli webhook-signing-sidecar --rotate-certs-if-expiring
           dashboard_uid: rag-judge
           panel_id: "26"
       - alert: RagWebhookSigningSidecarCertExpired
@@ -60,6 +61,7 @@ groups:
           summary: "Signing sidecar mTLS cert expired"
           description: >
             Sidecar cert role={{ $labels.role }} already expired (days_left={{ $value | humanize }}).
-            Rotate PEM under metadata/sidecar-tls and restart webhook-signing-sidecar.
+            Rotate: python -m rag.cli webhook-signing-sidecar --rotate-certs
+            (archives old PEM under metadata/sidecar-tls/archive) then restart.
           dashboard_uid: rag-judge
           panel_id: "26"

@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -1483,12 +1484,62 @@ def mute_export_signed_url_ttl_sec() -> int:
         return 86400
 
 
+def mute_export_signed_urls_path(*, base: Optional[str] = None) -> str:
+    try:
+        from app.config import METADATA_DIR
+    except ImportError:
+        METADATA_DIR = "metadata"
+    root = (
+        base
+        or os.environ.get("RAG_JUDGE_ACK_DIGEST_BASE", "").strip()
+        or METADATA_DIR
+    )
+    return os.path.join(root, "mute_export_signed_urls.json")
+
+
+def load_mute_export_signed_urls(*, base: Optional[str] = None) -> Dict[str, Any]:
+    path = mute_export_signed_urls_path(base=base)
+    if not os.path.isfile(path):
+        return {"links": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {"links": {}}
+    if not isinstance(data, dict):
+        return {"links": {}}
+    data.setdefault("links", {})
+    if not isinstance(data["links"], dict):
+        data["links"] = {}
+    return data
+
+
+def save_mute_export_signed_urls(
+    data: Dict[str, Any], *, base: Optional[str] = None
+) -> str:
+    path = mute_export_signed_urls_path(base=base)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    payload = dict(data or {})
+    payload.setdefault("links", {})
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return path
+
+
 def build_mute_export_signature(
     filename: str,
     expires: int,
     *,
     secret: str,
+    jti: Optional[str] = None,
 ) -> str:
+    jti_s = (jti or "").strip()
+    if jti_s:
+        base = f"v1:{int(expires)}:{filename}:{jti_s}"
+        digest = hmac.new(
+            secret.encode("utf-8"), base.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        return f"v1={digest}"
     base = f"v0:{int(expires)}:{filename}"
     digest = hmac.new(
         secret.encode("utf-8"), base.encode("utf-8"), hashlib.sha256
@@ -1496,13 +1547,39 @@ def build_mute_export_signature(
     return f"v0={digest}"
 
 
+def is_mute_export_revoked(
+    *,
+    jti: Optional[str] = None,
+    filename: Optional[str] = None,
+    base: Optional[str] = None,
+) -> bool:
+    data = load_mute_export_signed_urls(base=base)
+    links = data.get("links") or {}
+    jti_s = (jti or "").strip()
+    if jti_s:
+        row = links.get(jti_s)
+        if isinstance(row, dict) and row.get("revoked"):
+            return True
+        return False
+    name = os.path.basename((filename or "").strip())
+    if not name:
+        return False
+    for row in links.values():
+        if isinstance(row, dict) and row.get("filename") == name and row.get("revoked"):
+            return True
+    return False
+
+
 def verify_mute_export_signature(
     filename: str,
     expires: str | int,
     signature: str,
     *,
+    jti: Optional[str] = None,
     secret: Optional[str] = None,
     now: Optional[float] = None,
+    base: Optional[str] = None,
+    check_revoke: bool = True,
 ) -> bool:
     sec = secret if secret is not None else mute_export_signing_secret()
     if not sec or not filename or not signature:
@@ -1514,8 +1591,119 @@ def verify_mute_export_signature(
     ts_now = int(now if now is not None else time.time())
     if exp < ts_now:
         return False
+    jti_s = (jti or "").strip() or None
+    if check_revoke and is_mute_export_revoked(jti=jti_s, filename=filename, base=base):
+        return False
+    sig = str(signature).strip()
+    if jti_s or sig.startswith("v1="):
+        if not jti_s:
+            return False
+        expected = build_mute_export_signature(
+            filename, exp, secret=sec, jti=jti_s
+        )
+        return hmac.compare_digest(expected, sig)
     expected = build_mute_export_signature(filename, exp, secret=sec)
-    return hmac.compare_digest(expected, str(signature).strip())
+    return hmac.compare_digest(expected, sig)
+
+
+def register_mute_export_signed_url(
+    *,
+    jti: str,
+    filename: str,
+    expires: int,
+    actor: Optional[str] = None,
+    base: Optional[str] = None,
+    audit: bool = True,
+) -> Dict[str, Any]:
+    data = load_mute_export_signed_urls(base=base)
+    links = data.setdefault("links", {})
+    row = {
+        "jti": jti,
+        "filename": filename,
+        "expires": int(expires),
+        "created_at": _utcnow_iso(),
+        "actor": actor,
+        "revoked": False,
+        "revoked_at": None,
+    }
+    links[jti] = row
+    # Cap store size (keep newest ~500)
+    if len(links) > 500:
+        ordered = sorted(
+            links.items(),
+            key=lambda kv: str((kv[1] or {}).get("created_at") or ""),
+            reverse=True,
+        )
+        data["links"] = dict(ordered[:500])
+    path = save_mute_export_signed_urls(data, base=base)
+    if audit:
+        append_judge_ack_audit(
+            "mute_export_sign",
+            actor=actor or "system",
+            source="mute_export",
+            extra={
+                "jti": jti,
+                "filename": filename,
+                "expires": int(expires),
+            },
+        )
+    return {"ok": True, "path": path, "link": row}
+
+
+def revoke_mute_export_signed_url(
+    ref: str,
+    *,
+    actor: Optional[str] = None,
+    base: Optional[str] = None,
+    note: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Revoke by jti or filename (all matching links)."""
+    key = (ref or "").strip()
+    if not key:
+        return {"ok": False, "error": "ref_required"}
+    data = load_mute_export_signed_urls(base=base)
+    links = data.get("links") or {}
+    matched: List[str] = []
+    if key in links:
+        matched = [key]
+    else:
+        name = os.path.basename(key)
+        for jti, row in links.items():
+            if isinstance(row, dict) and row.get("filename") == name:
+                matched.append(jti)
+    if not matched:
+        return {"ok": False, "error": "not_found", "ref": key}
+    now = _utcnow_iso()
+    revoked_rows: List[Dict[str, Any]] = []
+    for jti in matched:
+        row = dict(links.get(jti) or {})
+        row["revoked"] = True
+        row["revoked_at"] = now
+        row["revoked_by"] = actor or "system"
+        if note:
+            row["revoke_note"] = str(note)[:500]
+        links[jti] = row
+        revoked_rows.append(row)
+        append_judge_ack_audit(
+            "mute_export_revoke",
+            actor=actor or "system",
+            note=note,
+            source="mute_export",
+            extra={
+                "jti": jti,
+                "filename": row.get("filename"),
+                "expires": row.get("expires"),
+            },
+        )
+    data["links"] = links
+    path = save_mute_export_signed_urls(data, base=base)
+    return {
+        "ok": True,
+        "path": path,
+        "revoked": len(revoked_rows),
+        "jtis": matched,
+        "links": revoked_rows,
+    }
 
 
 def build_mute_export_signed_url(
@@ -1526,8 +1714,11 @@ def build_mute_export_signed_url(
     ttl_sec: Optional[int] = None,
     secret: Optional[str] = None,
     now: Optional[float] = None,
+    actor: Optional[str] = None,
+    jti: Optional[str] = None,
+    audit: bool = True,
 ) -> Dict[str, Any]:
-    """HMAC signed download URL for /judge/mute-snapshots."""
+    """HMAC signed download URL for /judge/mute-snapshots (jti + audit)."""
     from urllib.parse import quote
 
     name = os.path.basename((filename or "").strip())
@@ -1538,7 +1729,8 @@ def build_mute_export_signed_url(
         return {"ok": False, "error": "signing_secret_missing", "filename": name}
     ttl = int(ttl_sec if ttl_sec is not None else mute_export_signed_url_ttl_sec())
     exp = int(now if now is not None else time.time()) + max(60, ttl)
-    sig = build_mute_export_signature(name, exp, secret=sec)
+    token = (jti or "").strip() or secrets.token_urlsafe(16)
+    sig = build_mute_export_signature(name, exp, secret=sec, jti=token)
     pub = (public_base or "").strip()
     if not pub:
         pub = os.environ.get("RAG_JUDGE_ACK_PUBLIC_URL", "").strip()
@@ -1557,9 +1749,16 @@ def build_mute_export_signed_url(
             pub = "http://127.0.0.1:8765"
     url = (
         f"{pub.rstrip('/')}/judge/mute-snapshots"
-        f"?file={quote(name)}&expires={exp}&sig={quote(sig)}"
+        f"?file={quote(name)}&expires={exp}&jti={quote(token)}&sig={quote(sig)}"
     )
-    _ = base  # reserved for future path-scoped signing
+    reg = register_mute_export_signed_url(
+        jti=token,
+        filename=name,
+        expires=exp,
+        actor=actor,
+        base=base,
+        audit=audit,
+    )
     return {
         "ok": True,
         "url": url,
@@ -1567,6 +1766,8 @@ def build_mute_export_signed_url(
         "expires": exp,
         "ttl_sec": ttl,
         "sig": sig,
+        "jti": token,
+        "registered": reg.get("ok"),
     }
 
 
@@ -4835,6 +5036,37 @@ def post_slack(webhook: str, payload: Dict[str, Any]) -> bool:
         return False
 
 
+def silence_burn_ops_public_url(
+    *,
+    public_base: Optional[str] = None,
+) -> str:
+    """Absolute (or path) URL for silence burn runbook page."""
+    explicit = (
+        os.environ.get("INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL", "").strip()
+        or os.environ.get("RAG_INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL", "").strip()
+        or os.environ.get("RAG_SILENCE_BURN_RUNBOOK_URL", "").strip()
+    )
+    if explicit:
+        return explicit
+    pub = (public_base or "").strip()
+    if not pub:
+        pub = os.environ.get("RAG_JUDGE_ACK_PUBLIC_URL", "").strip()
+        if pub.endswith("/judge/ack-form"):
+            pub = pub[: -len("/judge/ack-form")]
+        elif pub.endswith("/judge/ack-ui"):
+            pub = pub[: -len("/judge/ack-ui")]
+    if not pub:
+        try:
+            from app.config import COLLAB_HTTP_HOST, COLLAB_HTTP_PORT
+
+            host = COLLAB_HTTP_HOST or "127.0.0.1"
+            port = int(COLLAB_HTTP_PORT or 8765)
+            pub = f"http://{host}:{port}"
+        except Exception:
+            return "/ops/silence-burn"
+    return f"{pub.rstrip('/')}/ops/silence-burn"
+
+
 def post_pagerduty(
     *,
     routing_key: str,
@@ -4842,6 +5074,7 @@ def post_pagerduty(
     source: str,
     severity: str = "warning",
     event_action: str = "trigger",
+    runbook_url: Optional[str] = None,
 ) -> bool:
     key = (routing_key or "").strip()
     if not key:
@@ -4853,6 +5086,8 @@ def post_pagerduty(
         else _summary_text(report, source=source)
     )
     summary = report.get("summary") or {}
+    if not isinstance(summary, dict):
+        summary = {}
     sev = severity if severity in {"info", "warning", "error", "critical"} else "warning"
     body: Dict[str, Any] = {
         "routing_key": key,
@@ -4860,6 +5095,23 @@ def post_pagerduty(
         "dedup_key": f"rag-judge-soft-fail/{source}",
     }
     if action == "trigger":
+        details: Dict[str, Any] = {
+            "accuracy": summary.get("accuracy"),
+            "passed": summary.get("passed"),
+            "failed": summary.get("failed"),
+            "total": summary.get("total"),
+            "source": source,
+            "mode": summary.get("mode") or report.get("mode"),
+        }
+        rb = (
+            runbook_url
+            or report.get("runbook_url")
+            or summary.get("runbook_url")
+            or os.environ.get("RAG_PAGERDUTY_RUNBOOK_URL", "").strip()
+            or None
+        )
+        if rb:
+            details["runbook_url"] = str(rb)
         body["payload"] = {
             "summary": text[:1024],
             "severity": "rag-judge",
@@ -4868,14 +5120,7 @@ def post_pagerduty(
             "component": "judge",
             "group": "ci",
             "class": "soft_fail",
-            "custom_details": {
-                "accuracy": summary.get("accuracy"),
-                "passed": summary.get("passed"),
-                "failed": summary.get("failed"),
-                "total": summary.get("total"),
-                "source": source,
-                "mode": summary.get("mode") or report.get("mode"),
-            },
+            "custom_details": details,
         }
     try:
         import requests

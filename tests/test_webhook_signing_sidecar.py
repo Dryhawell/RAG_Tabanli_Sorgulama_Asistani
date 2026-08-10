@@ -360,8 +360,23 @@ def test_sidecar_cert_expiry_inspect(tmp_path: Path, monkeypatch) -> None:
     assert status["cert_expiry"]["min_days_left"] is not None
 
     from rag.cli import build_parser
+    from rag.webhook_signing_sidecar import rotate_sidecar_certs
 
     args = build_parser().parse_args(
         ["webhook-signing-sidecar", "--check-certs", "--tls-cert", str(cert)]
     )
     assert args.check_certs is True
+    rot_args = build_parser().parse_args(
+        ["webhook-signing-sidecar", "--rotate-certs-if-expiring", "--cert-days", "60"]
+    )
+    assert rot_args.rotate_certs_if_expiring is True
+    # Force rotate: certs are 1d validity; warn=14 → rotate
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_CERT_EXPIRY_WARN_DAYS", "14")
+    rotated = rotate_sidecar_certs(
+        if_expiring_days=14,
+        days=60,
+        out_dir=str(tmp_path / "tls-rot"),
+    )
+    assert rotated["ok"] is True
+    assert "server" in (rotated.get("rotated") or rotated.get("would_rotate") or [])
+    assert (rotated.get("after") or {}).get("server", {}).get("days_left", 0) > 30

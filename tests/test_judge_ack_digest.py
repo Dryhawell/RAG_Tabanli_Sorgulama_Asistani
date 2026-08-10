@@ -1016,6 +1016,7 @@ def test_mute_export_retention_and_signed_url(tmp_path: Path, monkeypatch) -> No
     monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
     monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SIGNING_SECRET", "mute-secret")
     monkeypatch.setenv("RAG_JUDGE_ACK_PUBLIC_URL", "http://example.test/judge/ack-form")
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
     set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path))
     out = export_judge_ack_digest_mute_snapshots(
         fmt="csv", base=str(tmp_path), output=str(tmp_path / "mutes.csv")
@@ -1026,14 +1027,51 @@ def test_mute_export_retention_and_signed_url(tmp_path: Path, monkeypatch) -> No
     assert "/judge/mute-snapshots?" in out["signed_url"]
     assert "sig=" in out["signed_url"]
     fname = out["archive"]["filename"]
-    signed = build_mute_export_signed_url(fname, public_base="http://example.test")
+    signed = build_mute_export_signed_url(
+        fname, public_base="http://example.test", base=str(tmp_path), actor="tester"
+    )
     assert signed["ok"] is True
+    assert signed.get("jti")
+    assert "jti=" in signed["url"]
     assert verify_mute_export_signature(
-        fname, signed["expires"], signed["sig"], secret="mute-secret"
+        fname,
+        signed["expires"],
+        signed["sig"],
+        jti=signed["jti"],
+        secret="mute-secret",
+        base=str(tmp_path),
     )
     assert not verify_mute_export_signature(
-        fname, int(time.time()) - 10, signed["sig"], secret="mute-secret"
+        fname,
+        int(time.time()) - 10,
+        signed["sig"],
+        jti=signed["jti"],
+        secret="mute-secret",
+        base=str(tmp_path),
     )
+
+    from rag.judge_alert import (
+        read_judge_ack_audit,
+        revoke_mute_export_signed_url,
+    )
+
+    revoked = revoke_mute_export_signed_url(
+        signed["jti"], actor="ops", base=str(tmp_path), note="leak"
+    )
+    assert revoked["ok"] is True
+    assert not verify_mute_export_signature(
+        fname,
+        signed["expires"],
+        signed["sig"],
+        jti=signed["jti"],
+        secret="mute-secret",
+        base=str(tmp_path),
+    )
+    audit_rows = read_judge_ack_audit(path=str(tmp_path / "ack.jsonl"))
+    events = {r.get("event") for r in audit_rows}
+    assert "mute_export_sign" in events
+    assert "mute_export_revoke" in events
+    assert (tmp_path / "mute_export_signed_urls.json").is_file()
 
     export_dir = tmp_path / "mute_exports"
     old = export_dir / "judge_ack_digest_mute_snapshots_20000101T000000Z.csv"
@@ -1057,6 +1095,10 @@ def test_mute_export_retention_and_signed_url(tmp_path: Path, monkeypatch) -> No
     )
     assert args.prune_mute_exports is True
     assert args.sign_mute_export is True
+    rev_args = build_parser().parse_args(
+        ["judge-ack-digest", "--revoke-mute-export", signed["jti"], "--actor", "ops"]
+    )
+    assert rev_args.revoke_mute_export == signed["jti"]
 
 
 def test_digest_message_ref_prune_ttl(tmp_path: Path, monkeypatch) -> None:

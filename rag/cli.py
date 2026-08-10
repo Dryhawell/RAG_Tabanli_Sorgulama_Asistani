@@ -1269,6 +1269,7 @@ def cmd_webhook_signing_sidecar(args: argparse.Namespace) -> int:
         build_signed_webhook_headers,
         emit_sidecar_cert_metrics,
         inspect_sidecar_certs,
+        rotate_sidecar_certs,
         run_webhook_signing_sidecar,
         sidecar_listen_host,
         sidecar_listen_port,
@@ -1298,6 +1299,28 @@ def cmd_webhook_signing_sidecar(args: argparse.Namespace) -> int:
         )
     if getattr(args, "upstream_ca", None):
         os.environ["RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CA"] = str(args.upstream_ca)
+
+    if getattr(args, "rotate_certs", False) or getattr(
+        args, "rotate_certs_if_expiring", False
+    ):
+        warn_raw = os.environ.get(
+            "RAG_WEBHOOK_SIGNING_SIDECAR_CERT_EXPIRY_WARN_DAYS", "14"
+        ).strip()
+        try:
+            warn_days = float(warn_raw or 14)
+        except Exception:
+            warn_days = 14.0
+        report = rotate_sidecar_certs(
+            days=int(getattr(args, "cert_days", None) or 90),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            if_expiring_days=(
+                warn_days
+                if getattr(args, "rotate_certs_if_expiring", False)
+                else None
+            ),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("ok") else 1
 
     if getattr(args, "check_certs", False):
         report = inspect_sidecar_certs()
@@ -1544,6 +1567,17 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
         block_kit = False
     elif getattr(args, "block_kit", False):
         block_kit = True
+
+    if getattr(args, "revoke_mute_export", None):
+        from rag.judge_alert import revoke_mute_export_signed_url
+
+        report = revoke_mute_export_signed_url(
+            str(args.revoke_mute_export),
+            actor=getattr(args, "actor", None) or "cli",
+            note=getattr(args, "note", None),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("ok") else 1
 
     if getattr(args, "export_mute_snapshots", False) or getattr(
         args, "upload_mute_snapshots", False
@@ -2243,6 +2277,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Export raporuna HMAC signed download URL ekle",
     )
+    p_jdig.add_argument(
+        "--revoke-mute-export",
+        default=None,
+        metavar="JTI_OR_FILE",
+        help="Mute export signed URL revoke (jti veya filename) + audit",
+    )
+    p_jdig.add_argument(
+        "--actor",
+        default=None,
+        help="Audit actor (--revoke-mute-export)",
+    )
+    p_jdig.add_argument(
+        "--note",
+        default=None,
+        help="Audit note (--revoke-mute-export)",
+    )
     p_jdig.set_defaults(func=cmd_judge_ack_digest)
 
     p_wss = sub.add_parser(
@@ -2315,6 +2365,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--check-certs",
         action="store_true",
         help="mTLS/server/upstream cert expiry JSON (exit 2 if days_left < warn)",
+    )
+    p_wss.add_argument(
+        "--rotate-certs",
+        action="store_true",
+        help="Self-signed server/upstream client PEM rotate (metadata/sidecar-tls)",
+    )
+    p_wss.add_argument(
+        "--rotate-certs-if-expiring",
+        action="store_true",
+        help="Rotate only when days_left < RAG_WEBHOOK_SIGNING_SIDECAR_CERT_EXPIRY_WARN_DAYS",
+    )
+    p_wss.add_argument(
+        "--cert-days",
+        type=int,
+        default=90,
+        help="Validity days for --rotate-certs (default 90)",
+    )
+    p_wss.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Rotate dry-run (yazmadan plan)",
     )
     p_wss.set_defaults(func=cmd_webhook_signing_sidecar)
 

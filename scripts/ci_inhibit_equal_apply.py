@@ -198,6 +198,13 @@ def post_apply_pr_preview_comment(
     return result
 
 
+def silence_burn_ops_public_url() -> str:
+    """Silence burn / amtool ops page URL for Slack + PagerDuty runbook_url."""
+    from rag.judge_alert import silence_burn_ops_public_url as _url
+
+    return _url()
+
+
 def build_inhibit_equal_rollback_canary_payload(report: Dict[str, Any]) -> Dict[str, Any]:
     """Slack payload for amtool regression rollback canary."""
     equal = (report.get("generated") or {}).get("equal") or []
@@ -206,9 +213,11 @@ def build_inhibit_equal_rollback_canary_payload(report: Dict[str, Any]) -> Dict[
     diff = str(((report.get("diff") or {}).get("unified_diff") or "")).strip()
     excerpt = diff[:1200] + ("…" if len(diff) > 1200 else "")
     post = report.get("post_check") or {}
+    runbook = silence_burn_ops_public_url()
     text = (
         "Inhibit equal apply *rolled back* (amtool regression)\n"
-        f"equal=`{', '.join(equal) or '—'}` · backup=`{report.get('backup')}`"
+        f"equal=`{', '.join(equal) or '—'}` · backup=`{report.get('backup')}`\n"
+        f"runbook: {runbook}"
     )
     blocks: list = [
         {
@@ -226,7 +235,8 @@ def build_inhibit_equal_rollback_canary_payload(report: Dict[str, Any]) -> Dict[
                     f"*reason*: `{report.get('reason')}`\n"
                     f"*equal*: `{', '.join(equal) or '—'}`\n"
                     f"*backup*: `{report.get('backup')}`\n"
-                    f"*post_check*: `{post.get('method')}` ok=`{post.get('ok')}`"
+                    f"*post_check*: `{post.get('method')}` ok=`{post.get('ok')}`\n"
+                    f"*runbook*: <{runbook}|silence burn / amtool>"
                 ),
             },
         },
@@ -238,7 +248,23 @@ def build_inhibit_equal_rollback_canary_payload(report: Dict[str, Any]) -> Dict[
                 "text": {"type": "mrkdwn", "text": f"```diff\n{excerpt}\n```"},
             }
         )
-    return {"text": text, "blocks": blocks}
+    blocks.append(
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "Silence burn runbook",
+                    },
+                    "url": runbook,
+                    "action_id": "inhibit_equal_silence_burn_runbook",
+                }
+            ],
+        }
+    )
+    return {"text": text, "blocks": blocks, "runbook_url": runbook}
 
 
 def resolve_opsgenie_canary_targets() -> List[Dict[str, str]]:
@@ -482,6 +508,10 @@ def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, An
             slack_via = "webhook"
 
     equal = (report.get("generated") or {}).get("equal") or []
+    runbook = (
+        (payload.get("runbook_url") if isinstance(payload, dict) else None)
+        or silence_burn_ops_public_url()
+    )
     pd_report = {
         "summary": {
             "ok": False,
@@ -493,8 +523,10 @@ def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, An
             "equal": equal,
             "backup": report.get("backup"),
             "reason": report.get("reason"),
+            "runbook_url": runbook,
         },
         "mode": "inhibit_equal_rollback",
+        "runbook_url": runbook,
     }
 
     pd_severity = resolve_inhibit_equal_canary_pd_severity(report)
@@ -506,6 +538,7 @@ def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, An
                 report=pd_report,
                 source="inhibit-equal-canary",
                 severity=pd_severity,
+                runbook_url=str(runbook) if runbook else None,
             )
         )
 

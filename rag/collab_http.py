@@ -176,6 +176,7 @@ def handle_judge_mute_snapshots(
     filename = ((qs.get("file") or qs.get("filename") or [""])[0] or "").strip()
     expires = ((qs.get("expires") or qs.get("exp") or [""])[0] or "").strip()
     sig = ((qs.get("sig") or qs.get("signature") or [""])[0] or "").strip()
+    jti = ((qs.get("jti") or qs.get("token") or [""])[0] or "").strip() or None
     if not filename or not expires or not sig:
         return (
             400,
@@ -185,14 +186,20 @@ def handle_judge_mute_snapshots(
                 ensure_ascii=False,
             ).encode("utf-8"),
         )
-    if not verify_mute_export_signature(filename, expires, sig):
+    if not verify_mute_export_signature(filename, expires, sig, jti=jti):
+        from rag.judge_alert import is_mute_export_revoked
+
+        err = (
+            "revoked"
+            if is_mute_export_revoked(jti=jti, filename=filename)
+            else "invalid_or_expired_signature"
+        )
         return (
             403,
             {"Content-Type": "application/json"},
-            json.dumps(
-                {"ok": False, "error": "invalid_or_expired_signature"},
-                ensure_ascii=False,
-            ).encode("utf-8"),
+            json.dumps({"ok": False, "error": err}, ensure_ascii=False).encode(
+                "utf-8"
+            ),
         )
     report = read_judge_ack_digest_mute_export_file(filename)
     if not report.get("ok"):
@@ -213,6 +220,8 @@ def handle_judge_mute_snapshots(
         "Cache-Control": "no-store",
         "X-Mute-Export-Expires": str(expires),
     }
+    if jti:
+        headers["X-Mute-Export-Jti"] = jti
     return 200, headers, (report.get("text") or "").encode("utf-8")
 
 
@@ -230,7 +239,8 @@ pre{background:#0f172a;color:#e2e8f0;padding:12px 14px;overflow:auto}
 a{color:#0f766e}
 </style></head><body>
 <h1>Inhibit equal — amtool &amp; silence burn</h1>
-<p class="note">Runbook for <code>RagInhibitEqualCanarySilenceBurn</code> and Alertmanager equal apply gates.</p>
+<p class="note">Runbook for <code>RagInhibitEqualCanarySilenceBurn</code> and Alertmanager equal apply gates.
+Slack canary button + PagerDuty <code>custom_details.runbook_url</code> (<code>INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL</code>) point here.</p>
 <p><a href="/ops/silence-burn">Silence burn runbook →</a></p>
 <h2>amtool check-config</h2>
 <pre>python -m rag.cli alertmanager --check-config

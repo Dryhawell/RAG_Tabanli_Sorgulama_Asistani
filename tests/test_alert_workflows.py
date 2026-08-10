@@ -416,6 +416,7 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     assert "INHIBIT_EQUAL_CANARY_PAGERDUTY_ROUTING_KEY" in text
     assert "INHIBIT_EQUAL_CANARY_PD_SEVERITY" in text
     assert "INHIBIT_EQUAL_CANARY_PD_SEVERITY_BY_REASON" in text
+    assert "INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL" in text
     assert (
         "INHIBIT_EQUAL_CANARY_PD_SEVERITY: "
         "${{ vars.INHIBIT_EQUAL_CANARY_PD_SEVERITY || 'error' }}"
@@ -424,25 +425,33 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
         "INHIBIT_EQUAL_CANARY_PD_SEVERITY_BY_REASON: "
         "${{ vars.INHIBIT_EQUAL_CANARY_PD_SEVERITY_BY_REASON || '' }}"
     ) in text
+    assert (
+        "INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL: "
+        "${{ vars.INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL || '' }}"
+    ) in text
 
 
-def test_readme_sonraki_adaylar_after_mute_retention_sidecar_cert_silence_runbook():
+def test_readme_sonraki_adaylar_after_mute_revoke_sidecar_rotate_silence_pd():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
-    assert "mute export signed URL revoke" in text
-    assert "sidecar cert auto-rotate hook" in text
-    assert "silence burn Slack page link" in text
+    assert "mute export revoke admin UI" in text
+    assert "sidecar rotate GitHub Actions schedule" in text
+    assert "Opsgenie runbook deep-link" in text
     # Completed this round — should not remain as next candidates
-    assert "mute snapshot export retention" not in text
-    assert "sidecar mTLS cert-expiry alert" not in text
-    assert "silence burn runbook + amtool page" not in text
+    assert "mute export signed URL revoke + audit trail" not in text
+    assert "sidecar cert auto-rotate hook" not in text
+    assert "silence burn Slack page link + PagerDuty runbook field" not in text
     assert "webhook-signing-sidecar" in text
     assert "--export-mute-snapshots" in text
     assert "--upload-mute-snapshots" in text
     assert "--prune-mute-exports" in text
     assert "--sign-mute-export" in text
+    assert "--revoke-mute-export" in text
+    assert "mute_export_sign" in text
+    assert "mute_export_revoke" in text
+    assert "mute_export_signed_urls.json" in text
     assert "/judge/mute-snapshots" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SIGNING_SECRET" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_RETENTION_DAYS" in text
@@ -453,12 +462,16 @@ def test_readme_sonraki_adaylar_after_mute_retention_sidecar_cert_silence_runboo
     assert "rag_webhook_signing_sidecar_cert_expiry_days" in text
     assert "RagWebhookSigningSidecarCertExpirySoon" in text
     assert "--check-certs" in text
+    assert "--rotate-certs" in text
+    assert "--rotate-certs-if-expiring" in text
     assert "RagWebhookSigningSidecarForwardFail" in text
     assert "rag_webhook_signing_sidecar.yml" in text
     assert "RagInhibitEqualCanarySilenceBurn" in text
     assert "rag:inhibit_equal_canary_silence_fail_ratio" in text
     assert "/ops/silence-burn" in text
     assert "/ops/amtool" in text
+    assert "INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL" in text
+    assert "custom_details.runbook_url" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT" in text
     assert "INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK" in text
     assert "--canary-silence-expiry" in text
@@ -605,6 +618,8 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "runbook_url: /ops/silence-burn" in rules
     assert "--list-silences" in rules
     assert "--check-config" in rules
+    assert "INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL" in rules
+    assert "custom_details.runbook_url" in rules
     alerting = Path("grafana/alerting/rag_inhibit_equal_canary.yaml").read_text(
         encoding="utf-8"
     )
@@ -616,6 +631,7 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "silence burn-rate" in alerting
     assert "runbook_url: /ops/silence-burn" in alerting
     assert "/ops/amtool" in alerting
+    assert "INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL" in alerting
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
     assert "webhook-signing-sidecar" in compose
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM" in compose
@@ -639,6 +655,7 @@ def test_webhook_signing_sidecar_grafana_alert_artifacts():
     assert 'panel_id: "24"' in rules
     assert 'panel_id: "26"' in rules
     assert "--check-certs" in rules
+    assert "--rotate-certs" in rules
     assert "rag-ingest" in rules
     alerting = Path("grafana/alerting/rag_webhook_signing_sidecar.yaml").read_text(
         encoding="utf-8"

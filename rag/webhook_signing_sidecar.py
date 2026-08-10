@@ -11,9 +11,9 @@ import os
 import secrets
 import ssl
 import time
-from datetime import timezone
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -282,6 +282,213 @@ def sidecar_tls_status() -> Dict[str, Any]:
             "ca_days_left": (certs.get("ca") or {}).get("days_left"),
             "min_days_left": certs.get("min_days_left"),
         },
+    }
+
+
+def sidecar_tls_dir() -> str:
+    explicit = os.environ.get("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_DIR", "").strip()
+    if explicit:
+        return explicit
+    cert = sidecar_tls_cert_path()
+    if cert:
+        return os.path.dirname(os.path.abspath(cert)) or "metadata/sidecar-tls"
+    return "metadata/sidecar-tls"
+
+
+def generate_sidecar_self_signed_pair(
+    *,
+    common_name: str = "webhook-signing-sidecar",
+    days: int = 90,
+    now: Optional[float] = None,
+) -> Dict[str, bytes]:
+    """Create self-signed server cert+key (+ identical CA PEM for demo mTLS)."""
+    import datetime
+    import ipaddress
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    ts = float(now if now is not None else time.time())
+    start = datetime.datetime.fromtimestamp(ts, tz=timezone.utc) - datetime.timedelta(
+        minutes=1
+    )
+    end = start + datetime.timedelta(days=max(1, int(days)))
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, common_name)]
+    )
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(start)
+        .not_valid_after(end)
+        .add_extension(
+            x509.SubjectAlternativeName(
+                [
+                    x509.DNSName("localhost"),
+                    x509.DNSName("webhook-signing-sidecar"),
+                    x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
+                ]
+            ),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    key_pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    return {"cert": cert_pem, "key": key_pem, "ca": cert_pem}
+
+
+def _archive_sidecar_pem(path: str, *, stamp: str) -> Optional[str]:
+    if not path or not os.path.isfile(path):
+        return None
+    archive_dir = os.path.join(os.path.dirname(path) or ".", "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+    dest = os.path.join(archive_dir, f"{os.path.basename(path)}.{stamp}")
+    try:
+        with open(path, "rb") as src, open(dest, "wb") as out:
+            out.write(src.read())
+        return dest
+    except OSError:
+        return None
+
+
+def rotate_sidecar_certs(
+    *,
+    roles: Optional[Tuple[str, ...]] = None,
+    days: int = 90,
+    out_dir: Optional[str] = None,
+    dry_run: bool = False,
+    if_expiring_days: Optional[float] = None,
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Auto-rotate sidecar server (+ optional upstream client) PEMs under tls dir.
+
+    When ``if_expiring_days`` is set, skip roles whose days_left >= threshold.
+    """
+    want = roles or ("server", "upstream_client")
+    tls_dir = out_dir or sidecar_tls_dir()
+    before = inspect_sidecar_certs(now=now)
+    warn = if_expiring_days
+    if warn is None:
+        raw = os.environ.get(
+            "RAG_WEBHOOK_SIGNING_SIDECAR_CERT_EXPIRY_WARN_DAYS", ""
+        ).strip()
+        # only used when caller passes rotate-if-expiring; keep None here
+        _ = raw
+    to_rotate: List[str] = []
+    for role in want:
+        item = before.get(role) or {}
+        if warn is not None:
+            if not item.get("configured"):
+                to_rotate.append(role)
+                continue
+            try:
+                left = float(item.get("days_left"))
+            except (TypeError, ValueError):
+                to_rotate.append(role)
+                continue
+            if left < float(warn):
+                to_rotate.append(role)
+        else:
+            to_rotate.append(role)
+    if not to_rotate:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "not_expiring",
+            "before": before,
+            "roles": list(want),
+            "dry_run": bool(dry_run),
+        }
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    written: Dict[str, Any] = {}
+    archived: List[str] = []
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "would_rotate": to_rotate,
+            "out_dir": tls_dir,
+            "before": before,
+        }
+    os.makedirs(tls_dir, exist_ok=True)
+    if "server" in to_rotate:
+        pair = generate_sidecar_self_signed_pair(
+            common_name="webhook-signing-sidecar", days=days, now=now
+        )
+        cert_path = sidecar_tls_cert_path() or os.path.join(tls_dir, "server.crt")
+        key_path = sidecar_tls_key_path() or os.path.join(tls_dir, "server.key")
+        ca_path = sidecar_tls_ca_path() or os.path.join(tls_dir, "ca.crt")
+        for p in (cert_path, key_path, ca_path):
+            arch = _archive_sidecar_pem(p, stamp=stamp)
+            if arch:
+                archived.append(arch)
+        with open(cert_path, "wb") as f:
+            f.write(pair["cert"])
+        with open(key_path, "wb") as f:
+            f.write(pair["key"])
+        with open(ca_path, "wb") as f:
+            f.write(pair["ca"])
+        os.environ.setdefault("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT", cert_path)
+        os.environ.setdefault("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_KEY", key_path)
+        os.environ.setdefault("RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CA", ca_path)
+        written["server"] = {
+            "cert": cert_path,
+            "key": key_path,
+            "ca": ca_path,
+            "days": days,
+        }
+    if "upstream_client" in to_rotate:
+        pair = generate_sidecar_self_signed_pair(
+            common_name="am-client", days=days, now=now
+        )
+        cert_path = sidecar_upstream_client_cert_path() or os.path.join(
+            tls_dir, "client.crt"
+        )
+        key_path = sidecar_upstream_client_key_path() or os.path.join(
+            tls_dir, "client.key"
+        )
+        for p in (cert_path, key_path):
+            arch = _archive_sidecar_pem(p, stamp=stamp)
+            if arch:
+                archived.append(arch)
+        with open(cert_path, "wb") as f:
+            f.write(pair["cert"])
+        with open(key_path, "wb") as f:
+            f.write(pair["key"])
+        os.environ.setdefault(
+            "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT", cert_path
+        )
+        os.environ.setdefault(
+            "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_KEY", key_path
+        )
+        written["upstream_client"] = {
+            "cert": cert_path,
+            "key": key_path,
+            "days": days,
+        }
+    after = inspect_sidecar_certs(now=now)
+    emit_sidecar_cert_metrics(after)
+    return {
+        "ok": True,
+        "dry_run": False,
+        "rotated": list(written.keys()),
+        "written": written,
+        "archived": archived,
+        "out_dir": tls_dir,
+        "before": before,
+        "after": after,
+        "stamp": stamp,
     }
 
 

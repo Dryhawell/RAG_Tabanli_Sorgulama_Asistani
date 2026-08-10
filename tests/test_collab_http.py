@@ -103,11 +103,14 @@ def test_handle_judge_mute_snapshots_signed(tmp_path, monkeypatch):
     set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path))
     exported = export_judge_ack_digest_mute_snapshots(fmt="csv", base=str(tmp_path))
     fname = exported["archive"]["filename"]
-    signed = build_mute_export_signed_url(fname, public_base="http://example.test")
+    signed = build_mute_export_signed_url(
+        fname, public_base="http://example.test", base=str(tmp_path)
+    )
     code, headers, body = handle_judge_mute_snapshots(
         query={
             "file": [fname],
             "expires": [str(signed["expires"])],
+            "jti": [signed["jti"]],
             "sig": [signed["sig"]],
         }
     )
@@ -115,9 +118,27 @@ def test_handle_judge_mute_snapshots_signed(tmp_path, monkeypatch):
     assert "text/csv" in headers["Content-Type"]
     assert b"tenant_id" in body
     bad = handle_judge_mute_snapshots(
-        query={"file": [fname], "expires": [str(signed["expires"])], "sig": ["v0=bad"]}
+        query={
+            "file": [fname],
+            "expires": [str(signed["expires"])],
+            "jti": [signed["jti"]],
+            "sig": ["v1=bad"],
+        }
     )
     assert bad[0] == 403
+    from rag.judge_alert import revoke_mute_export_signed_url
+
+    revoke_mute_export_signed_url(signed["jti"], base=str(tmp_path), actor="ops")
+    revoked = handle_judge_mute_snapshots(
+        query={
+            "file": [fname],
+            "expires": [str(signed["expires"])],
+            "jti": [signed["jti"]],
+            "sig": [signed["sig"]],
+        }
+    )
+    assert revoked[0] == 403
+    assert b"revoked" in revoked[2]
 
 
 def test_ops_amtool_and_silence_burn_pages():
