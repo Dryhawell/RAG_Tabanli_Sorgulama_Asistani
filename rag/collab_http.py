@@ -281,6 +281,7 @@ a{color:#b45309}
 </style></head><body>
 <h1>Silence burn-rate runbook</h1>
 <p>Alert: <code>RagInhibitEqualCanarySilenceBurn</code> — fail ratio on <code>rag_inhibit_equal_canary_silence_total</code>.</p>
+<p>Slack canary button + PagerDuty/Opsgenie <code>details.runbook_url</code> (<code>INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL</code>) deep-link here.</p>
 <ol>
 <li>Confirm burn windows: <code>rag:inhibit_equal_canary_silence_fail_ratio:1h/6h</code> on Grafana rag-judge.</li>
 <li>List silences and recent canary outcomes:</li>
@@ -293,13 +294,162 @@ python -m rag.cli alertmanager --check-config
 <li>Expiry path: <code>--canary-silence-expiry</code> + <code>INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK</code>.</li>
 <li>Disable temporarily only if needed: <code>INHIBIT_EQUAL_CANARY_AUTO_SILENCE=0</code>.</li>
 </ol>
-<p><a href="/ops/amtool">amtool ops page →</a></p>
+<p><a href="/ops/amtool">amtool ops page →</a> · <a href="/judge/mute-export-revoke">mute export revoke UI →</a></p>
 </body></html>
 """
     return (
         200,
         {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache"},
         html.encode("utf-8"),
+    )
+
+
+def handle_judge_mute_export_revoke_form(
+    *,
+    query: Optional[Dict[str, List[str]]] = None,
+) -> Tuple[int, Dict[str, str], bytes]:
+    """GET: admin UI to list/revoke mute export signed URLs."""
+    from rag.judge_alert import list_mute_export_signed_urls
+
+    qs = query or {}
+    listed = list_mute_export_signed_urls(limit=50)
+    rows_html = []
+    for row in listed.get("links") or []:
+        jti = str(row.get("jti") or "")
+        flags = []
+        if row.get("revoked"):
+            flags.append("revoked")
+        if row.get("expired"):
+            flags.append("expired")
+        flag_s = ",".join(flags) or "active"
+        rows_html.append(
+            "<tr>"
+            f"<td><code>{jti}</code></td>"
+            f"<td>{row.get('filename') or ''}</td>"
+            f"<td>{row.get('expires') or ''}</td>"
+            f"<td>{flag_s}</td>"
+            f"<td><button type='button' data-jti='{jti}' class='rev'>Revoke</button></td>"
+            "</tr>"
+        )
+    table = (
+        "<table><thead><tr><th>jti</th><th>file</th><th>expires</th><th>status</th><th></th></tr></thead>"
+        f"<tbody>{''.join(rows_html) or '<tr><td colspan=5>no links</td></tr>'}</tbody></table>"
+    )
+    prefill = ((qs.get("jti") or qs.get("ref") or [""])[0] or "").strip()
+    html = f"""<!DOCTYPE html>
+<html lang="tr"><head><meta charset="utf-8"/><title>Mute export revoke</title>
+<style>
+body{{font-family:ui-sans-serif,system-ui,sans-serif;max-width:860px;margin:2rem auto;padding:0 1rem;line-height:1.45;background:linear-gradient(180deg,#f8fafc,#eef2ff)}}
+label{{display:block;margin-top:12px;font-weight:600}}
+input,textarea{{width:100%;padding:8px;box-sizing:border-box}}
+button{{margin-top:12px;padding:8px 14px}}
+table{{width:100%;border-collapse:collapse;margin-top:1rem;font-size:0.9rem}}
+td,th{{border-bottom:1px solid #cbd5e1;padding:6px;text-align:left;vertical-align:top}}
+#msg{{margin-top:12px;white-space:pre-wrap}}
+code{{font-size:0.85rem}}
+</style></head><body>
+<h1>Mute export signed URL revoke</h1>
+<p>Token = <code>RAG_JUDGE_ACK_TOKEN</code>. TTL sweep: <code>python -m rag.cli judge-ack-digest --sweep-mute-export-urls</code></p>
+<label>JTI / filename <input id="ref" value="{prefill}" placeholder="jti or filename"/></label>
+<label>Actor <input id="actor" placeholder="oncall"/></label>
+<label>Token <input id="token" type="password" placeholder="ack token"/></label>
+<label>Note <textarea id="note" rows="2" placeholder="why revoke"></textarea></label>
+<button id="go" type="button">Revoke</button>
+<pre id="msg"></pre>
+{table}
+<script>
+document.querySelectorAll("button.rev").forEach(btn => {{
+  btn.onclick = () => {{ document.getElementById("ref").value = btn.dataset.jti || ""; }};
+}});
+document.getElementById("go").onclick = async () => {{
+  const msg = document.getElementById("msg");
+  try {{
+    const body = {{
+      ref: (document.getElementById("ref").value || "").trim(),
+      actor: (document.getElementById("actor").value || "").trim(),
+      token: (document.getElementById("token").value || "").trim(),
+      note: (document.getElementById("note").value || "").trim()
+    }};
+    const r = await fetch("/judge/mute-export-revoke", {{
+      method: "POST",
+      headers: {{"Content-Type": "application/json"}},
+      body: JSON.stringify(body)
+    }});
+    const data = await r.json();
+    msg.textContent = JSON.stringify(data, null, 2);
+    if (data.ok) setTimeout(() => location.reload(), 600);
+  }} catch (e) {{
+    msg.textContent = String(e && e.message ? e.message : e);
+  }}
+}};
+</script>
+</body></html>
+"""
+    return (
+        200,
+        {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache"},
+        html.encode("utf-8"),
+    )
+
+
+def handle_judge_mute_export_revoke(
+    body: bytes,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+) -> Tuple[int, Dict[str, str], bytes]:
+    """POST: revoke mute export signed URL (ack-token auth)."""
+    expected = os.environ.get("RAG_JUDGE_ACK_TOKEN", "").strip()
+    if not expected:
+        return (
+            503,
+            {"Content-Type": "application/json"},
+            json.dumps(
+                {"ok": False, "error": "ack_token_not_configured"},
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        )
+    try:
+        data = json.loads(body.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return (
+            400,
+            {"Content-Type": "application/json"},
+            json.dumps({"ok": False, "error": "invalid_json"}).encode("utf-8"),
+        )
+    if not isinstance(data, dict):
+        return (
+            400,
+            {"Content-Type": "application/json"},
+            json.dumps({"ok": False, "error": "object_required"}).encode("utf-8"),
+        )
+    hdrs = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+    token = str(data.get("token") or "").strip()
+    if not token:
+        token = hdrs.get("x-judge-ack-token", "").strip()
+    if not token:
+        auth = hdrs.get("authorization", "").strip()
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+    if token != expected:
+        return (
+            401,
+            {"Content-Type": "application/json"},
+            json.dumps({"ok": False, "error": "invalid_token"}).encode("utf-8"),
+        )
+    ref = str(data.get("ref") or data.get("jti") or data.get("filename") or "").strip()
+    actor = str(data.get("actor") or data.get("by") or "").strip() or "admin-ui"
+    note = str(data.get("note") or "")[:500]
+    from rag.judge_alert import revoke_mute_export_signed_url
+
+    result = revoke_mute_export_signed_url(ref, actor=actor, note=note or None)
+    code = 200 if result.get("ok") else (404 if result.get("error") == "not_found" else 400)
+    return (
+        code,
+        {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+        },
+        json.dumps(result, ensure_ascii=False).encode("utf-8"),
     )
 
 
@@ -748,6 +898,14 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query or "")
             self._send(*handle_judge_mute_snapshots(query=qs))
             return
+        if path in {
+            "/judge/mute-export-revoke",
+            "/judge/mute-export-revoke-form",
+            "/judge/mute-export-revoke-ui",
+        }:
+            qs = parse_qs(parsed.query or "")
+            self._send(*handle_judge_mute_export_revoke_form(query=qs))
+            return
         if path in {"/ops/amtool", "/ops/amtool/"}:
             self._send(*handle_ops_amtool_page())
             return
@@ -770,6 +928,7 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
                         "/judge/ack-form",
                         "/judge/ack-export",
                         "/judge/mute-snapshots",
+                        "/judge/mute-export-revoke",
                         "/judge/slack-interactive",
                         "/judge/alert",
                         "/ops/amtool",
@@ -795,6 +954,10 @@ class CollabHTTPHandler(BaseHTTPRequestHandler):
         if path == "/judge/ack":
             hdrs = {k: v for k, v in self.headers.items()}
             self._send(*handle_judge_ack(raw, headers=hdrs))
+            return
+        if path == "/judge/mute-export-revoke":
+            hdrs = {k: v for k, v in self.headers.items()}
+            self._send(*handle_judge_mute_export_revoke(raw, headers=hdrs))
             return
         if path in {"/judge/slack-interactive", "/slack/interactive"}:
             hdrs = {k: v for k, v in self.headers.items()}

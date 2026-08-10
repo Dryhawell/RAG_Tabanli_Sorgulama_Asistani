@@ -1579,13 +1579,29 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0 if report.get("ok") else 1
 
+    if getattr(args, "sweep_mute_export_urls", False) and not (
+        getattr(args, "export_mute_snapshots", False)
+        or getattr(args, "upload_mute_snapshots", False)
+    ):
+        from rag.judge_alert import sweep_mute_export_signed_urls
+
+        os.environ.setdefault("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SWEEP", "1")
+        report = sweep_mute_export_signed_urls(dry_run=dry_run)
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("ok") else 1
+
     if getattr(args, "export_mute_snapshots", False) or getattr(
         args, "upload_mute_snapshots", False
     ):
-        from rag.judge_alert import maybe_prune_judge_ack_digest_mute_exports
+        from rag.judge_alert import (
+            maybe_prune_judge_ack_digest_mute_exports,
+            maybe_sweep_mute_export_signed_urls,
+        )
 
         if getattr(args, "prune_mute_exports", False):
             os.environ.setdefault("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_PRUNE", "1")
+        if getattr(args, "sweep_mute_export_urls", False):
+            os.environ.setdefault("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SWEEP", "1")
         if getattr(args, "upload_mute_snapshots", False):
             from rag.judge_alert import upload_judge_ack_digest_mute_snapshots_slack
 
@@ -1595,6 +1611,9 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
                 channel_id=getattr(args, "upload_channel", None),
             )
             report["mute_export_prune"] = maybe_prune_judge_ack_digest_mute_exports(
+                dry_run=dry_run
+            )
+            report["mute_export_sweep"] = maybe_sweep_mute_export_signed_urls(
                 dry_run=dry_run
             )
             print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
@@ -1608,6 +1627,9 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
             tenant_id=getattr(args, "tenant", None),
         )
         report["mute_export_prune"] = maybe_prune_judge_ack_digest_mute_exports(
+            dry_run=dry_run
+        )
+        report["mute_export_sweep"] = maybe_sweep_mute_export_signed_urls(
             dry_run=dry_run
         )
         if getattr(args, "sign_mute_export", False) and not report.get("signed_url"):
@@ -2282,6 +2304,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="JTI_OR_FILE",
         help="Mute export signed URL revoke (jti veya filename) + audit",
+    )
+    p_jdig.add_argument(
+        "--sweep-mute-export-urls",
+        action="store_true",
+        help="Expired/revoked mute export signed URL TTL sweep",
     )
     p_jdig.add_argument(
         "--actor",

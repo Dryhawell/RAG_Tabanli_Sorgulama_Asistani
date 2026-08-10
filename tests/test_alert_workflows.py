@@ -431,32 +431,37 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_mute_revoke_sidecar_rotate_silence_pd():
+def test_readme_sonraki_adaylar_after_mute_revoke_ui_sidecar_rotate_ci_og_runbook():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
-    assert "mute export revoke admin UI" in text
-    assert "sidecar rotate GitHub Actions schedule" in text
-    assert "Opsgenie runbook deep-link" in text
+    assert "mute export revoke Slack Block Kit" in text
+    assert "sidecar rotate notify on rotate" in text
+    assert "Opsgenie runbook tags" in text
     # Completed this round — should not remain as next candidates
-    assert "mute export signed URL revoke + audit trail" not in text
-    assert "sidecar cert auto-rotate hook" not in text
-    assert "silence burn Slack page link + PagerDuty runbook field" not in text
+    assert "mute export revoke admin UI + TTL sweep" not in text
+    assert "sidecar rotate GitHub Actions schedule" not in text
+    assert "silence burn Opsgenie runbook deep-link" not in text
     assert "webhook-signing-sidecar" in text
     assert "--export-mute-snapshots" in text
     assert "--upload-mute-snapshots" in text
     assert "--prune-mute-exports" in text
     assert "--sign-mute-export" in text
     assert "--revoke-mute-export" in text
+    assert "--sweep-mute-export-urls" in text
+    assert "/judge/mute-export-revoke" in text
     assert "mute_export_sign" in text
     assert "mute_export_revoke" in text
+    assert "mute_export_sweep" in text
     assert "mute_export_signed_urls.json" in text
     assert "/judge/mute-snapshots" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SIGNING_SECRET" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_RETENTION_DAYS" in text
+    assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SWEEP" in text
     assert "judge_ack_digest_export_mute_snapshots" in text
     assert "judge-ack-digest.yml" in text
+    assert "webhook-signing-sidecar-rotate.yml" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_UPLOAD_CHANNEL" in text
     assert "rag_webhook_signing_sidecar_forward_total" in text
     assert "rag_webhook_signing_sidecar_cert_expiry_days" in text
@@ -471,7 +476,7 @@ def test_readme_sonraki_adaylar_after_mute_revoke_sidecar_rotate_silence_pd():
     assert "/ops/silence-burn" in text
     assert "/ops/amtool" in text
     assert "INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL" in text
-    assert "custom_details.runbook_url" in text
+    assert "Opsgenie" in text and "runbook_url" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT" in text
     assert "INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK" in text
     assert "--canary-silence-expiry" in text
@@ -484,6 +489,21 @@ def test_readme_sonraki_adaylar_after_mute_revoke_sidecar_rotate_silence_pd():
     assert "RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET" in text
     assert "RAG_ALERTMANAGER_WEBHOOK_REQUIRE_AUTH=0" in text
     assert "Auth varsayılan zorunlu" in text
+
+
+def test_webhook_signing_sidecar_rotate_workflow_yaml():
+    path = Path(".github/workflows/webhook-signing-sidecar-rotate.yml")
+    assert path.is_file()
+    text = path.read_text(encoding="utf-8")
+    assert "--rotate-certs-if-expiring" in text
+    assert "--rotate-certs" in text
+    assert "--check-certs" in text
+    assert "webhook-signing-sidecar" in text
+    assert "metadata/sidecar-tls" in text
+    assert "sidecar_cert_rotate.json" in text
+    assert "schedule:" in text
+    assert "workflow_dispatch" in text
+    assert "0 4 * * *" in text
 
 
 def test_ci_inhibit_equal_slack_thread_env():
@@ -510,11 +530,14 @@ def test_judge_ack_digest_mute_prune_workflow_yaml():
     assert "--upload-mute-snapshots" in text
     assert "--prune-mute-exports" in text
     assert "--sign-mute-export" in text
+    assert "--sweep-mute-export-urls" in text
     assert "judge_ack_digest_mute_snapshots.csv" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_UPLOAD_CHANNEL" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_RETENTION_DAYS" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SIGNING_SECRET" in text
+    assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SWEEP" in text
     assert "metadata/mute_exports/" in text
+    assert "mute_export_signed_urls.json" in text
     assert "Export mute snapshots" in text
 
 
@@ -619,7 +642,7 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "--list-silences" in rules
     assert "--check-config" in rules
     assert "INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL" in rules
-    assert "custom_details.runbook_url" in rules
+    assert "Opsgenie" in rules or "details.runbook_url" in rules
     alerting = Path("grafana/alerting/rag_inhibit_equal_canary.yaml").read_text(
         encoding="utf-8"
     )
@@ -632,6 +655,7 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "runbook_url: /ops/silence-burn" in alerting
     assert "/ops/amtool" in alerting
     assert "INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL" in alerting
+    assert "Opsgenie" in alerting or "details.runbook_url" in alerting
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
     assert "webhook-signing-sidecar" in compose
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM" in compose

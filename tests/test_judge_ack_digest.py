@@ -1100,6 +1100,26 @@ def test_mute_export_retention_and_signed_url(tmp_path: Path, monkeypatch) -> No
     )
     assert rev_args.revoke_mute_export == signed["jti"]
 
+    from rag.judge_alert import sweep_mute_export_signed_urls
+
+    # Expired link for TTL sweep
+    expired = build_mute_export_signed_url(
+        fname,
+        public_base="http://example.test",
+        base=str(tmp_path),
+        actor="old",
+        ttl_sec=60,
+        now=time.time() - 120,
+    )
+    assert expired["ok"] is True
+    swept = sweep_mute_export_signed_urls(base=str(tmp_path), now=time.time())
+    assert swept["ok"] is True
+    assert swept["removed"] >= 1
+    sweep_args = build_parser().parse_args(
+        ["judge-ack-digest", "--sweep-mute-export-urls"]
+    )
+    assert sweep_args.sweep_mute_export_urls is True
+
 
 def test_digest_message_ref_prune_ttl(tmp_path: Path, monkeypatch) -> None:
     import json

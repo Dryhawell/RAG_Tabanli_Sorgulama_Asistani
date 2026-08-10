@@ -62,7 +62,7 @@ groups:
             Silence fail ratio elevated (1h or 6h window).
             Dashboard: rag-judge (Inhibit equal canary silence panel).
             Runbook: /ops/silence-burn (amtool: /ops/amtool).
-            Slack canary button + PagerDuty custom_details.runbook_url
+            Slack canary button + PagerDuty/Opsgenie details.runbook_url
             (INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL).
             python -m rag.cli alertmanager --list-silences
             python -m rag.cli alertmanager --check-config

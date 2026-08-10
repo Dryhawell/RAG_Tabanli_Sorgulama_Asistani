@@ -141,6 +141,61 @@ def test_handle_judge_mute_snapshots_signed(tmp_path, monkeypatch):
     assert b"revoked" in revoked[2]
 
 
+def test_handle_judge_mute_export_revoke_ui(tmp_path, monkeypatch):
+    from rag.collab_http import (
+        handle_judge_mute_export_revoke,
+        handle_judge_mute_export_revoke_form,
+    )
+    from rag.judge_alert import (
+        build_mute_export_signed_url,
+        export_judge_ack_digest_mute_snapshots,
+        set_judge_ack_digest_mute,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SIGNING_SECRET", "s3cret")
+    monkeypatch.setenv("RAG_JUDGE_ACK_TOKEN", "ack-token")
+    set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path))
+    export_judge_ack_digest_mute_snapshots(fmt="csv", base=str(tmp_path))
+    # list via form after a sign
+    from rag.judge_alert import list_mute_export_signed_urls
+
+    listed_before = list_mute_export_signed_urls(base=str(tmp_path))
+    assert listed_before["ok"] is True
+    code, headers, body = handle_judge_mute_export_revoke_form()
+    assert code == 200
+    assert "text/html" in headers["Content-Type"]
+    assert b"Mute export signed URL revoke" in body
+    assert b"/judge/mute-export-revoke" in body
+
+    exported = export_judge_ack_digest_mute_snapshots(fmt="csv", base=str(tmp_path))
+    signed = build_mute_export_signed_url(
+        exported["archive"]["filename"],
+        public_base="http://example.test",
+        base=str(tmp_path),
+    )
+    bad = handle_judge_mute_export_revoke(
+        json.dumps(
+            {"ref": signed["jti"], "actor": "ops", "token": "wrong"}
+        ).encode("utf-8")
+    )
+    assert bad[0] == 401
+    ok = handle_judge_mute_export_revoke(
+        json.dumps(
+            {
+                "ref": signed["jti"],
+                "actor": "ops",
+                "token": "ack-token",
+                "note": "ui",
+            }
+        ).encode("utf-8")
+    )
+    assert ok[0] == 200
+    payload = json.loads(ok[2].decode("utf-8"))
+    assert payload.get("ok") is True
+    assert payload.get("revoked") >= 1
+
+
 def test_ops_amtool_and_silence_burn_pages():
     from rag.collab_http import handle_ops_amtool_page, handle_ops_silence_burn_page
 
@@ -155,6 +210,8 @@ def test_ops_amtool_and_silence_burn_pages():
     assert b"RagInhibitEqualCanarySilenceBurn" in body2
     assert b"--list-silences" in body2
     assert b"/ops/amtool" in body2
+    assert b"Opsgenie" in body2 or b"runbook_url" in body2
+    assert b"mute-export-revoke" in body2
 
 
 def test_handle_judge_slack_interactive(tmp_path, monkeypatch):

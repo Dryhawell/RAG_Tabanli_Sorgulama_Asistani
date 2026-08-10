@@ -91,6 +91,8 @@ jobs:
           RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_RETENTION_DAYS: ${{ vars.RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_RETENTION_DAYS || '30' }}
           RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_KEEP: ${{ vars.RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_KEEP || '50' }}
           RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SIGNING_SECRET: ${{ secrets.RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SIGNING_SECRET || secrets.RAG_JUDGE_ACK_TOKEN }}
+          RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SWEEP: ${{ vars.RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SWEEP || '1' }}
+          RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SWEEP_REVOKED_DAYS: ${{ vars.RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SWEEP_REVOKED_DAYS || '7' }}
           RAG_JUDGE_ACK_PUBLIC_URL: ${{ vars.RAG_JUDGE_ACK_PUBLIC_URL }}
           RAG_JUDGE_ACK_DIGEST_BASE: metadata
         run: |
@@ -100,6 +102,7 @@ jobs:
             --export-format csv \
             --export-output metadata/judge_ack_digest_mute_snapshots.csv \
             --prune-mute-exports \
+            --sweep-mute-export-urls \
             --sign-mute-export \
             | tee metadata/judge_ack_digest_mute_export.json
           if [ -n "${RAG_JUDGE_SLACK_BOT_TOKEN}" ]; then
@@ -110,6 +113,7 @@ jobs:
             # shellcheck disable=SC2086
             python -m rag.cli judge-ack-digest --upload-mute-snapshots --export-format csv \
               --prune-mute-exports \
+              --sweep-mute-export-urls \
               $EXTRA_UPLOAD \
               | tee metadata/judge_ack_digest_mute_upload.json
           else
@@ -130,4 +134,5 @@ jobs:
             metadata/judge_ack_digest_mute_export.json
             metadata/judge_ack_digest_mute_upload.json
             metadata/mute_exports/
+            metadata/mute_export_signed_urls.json
           if-no-files-found: ignore

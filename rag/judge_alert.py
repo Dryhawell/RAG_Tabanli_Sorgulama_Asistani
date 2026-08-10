@@ -1706,6 +1706,151 @@ def revoke_mute_export_signed_url(
     }
 
 
+def list_mute_export_signed_urls(
+    *,
+    base: Optional[str] = None,
+    include_revoked: bool = True,
+    include_expired: bool = True,
+    now: Optional[float] = None,
+    limit: int = 100,
+) -> Dict[str, Any]:
+    """Admin UI listing for mute export signed URLs."""
+    data = load_mute_export_signed_urls(base=base)
+    links = data.get("links") or {}
+    ts_now = int(now if now is not None else time.time())
+    rows: List[Dict[str, Any]] = []
+    for jti, row in links.items():
+        if not isinstance(row, dict):
+            continue
+        try:
+            exp = int(row.get("expires") or 0)
+        except (TypeError, ValueError):
+            exp = 0
+        revoked = bool(row.get("revoked"))
+        expired = bool(exp and exp < ts_now)
+        if revoked and not include_revoked:
+            continue
+        if expired and not include_expired and not revoked:
+            continue
+        rows.append(
+            {
+                "jti": jti,
+                "filename": row.get("filename"),
+                "expires": exp,
+                "expired": expired,
+                "revoked": revoked,
+                "created_at": row.get("created_at"),
+                "actor": row.get("actor"),
+                "revoked_at": row.get("revoked_at"),
+                "revoked_by": row.get("revoked_by"),
+            }
+        )
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    if limit > 0:
+        rows = rows[: int(limit)]
+    return {
+        "ok": True,
+        "count": len(rows),
+        "links": rows,
+        "path": mute_export_signed_urls_path(base=base),
+    }
+
+
+def sweep_mute_export_signed_urls(
+    *,
+    base: Optional[str] = None,
+    now: Optional[float] = None,
+    dry_run: bool = False,
+    drop_revoked: bool = True,
+    revoked_grace_days: float = 7.0,
+    audit: bool = True,
+) -> Dict[str, Any]:
+    """TTL sweep: remove expired (and optionally aged revoked) signed URL rows."""
+    data = load_mute_export_signed_urls(base=base)
+    links = dict(data.get("links") or {})
+    before = len(links)
+    ts_now = int(now if now is not None else time.time())
+    grace = max(0.0, float(revoked_grace_days)) * 86400.0
+    removed: List[str] = []
+    kept: Dict[str, Any] = {}
+    for jti, row in links.items():
+        if not isinstance(row, dict):
+            removed.append(str(jti))
+            continue
+        try:
+            exp = int(row.get("expires") or 0)
+        except (TypeError, ValueError):
+            exp = 0
+        drop = False
+        if exp and exp < ts_now:
+            drop = True
+        if drop_revoked and row.get("revoked"):
+            revoked_at = str(row.get("revoked_at") or "")
+            try:
+                ra = datetime.fromisoformat(revoked_at.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                ra = 0.0
+            if ra and (ts_now - ra) >= grace:
+                drop = True
+            elif not exp:
+                drop = True
+        if drop:
+            removed.append(str(jti))
+        else:
+            kept[jti] = row
+    if not dry_run and removed:
+        data["links"] = kept
+        path = save_mute_export_signed_urls(data, base=base)
+        if audit:
+            append_judge_ack_audit(
+                "mute_export_sweep",
+                actor="system",
+                source="mute_export",
+                extra={
+                    "removed": len(removed),
+                    "before": before,
+                    "after": len(kept),
+                    "jtis": removed[:50],
+                },
+            )
+    else:
+        path = mute_export_signed_urls_path(base=base)
+    return {
+        "ok": True,
+        "path": path,
+        "before": before,
+        "after": len(kept),
+        "removed": len(removed),
+        "removed_jtis": removed,
+        "dry_run": bool(dry_run),
+    }
+
+
+def maybe_sweep_mute_export_signed_urls(
+    *,
+    base: Optional[str] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Env: RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SWEEP=1."""
+    flag = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SWEEP", ""
+    ).strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "sweep_disabled"}
+    if flag not in {"1", "true", "yes", "on"}:
+        return {"ok": True, "skipped": True, "reason": "sweep_not_configured"}
+    grace_raw = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SWEEP_REVOKED_DAYS", "7"
+    ).strip()
+    try:
+        grace = float(grace_raw or 7)
+    except Exception:
+        grace = 7.0
+    return sweep_mute_export_signed_urls(
+        base=base, dry_run=dry_run, revoked_grace_days=grace
+    )
+
+
 def build_mute_export_signed_url(
     filename: str,
     *,
@@ -5164,31 +5309,45 @@ def post_opsgenie(
     priority: str = "P3",
     region: Optional[str] = None,
     base_url: Optional[str] = None,
+    runbook_url: Optional[str] = None,
 ) -> bool:
     key = (api_key or "").strip()
     if not key:
         return False
     text = _summary_text(report, source=source)
     summary = report.get("summary") or {}
+    if not isinstance(summary, dict):
+        summary = {}
     pri = priority if priority in {"P1", "P2", "P3", "P4", "P5"} else "P3"
     host = opsgenie_api_base(region=region, base_url=base_url)
     tags = ["rag", "judge", "soft-fail", source]
     if region:
         tags.append(f"region:{region}")
+    details: Dict[str, Any] = {
+        "accuracy": str(summary.get("accuracy")),
+        "passed": str(summary.get("passed")),
+        "failed": str(summary.get("failed")),
+        "total": str(summary.get("total")),
+        "mode": str(summary.get("mode") or report.get("mode") or ""),
+        "region": str(region or ""),
+    }
+    rb = (
+        runbook_url
+        or report.get("runbook_url")
+        or summary.get("runbook_url")
+        or os.environ.get("INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL", "").strip()
+        or os.environ.get("RAG_OPSGENIE_RUNBOOK_URL", "").strip()
+        or None
+    )
+    if rb:
+        details["runbook_url"] = str(rb)
     body = {
         "message": text[:130],
         "alias": f"rag-judge-soft-fail/{source}",
         "description": text,
         "priority": pri,
         "tags": tags,
-        "details": {
-            "accuracy": str(summary.get("accuracy")),
-            "passed": str(summary.get("passed")),
-            "failed": str(summary.get("failed")),
-            "total": str(summary.get("total")),
-            "mode": str(summary.get("mode") or report.get("mode") or ""),
-            "region": str(region or ""),
-        },
+        "details": details,
         "entity": "rag-judge",
         "source": "rag-ci",
     }

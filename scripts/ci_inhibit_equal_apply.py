@@ -555,6 +555,7 @@ def notify_inhibit_equal_rollback_canary(report: Dict[str, Any]) -> Dict[str, An
                 source="inhibit-equal-canary",
                 priority=priority,
                 region=region,
+                runbook_url=str(runbook) if runbook else None,
             )
         )
         og_by_region[region] = ok

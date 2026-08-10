@@ -341,6 +341,8 @@ def test_notify_inhibit_equal_rollback_canary(monkeypatch) -> None:
     assert og.call_args.kwargs.get("source") == "inhibit-equal-canary"
     assert og.call_args.kwargs.get("api_key") == "og-key"
     assert og.call_args.kwargs.get("region") == "us"
+    assert og.call_args.kwargs.get("runbook_url")
+    assert "silence-burn" in str(og.call_args.kwargs.get("runbook_url"))
 
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", raising=False)
     monkeypatch.setenv(
