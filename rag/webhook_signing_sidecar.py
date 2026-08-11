@@ -520,32 +520,84 @@ def maybe_notify_sidecar_cert_rotate(
     )
     if not webhook:
         return {"ok": True, "skipped": True, "reason": "webhook_missing"}
-    roles = ", ".join(rotated) if isinstance(rotated, list) else str(rotated)
+    if not isinstance(rotated, list):
+        rotated = [str(rotated)]
     stamp = report.get("stamp") or ""
     after = report.get("after") or {}
+    before = report.get("before") or {}
     min_days = after.get("min_days_left")
+    role_lines: List[str] = []
+    for role in rotated:
+        item = after.get(role) if isinstance(after, dict) else None
+        if not isinstance(item, dict):
+            item = {}
+        days = item.get("days_left")
+        prev = None
+        if isinstance(before, dict) and isinstance(before.get(role), dict):
+            prev = (before.get(role) or {}).get("days_left")
+        bit = f"`{role}` days_left=`{days if days is not None else '—'}`"
+        if prev is not None:
+            bit += f" (was `{prev}`)"
+        role_lines.append(bit)
+    roles_text = "\n".join(f"• {line}" for line in role_lines) if role_lines else "• —"
     text = (
-        "*Webhook signing sidecar certs rotated*\n"
-        f"roles=`{roles or '—'}` · stamp=`{stamp or '—'}`"
+        "*Webhook signing sidecar cert rotate digest*\n"
+        f"stamp=`{stamp or '—'}`"
         + (f" · min_days_left=`{min_days}`" if min_days is not None else "")
-        + "\nDual-write DLQ quarantine HMAC path — restart sidecar if live."
+        + f"\n{roles_text}\n"
+        "Dual-write DLQ quarantine HMAC path — restart sidecar if live."
     )
-    payload = {
-        "text": text,
-        "blocks": [
-            {
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": "Sidecar cert rotate",
+    digest_flag = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_DIGEST", "1"
+    ).strip().lower()
+    use_digest = digest_flag not in {"0", "false", "no", "off"}
+    if use_digest:
+        payload = {
+            "text": text,
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "Sidecar cert rotate digest",
+                    },
                 },
-            },
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": text},
-            },
-        ],
-    }
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": text[:2900]},
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": (
+                                "mode=`rotate` · service=`rag-ingest` · "
+                                "quarantine HMAC · "
+                                f"roles=`{len(rotated)}`"
+                            ),
+                        }
+                    ],
+                },
+            ],
+        }
+    else:
+        payload = {
+            "text": text,
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "Sidecar cert rotate",
+                    },
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": text},
+                },
+            ],
+        }
     try:
         from rag.judge_alert import post_slack
 
@@ -556,6 +608,7 @@ def maybe_notify_sidecar_cert_rotate(
             "posted": bool(ok),
             "roles": rotated,
             "stamp": stamp,
+            "digest": bool(use_digest),
         }
     except Exception as exc:
         return {

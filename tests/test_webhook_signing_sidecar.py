@@ -405,15 +405,60 @@ def test_sidecar_cert_expiry_inspect(tmp_path: Path, monkeypatch) -> None:
             "ok": True,
             "rotated": ["server", "upstream_client"],
             "stamp": "20990101T000000Z",
-            "after": {"min_days_left": 60.0},
+            "before": {
+                "server": {"days_left": 3.0},
+                "upstream_client": {"days_left": 2.0},
+            },
+            "after": {
+                "min_days_left": 60.0,
+                "server": {"days_left": 60.0},
+                "upstream_client": {"days_left": 60.0},
+            },
         },
         force=True,
     )
     assert notified.get("ok") is True
     assert notified.get("skipped") is not True
     assert notified.get("posted") is True
+    assert notified.get("digest") is True
     assert posts and posts[0][0].endswith("/rotate-notify")
-    assert "rotated" in str(posts[0][1].get("text") or "").lower()
+    body = posts[0][1]
+    assert "digest" in str(body.get("text") or "").lower()
+    assert "days_left" in str(body.get("text") or "")
+    assert "was" in str(body.get("text") or "")
+    headers = [
+        b.get("text", {}).get("text")
+        for b in (body.get("blocks") or [])
+        if b.get("type") == "header"
+    ]
+    assert any("digest" in str(h).lower() for h in headers)
+    ctx = [
+        el.get("text")
+        for b in (body.get("blocks") or [])
+        if b.get("type") == "context"
+        for el in (b.get("elements") or [])
+    ]
+    assert any("rag-ingest" in str(c) for c in ctx)
+
+    posts.clear()
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_DIGEST", "0")
+    legacy = maybe_notify_sidecar_cert_rotate(
+        {
+            "ok": True,
+            "rotated": ["server"],
+            "stamp": "20990101T000001Z",
+            "after": {"min_days_left": 60.0, "server": {"days_left": 60.0}},
+        },
+        force=True,
+    )
+    assert legacy.get("digest") is False
+    legacy_headers = [
+        b.get("text", {}).get("text")
+        for b in (posts[0][1].get("blocks") or [])
+        if b.get("type") == "header"
+    ]
+    assert any(h == "Sidecar cert rotate" for h in legacy_headers)
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_DIGEST", "1")
 
     from rag.webhook_signing_sidecar import maybe_notify_sidecar_cert_rotate_fail
 

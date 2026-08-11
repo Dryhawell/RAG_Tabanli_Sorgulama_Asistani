@@ -1331,6 +1331,134 @@ def test_mute_export_revoke_block_kit_action(tmp_path: Path, monkeypatch) -> Non
     assert limited.get("mode") == "digest_mute_export_revoke"
 
 
+def test_mute_export_revoke_canvas_refresh(tmp_path: Path, monkeypatch) -> None:
+    from unittest.mock import patch
+
+    from rag.judge_alert import (
+        build_judge_ack_digest_slack_blocks,
+        build_mute_export_signed_url,
+        export_judge_ack_digest_mute_snapshots,
+        handle_slack_mute_export_revoke,
+        open_mute_export_revoke_confirm_modal,
+        parse_mute_export_revoke_button_value,
+        set_judge_ack_digest_mute,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_BASE", str(tmp_path))
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SIGNING_SECRET", "mute-secret")
+    monkeypatch.setenv("RAG_JUDGE_ACK_PUBLIC_URL", "http://example.test/judge/ack-form")
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("RAG_JUDGE_SLACK_INTERACTIVE", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_CONFIRM", "0")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_CANVAS", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_RATE_LIMIT_SEC", "0")
+
+    set_judge_ack_digest_mute("acme", muted=True, base=str(tmp_path))
+    out = export_judge_ack_digest_mute_snapshots(
+        fmt="csv", base=str(tmp_path), output=str(tmp_path / "mutes.csv")
+    )
+    assert out["ok"] is True
+    fname = out["archive"]["filename"]
+    signed = build_mute_export_signed_url(
+        fname, public_base="http://example.test", base=str(tmp_path), actor="tester"
+    )
+    assert signed["ok"] is True
+
+    parsed = parse_mute_export_revoke_button_value("acme|latest", base=str(tmp_path))
+    assert parsed["tenant_id"] == "acme"
+    assert parsed["ref"] == "latest"
+
+    muted_blocks = build_judge_ack_digest_slack_blocks(
+        {
+            "ok": True,
+            "since_hours": 168,
+            "total": 1,
+            "actor_count": 1,
+            "by_event": {"ack": 1},
+            "actors": ["a"],
+            "tenant_id": "acme",
+        },
+        muted=True,
+        tenant_id="acme",
+        base=str(tmp_path),
+    )
+    revoke_vals = [
+        el.get("value")
+        for b in muted_blocks
+        if b.get("type") == "actions"
+        for el in (b.get("elements") or [])
+        if el.get("action_id") == "judge_ack_digest_revoke_mute_export"
+    ]
+    assert revoke_vals and revoke_vals[0] == "acme|latest"
+
+    with patch(
+        "rag.judge_alert.post_slack_thread_message",
+        return_value={"ok": True, "ts": "10.1"},
+    ), patch(
+        "rag.judge_alert.fetch_slack_message_by_ts",
+        return_value={"ok": True, "message": {"ts": "10.0", "blocks": muted_blocks}},
+    ) as fetched, patch(
+        "rag.judge_alert.refresh_judge_ack_digest_message_actions",
+        return_value={"ok": True, "updated": True},
+    ) as refreshed, patch(
+        "rag.judge_alert.sync_judge_ack_digest_mute_chat_updates",
+        return_value={"ok": True, "updated": 0},
+    ) as synced, patch(
+        "rag.judge_alert.slack_api", return_value={"ok": True}
+    ):
+        result = handle_slack_mute_export_revoke(
+            {
+                "actions": [
+                    {
+                        "action_id": "judge_ack_digest_revoke_mute_export",
+                        "value": "acme|latest",
+                    }
+                ],
+                "user": {"username": "ops", "id": "U9"},
+                "channel": {"id": "C9"},
+                "message": {"ts": "10.0"},
+            },
+            value="acme|latest",
+            base=str(tmp_path),
+        )
+    assert result.get("ok") is True
+    assert result.get("tenant_id") == "acme"
+    assert result.get("message_update", {}).get("ok") is True
+    assert result.get("fanout_sync", {}).get("ok") is True
+    assert fetched.called
+    assert refreshed.called
+    assert synced.called
+    assert refreshed.call_args.kwargs.get("tenant_id") == "acme"
+
+    # Modal path preserves tenant_id for canvas
+    signed2 = build_mute_export_signed_url(
+        fname, public_base="http://example.test", base=str(tmp_path), actor="tester2"
+    )
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_CONFIRM", "1")
+    with patch(
+        "rag.judge_alert.open_slack_modal",
+        return_value={"ok": True, "response": {"ok": True}},
+    ) as opened:
+        modal = open_mute_export_revoke_confirm_modal(
+            {
+                "trigger_id": "trig-canvas",
+                "channel": {"id": "C9"},
+                "message": {"ts": "10.0"},
+                "user": {"id": "U9"},
+            },
+            value="acme|latest",
+            base=str(tmp_path),
+        )
+    assert modal.get("ok") is True
+    assert modal.get("tenant_id") == "acme"
+    assert opened.called
+    view = opened.call_args.kwargs.get("view") or {}
+    meta = view.get("private_metadata") or ""
+    assert "acme" in meta
+    assert signed2["jti"]  # keep signed2 used / store warm
+
+
 def test_digest_message_ref_prune_ttl(tmp_path: Path, monkeypatch) -> None:
     import json
     from datetime import datetime, timedelta, timezone

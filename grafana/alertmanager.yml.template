@@ -12,6 +12,15 @@ route:
         - service = rag-judge
       receiver: judge-slack
       continue: true
+    # Silence-burn folder route (before broad service=rag catch-all)
+    - matchers:
+        - alertname = RagInhibitEqualCanarySilenceBurn
+      receiver: silence-burn-slack
+      continue: true
+    - matchers:
+        - grafana_folder = rag-silence-burn
+      receiver: silence-burn-slack
+      continue: true
     # Quarantine before broad ingest catch-up route
     - matchers:
         - alertname = RagDualWriteDlqQuarantineDepthHigh
@@ -42,6 +51,19 @@ receivers:
         text: >-
           {{ range .Alerts -}}
           *{{ .Annotations.summary }}*
+          {{ .Annotations.description }}
+          {{ end }}
+
+  - name: silence-burn-slack
+    slack_configs:
+      - api_url: '${RAG_SILENCE_BURN_SLACK_WEBHOOK}'
+        channel: '#rag-silence-burn'
+        send_resolved: true
+        title: '{{ .Status | toUpper }}: {{ .CommonLabels.alertname }}'
+        text: >-
+          {{ range .Alerts -}}
+          *{{ .Annotations.summary }}*
+          runbook: {{ .Annotations.runbook_url }}
           {{ .Annotations.description }}
           {{ end }}
 

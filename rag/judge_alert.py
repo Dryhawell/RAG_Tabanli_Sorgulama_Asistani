@@ -2852,7 +2852,7 @@ def build_judge_ack_digest_slack_blocks(
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Revoke export"},
                     "action_id": "judge_ack_digest_revoke_mute_export",
-                    "value": tid or "latest",
+                    "value": f"{tid}|latest" if tid else "latest",
                     "style": "danger",
                 }
             )
@@ -2955,6 +2955,25 @@ def build_judge_ack_digest_slack_blocks(
             revoke_ui = mute_export_revoke_public_url()
             if revoke_ui:
                 ctx_bits.append(f"Revoke UI: <{revoke_ui}|open>")
+            try:
+                active = list_mute_export_signed_urls(
+                    base=base,
+                    include_revoked=False,
+                    include_expired=False,
+                    limit=5,
+                )
+                n_active = len(active.get("links") or [])
+                if n_active:
+                    ctx_bits.append(f"signed exports=`{n_active}`")
+                else:
+                    ctx_bits.append("_no active signed exports_")
+                recent = recent_mute_export_revokes(limit=1, since_hours=24.0)
+                if recent:
+                    rj = str((recent[-1] or {}).get("jti") or "").strip()
+                    if rj:
+                        ctx_bits.append(f"last revoke=`{rj}`")
+            except Exception:
+                pass
     ctx_bits.append(f"heatmap=`{bucket}`")
     if ctx_bits:
         blocks.append(
@@ -3068,7 +3087,9 @@ def handle_slack_mute_export_revoke(
             "actor": actor,
             "text": text,
         }
-    resolved = resolve_mute_export_revoke_ref(value, base=base)
+    parsed_btn = parse_mute_export_revoke_button_value(value, base=base)
+    resolve_val = str(parsed_btn.get("ref") or value or "latest").strip()
+    resolved = resolve_mute_export_revoke_ref(resolve_val, base=base)
     if not resolved.get("ok"):
         text = "No active mute export signed URL to revoke."
         return {
@@ -3138,6 +3159,25 @@ def handle_slack_mute_export_revoke(
             json_body={"channel": channel_id, "user": user_id, "text": text},
         )
     thread_reply: Dict[str, Any] = {"ok": False, "skipped": True}
+    message_update: Dict[str, Any] = {"ok": False, "skipped": True}
+    fanout_sync: Dict[str, Any] = {"ok": True, "skipped": True}
+    tenant_id = str(
+        meta.get("tenant_id")
+        or parsed_btn.get("tenant_id")
+        or ""
+    ).strip() or None
+    if not tenant_id:
+        # Button value may be "tenant|latest" or bare tenant
+        raw_btn = (value or "").strip()
+        if "|" in raw_btn:
+            tenant_id = raw_btn.split("|", 1)[0].strip() or None
+        elif raw_btn and raw_btn.lower() not in {"latest", "all", "*", "csv"}:
+            # Prefer muted-store tenant over treating as jti for canvas refresh
+            try:
+                if is_judge_ack_digest_muted(raw_btn, base=base):
+                    tenant_id = raw_btn
+            except Exception:
+                pass
     if result.get("ok"):
         thread_reply = post_mute_export_revoke_thread_reply(
             ref=ref,
@@ -3153,6 +3193,60 @@ def handle_slack_mute_export_revoke(
             thread_ts=thread_ts,
             bot_token=token or None,
         )
+        # Slack canvas refresh: chat.update digest actions/context after revoke
+        canvas_flag = os.environ.get(
+            "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_CANVAS", "1"
+        ).strip().lower()
+        if canvas_flag not in {"0", "false", "no", "off"} and token and channel_id and thread_ts:
+            refresh_payload: Dict[str, Any] = {
+                "channel": {"id": channel_id},
+                "message": {},
+            }
+            # Modal submit has no message.blocks — fetch parent digest
+            if not (payload.get("message") or {}).get("blocks"):
+                fetched = fetch_slack_message_by_ts(
+                    channel_id=channel_id,
+                    message_ts=thread_ts,
+                    bot_token=token,
+                )
+                if fetched.get("ok") and isinstance(fetched.get("message"), dict):
+                    refresh_payload["message"] = fetched["message"]
+            else:
+                refresh_payload["message"] = payload.get("message") or {}
+            tid = tenant_id
+            if tid:
+                try:
+                    save_judge_ack_digest_message(
+                        tid,
+                        channel_id=channel_id,
+                        message_ts=thread_ts,
+                        base=base,
+                    )
+                except Exception:
+                    pass
+                muted_now = is_judge_ack_digest_muted(tid, base=base)
+                message_update = refresh_judge_ack_digest_message_actions(
+                    refresh_payload,
+                    muted=bool(muted_now),
+                    tenant_id=tid,
+                    base=base,
+                    bot_token=token,
+                    channel_id=channel_id,
+                    message_ts=thread_ts,
+                )
+                fanout_sync = sync_judge_ack_digest_mute_chat_updates(
+                    tid,
+                    muted=bool(muted_now),
+                    base=base,
+                    bot_token=token,
+                    exclude_message_ts=thread_ts,
+                )
+            else:
+                message_update = {
+                    "ok": False,
+                    "skipped": True,
+                    "error": "tenant_required_for_canvas",
+                }
     return {
         "ok": bool(result.get("ok")),
         "mode": "digest_mute_export_revoke",
@@ -3167,6 +3261,9 @@ def handle_slack_mute_export_revoke(
             "error": ephemeral.get("error"),
         },
         "thread_reply": thread_reply,
+        "message_update": message_update,
+        "fanout_sync": fanout_sync,
+        "tenant_id": tenant_id,
         "channel_id": channel_id,
         "thread_ts": thread_ts,
     }
@@ -3214,6 +3311,7 @@ def build_mute_export_revoke_modal_view(
     filename: Optional[str] = None,
     channel_id: Optional[str] = None,
     message_ts: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Slack confirm modal before mute export signed URL revoke."""
     meta: Dict[str, Any] = {"ref": str(ref or "").strip()}
@@ -3223,10 +3321,14 @@ def build_mute_export_revoke_modal_view(
         meta["channel_id"] = str(channel_id)
     if message_ts:
         meta["message_ts"] = str(message_ts)
+    if tenant_id:
+        meta["tenant_id"] = str(tenant_id).strip()
     fname = str(filename or "").strip()
     body = f"Revoke mute export signed URL jti=`{ref}`"
     if fname:
         body += f" · file=`{fname}`"
+    if tenant_id:
+        body += f" · tenant=`{tenant_id}`"
     body += "?\nThis invalidates the download link immediately."
     return {
         "type": "modal",
@@ -3272,11 +3374,34 @@ def parse_mute_export_revoke_modal_metadata(payload: Dict[str, Any]) -> Dict[str
     if not isinstance(data, dict):
         return {}
     out: Dict[str, str] = {}
-    for key in ("ref", "filename", "channel_id", "message_ts"):
+    for key in ("ref", "filename", "channel_id", "message_ts", "tenant_id"):
         val = str(data.get(key) or "").strip()
         if val:
             out[key] = val
     return out
+
+
+def parse_mute_export_revoke_button_value(
+    value: str = "",
+    *,
+    base: Optional[str] = None,
+) -> Dict[str, str]:
+    """Parse Block Kit value → tenant_id + revoke ref (latest|jti)."""
+    raw = (value or "").strip()
+    tenant_id = ""
+    ref = raw
+    if "|" in raw:
+        left, right = raw.split("|", 1)
+        tenant_id = left.strip()
+        ref = right.strip() or "latest"
+    elif raw and raw.lower() not in {"latest", "all", "*", "csv"}:
+        try:
+            if is_judge_ack_digest_muted(raw, base=base):
+                tenant_id = raw
+                ref = "latest"
+        except Exception:
+            pass
+    return {"tenant_id": tenant_id, "ref": ref or "latest"}
 
 
 def open_mute_export_revoke_confirm_modal(
@@ -3286,7 +3411,10 @@ def open_mute_export_revoke_confirm_modal(
     base: Optional[str] = None,
 ) -> Dict[str, Any]:
     """block_actions → views.open confirm modal (does not revoke yet)."""
-    resolved = resolve_mute_export_revoke_ref(value, base=base)
+    parsed = parse_mute_export_revoke_button_value(value, base=base)
+    tenant_id = parsed.get("tenant_id") or None
+    resolve_val = parsed.get("ref") or "latest"
+    resolved = resolve_mute_export_revoke_ref(resolve_val, base=base)
     channel_id = str(
         ((payload.get("channel") or {}).get("id"))
         or ((payload.get("container") or {}).get("channel_id"))
@@ -3305,6 +3433,7 @@ def open_mute_export_revoke_confirm_modal(
             "error": resolved.get("error") or "not_found",
             "text": text,
             "channel_id": channel_id,
+            "tenant_id": tenant_id,
         }
     ref = str(resolved.get("ref") or "")
     trigger_id = str(payload.get("trigger_id") or "").strip()
@@ -3313,7 +3442,11 @@ def open_mute_export_revoke_confirm_modal(
         "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_CONFIRM", "1"
     ).strip().lower()
     if confirm in {"0", "false", "no", "off"}:
-        out = handle_slack_mute_export_revoke(payload, value=ref, base=base)
+        # Preserve tenant in synthetic value for canvas refresh
+        pass_val = f"{tenant_id}|{ref}" if tenant_id else ref
+        out = handle_slack_mute_export_revoke(payload, value=pass_val, base=base)
+        if tenant_id and not out.get("tenant_id"):
+            out["tenant_id"] = tenant_id
         return out
     opened = open_slack_modal(
         trigger_id=trigger_id,
@@ -3322,6 +3455,7 @@ def open_mute_export_revoke_confirm_modal(
             filename=str(resolved.get("filename") or "") or None,
             channel_id=channel_id,
             message_ts=message_ts,
+            tenant_id=tenant_id,
         ),
     )
     return {
@@ -3334,6 +3468,7 @@ def open_mute_export_revoke_confirm_modal(
         "opened": opened,
         "channel_id": channel_id,
         "message_ts": message_ts,
+        "tenant_id": tenant_id,
         "text": f"Confirm revoke modal for jti=`{ref}`",
     }
 

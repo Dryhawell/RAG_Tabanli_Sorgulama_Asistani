@@ -108,6 +108,14 @@ groups:
           severity: critical
           service: rag
           team: rag
+
+  # Silence-burn lives in a dedicated Grafana folder so folder-scoped
+  # notification policies / contact points route independently of resolve canaries.
+  - orgId: 1
+    name: rag-inhibit-equal-silence-burn
+    folder: RAG Silence Burn
+    interval: 5m
+    rules:
       - uid: rag-inhibit-equal-canary-silence-burn
         title: RAG inhibit equal canary silence burn-rate
         condition: C
@@ -176,6 +184,8 @@ groups:
             (INHIBIT_EQUAL_CANARY_OPSGENIE_ALERT_URL).
             Slack canary button + PagerDuty/Opsgenie details.runbook_url
             (INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL).
+            Grafana folder "RAG Silence Burn" owns routing for this rule group
+            (folder-scoped contact / notification policy + Alertmanager matcher).
             python -m rag.cli alertmanager --list-silences
             python -m rag.cli alertmanager --check-config
             Check INHIBIT_EQUAL_CANARY_AUTO_SILENCE + Alertmanager silences API.
@@ -185,3 +195,5 @@ groups:
           severity: critical
           service: rag
           team: rag
+          grafana_folder: rag-silence-burn
+          alertname: RagInhibitEqualCanarySilenceBurn

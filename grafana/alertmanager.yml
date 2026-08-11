@@ -12,6 +12,15 @@ route:
         - service = rag-judge
       receiver: judge-webhook
       continue: true
+    # Silence-burn folder route (before broad service=rag catch-all)
+    - matchers:
+        - alertname = RagInhibitEqualCanarySilenceBurn
+      receiver: silence-burn-webhook
+      continue: true
+    - matchers:
+        - grafana_folder = rag-silence-burn
+      receiver: silence-burn-webhook
+      continue: true
     # Quarantine before broad ingest catch-up route
     - matchers:
         - alertname = RagDualWriteDlqQuarantineDepthHigh
@@ -36,6 +45,12 @@ receivers:
   - name: judge-webhook
     webhook_configs:
       - url: http://host.docker.internal:9999/alertmanager-judge
+        send_resolved: true
+
+  - name: silence-burn-webhook
+    webhook_configs:
+      # Grafana folder "RAG Silence Burn" / grafana_folder=rag-silence-burn
+      - url: http://host.docker.internal:9999/alertmanager-silence-burn
         send_resolved: true
 
   - name: ingest-dlq-quarantine-webhook
