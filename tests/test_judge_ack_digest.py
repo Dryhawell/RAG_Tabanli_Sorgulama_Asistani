@@ -100,6 +100,35 @@ def test_digest_diff_muted_tenants_annotation(tmp_path: Path, monkeypatch) -> No
     )
 
 
+def test_digest_diff_mute_export_revoke_annotation(tmp_path: Path, monkeypatch) -> None:
+    from rag.judge_alert import (
+        append_judge_ack_audit,
+        dispatch_judge_ack_digest,
+        format_judge_ack_digest_diff_text,
+        summarize_judge_ack_audit,
+    )
+
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_DIFF", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", str(tmp_path / "ack.jsonl"))
+    path = str(tmp_path / "ack.jsonl")
+    append_judge_ack_audit("ack", actor="a", path=path)
+    append_judge_ack_audit(
+        "mute_export_revoke",
+        actor="ops",
+        path=path,
+        note="leak",
+        extra={"jti": "jti-annotate-1", "filename": "mutes.csv"},
+    )
+    summary = summarize_judge_ack_audit(path=path, since_hours=24 * 365)
+    result = dispatch_judge_ack_digest(summary, dry_run=True, base=str(tmp_path))
+    assert result["diff"] is not None
+    revokes = result["diff"].get("mute_export_revokes") or []
+    assert any(r.get("jti") == "jti-annotate-1" for r in revokes)
+    text = format_judge_ack_digest_diff_text(result["diff"])
+    assert "Mute export revokes" in text
+    assert "jti-annotate-1" in text
+
+
 def test_digest_diff_snapshot_delta(tmp_path: Path, monkeypatch) -> None:
     from rag.judge_alert import (
         diff_judge_ack_digest,
@@ -1275,6 +1304,31 @@ def test_mute_export_revoke_block_kit_action(tmp_path: Path, monkeypatch) -> Non
     assert immediate.get("ok") is True
     assert immediate.get("mode") == "digest_mute_export_revoke"
     assert immediate.get("thread_reply", {}).get("ok") is True
+
+    # Rate-limit second revoke by same actor
+    monkeypatch.setenv("RAG_JUDGE_ACK_RATE_LIMIT_SEC", "3600")
+    monkeypatch.setenv("RAG_JUDGE_ALERT_STATE", str(tmp_path / "judge_state.json"))
+    signed3 = build_mute_export_signed_url(
+        fname, public_base="http://example.test", base=str(tmp_path), actor="tester3"
+    )
+    limited = handle_slack_mute_export_revoke(
+        {
+            "actions": [
+                {
+                    "action_id": "judge_ack_digest_revoke_mute_export",
+                    "value": signed3["jti"],
+                }
+            ],
+            "user": {"username": "bob", "id": "U2"},
+            "channel": {"id": "C1"},
+            "message": {"ts": "9.9"},
+        },
+        value=signed3["jti"],
+        base=str(tmp_path),
+    )
+    assert limited.get("ok") is False
+    assert limited.get("error") == "rate_limited"
+    assert limited.get("mode") == "digest_mute_export_revoke"
 
 
 def test_digest_message_ref_prune_ttl(tmp_path: Path, monkeypatch) -> None:

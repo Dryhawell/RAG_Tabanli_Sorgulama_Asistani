@@ -613,12 +613,24 @@ def format_judge_ack_digest_diff_text(diff: Optional[Dict[str, Any]]) -> str:
     if not diff or not diff.get("has_previous"):
         base = "*vs last digest*\n_No previous snapshot — baseline recorded._"
         muted = diff.get("muted_tenants") if isinstance(diff, dict) else None
+        bits = []
         if muted:
-            return (
-                base
-                + "\nMuted tenants: "
-                + ", ".join(f"`{t}`" for t in list(muted)[:12])
+            bits.append(
+                "Muted tenants: " + ", ".join(f"`{t}`" for t in list(muted)[:12])
             )
+        revokes = diff.get("mute_export_revokes") if isinstance(diff, dict) else None
+        if revokes:
+            parts = []
+            for row in list(revokes)[:5]:
+                if not isinstance(row, dict):
+                    continue
+                jti = str(row.get("jti") or "").strip() or "?"
+                actor = str(row.get("actor") or "").strip() or "—"
+                parts.append(f"`{jti}` by *{actor}*")
+            if parts:
+                bits.append("Mute export revokes: " + " · ".join(parts))
+        if bits:
+            return base + "\n" + "\n".join(bits)
         return base
     delta = int(diff.get("delta_total") or 0)
     sign = f"+{delta}" if delta > 0 else str(delta)
@@ -650,7 +662,55 @@ def format_judge_ack_digest_diff_text(diff: Optional[Dict[str, Any]]) -> str:
         lines.append(
             "Muted tenants: " + ", ".join(f"`{t}`" for t in list(muted)[:12])
         )
+    revokes = diff.get("mute_export_revokes") or []
+    if revokes:
+        parts = []
+        for row in list(revokes)[:5]:
+            if not isinstance(row, dict):
+                continue
+            jti = str(row.get("jti") or "").strip() or "?"
+            actor = str(row.get("actor") or "").strip() or "—"
+            parts.append(f"`{jti}` by *{actor}*")
+        if parts:
+            lines.append("Mute export revokes: " + " · ".join(parts))
     return "\n".join(lines)
+
+
+def recent_mute_export_revokes(
+    *,
+    path: Optional[str] = None,
+    limit: int = 5,
+    since_hours: float = 168.0,
+) -> List[Dict[str, Any]]:
+    """Recent mute_export_revoke audit rows for digest-diff annotate."""
+    try:
+        hours = float(since_hours or 168.0)
+    except Exception:
+        hours = 168.0
+    since = None
+    try:
+        from datetime import datetime, timedelta, timezone
+
+        since = (datetime.now(timezone.utc) - timedelta(hours=max(0.0, hours))).isoformat()
+    except Exception:
+        since = None
+    rows = read_judge_ack_audit(
+        path=path, event="mute_export_revoke", since=since, limit=max(1, int(limit or 5))
+    )
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        out.append(
+            {
+                "jti": row.get("jti"),
+                "filename": row.get("filename"),
+                "actor": row.get("actor"),
+                "ts": row.get("ts"),
+                "note": row.get("note"),
+            }
+        )
+    return out
 
 
 def digest_diff_enabled() -> bool:
@@ -2992,6 +3052,22 @@ def handle_slack_mute_export_revoke(
 ) -> Dict[str, Any]:
     """Slack Block Kit / modal submit: revoke latest (or explicit) mute export signed URL."""
     actor = slack_interactive_actor(payload)
+    state_path = os.environ.get("RAG_JUDGE_ALERT_STATE", "").strip() or None
+    rate = check_judge_ack_rate_limit(actor or "slack", state_path=state_path)
+    if rate.get("limited"):
+        retry = rate.get("retry_after_sec")
+        text = (
+            f"Mute export revoke rate-limited"
+            + (f"; retry in {retry}s" if retry is not None else "")
+        )
+        return {
+            "ok": False,
+            "error": "rate_limited",
+            "mode": "digest_mute_export_revoke",
+            "retry_after_sec": retry,
+            "actor": actor,
+            "text": text,
+        }
     resolved = resolve_mute_export_revoke_ref(value, base=base)
     if not resolved.get("ok"):
         text = "No active mute export signed URL to revoke."
@@ -3023,6 +3099,8 @@ def handle_slack_mute_export_revoke(
         note=note,
         base=base,
     )
+    if result.get("ok"):
+        record_judge_ack_rate(actor or "slack", state_path=state_path)
     text = (
         f"Mute export signed URL revoked · jti=`{ref}` · by *{actor or 'slack'}*"
         if result.get("ok")
@@ -3512,6 +3590,16 @@ def dispatch_judge_ack_digest(
         # Annotate global digests with currently muted tenants.
         if not tid and muted_tenants:
             diff["muted_tenants"] = muted_tenants
+        # Annotate recent mute export revokes (audit digest)
+        try:
+            revokes = recent_mute_export_revokes(
+                limit=5,
+                since_hours=float(summary.get("since_hours") or 168),
+            )
+            if revokes:
+                diff["mute_export_revokes"] = revokes
+        except Exception:
+            pass
 
     heatmap_bucket = resolve_heatmap_bucket(tid, base=base)
     heatmap: Optional[Dict[str, Any]] = None

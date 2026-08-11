@@ -467,20 +467,31 @@ def test_notify_inhibit_equal_close_on_green(monkeypatch) -> None:
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK", raising=False)
     monkeypatch.setenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", "og-key")
     monkeypatch.setenv("INHIBIT_EQUAL_CANARY_OPSGENIE_REGIONS", "us,eu")
+    monkeypatch.setenv("INHIBIT_EQUAL_CANARY_CLOSE_ACK_SYNC", "1")
     with patch("rag.judge_alert.post_opsgenie_close", return_value=True) as close:
-        out = notify_inhibit_equal_close_on_green(report)
+        with patch("rag.judge_alert.post_opsgenie_ack", return_value=True) as ack:
+            out = notify_inhibit_equal_close_on_green(report)
     assert out["closed"] is True
     assert out["opsgenie"] is True
     assert out.get("opsgenie_deep_link")
+    assert out.get("opsgenie_ack_sync") is True
+    assert out.get("opsgenie_ack") is True
     assert out["opsgenie_regions"]["us"] is True
     assert out["opsgenie_regions"]["eu"] is True
+    assert out["opsgenie_ack_regions"]["us"] is True
+    assert out["opsgenie_ack_regions"]["eu"] is True
     assert close.call_count == 2
+    assert ack.call_count == 2
     assert all(
         c.kwargs.get("source") == "inhibit-equal-canary" for c in close.call_args_list
     )
     assert all(
         "opsgenie.com" in str(c.kwargs.get("note") or "").lower()
         for c in close.call_args_list
+    )
+    assert all(
+        "ack sync" in str(c.kwargs.get("note") or "").lower()
+        for c in ack.call_args_list
     )
 
     monkeypatch.delenv("INHIBIT_EQUAL_CANARY_OPSGENIE_API_KEY", raising=False)

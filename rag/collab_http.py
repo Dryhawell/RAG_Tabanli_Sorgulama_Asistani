@@ -284,7 +284,8 @@ a{color:#b45309}
 <p>Slack canary button + PagerDuty/Opsgenie <code>details.runbook_url</code> (<code>INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL</code>) deep-link here.</p>
 <p>Opsgenie alert deep-link (alias list): <code>details.opsgenie_url</code> via <code>opsgenie_alert_deep_link</code>
 (<code>INHIBIT_EQUAL_CANARY_OPSGENIE_ALERT_URL</code> / Grafana annotation <code>opsgenie_url</code>).
-Green recover close: <code>post_opsgenie_close</code> note + Slack resolve payload include the same deep-link.</p>
+Green recover close: <code>post_opsgenie_close</code> note + Slack resolve payload include the same deep-link;
+multi-region close+ack sync via <code>INHIBIT_EQUAL_CANARY_CLOSE_ACK_SYNC</code> (<code>opsgenie_ack_regions</code>).</p>
 <ol>
 <li>Confirm burn windows: <code>rag:inhibit_equal_canary_silence_fail_ratio:1h/6h</code> on Grafana rag-judge.</li>
 <li>Open Opsgenie alias list for <code>rag-judge-soft-fail/inhibit-equal-canary</code> (US/EU app host).</li>
@@ -551,15 +552,34 @@ def handle_judge_slack_interactive(
         "digest_mute_snapshot_upload",
     }:
         text = str(result.get("text") or result.get("mode") or "Mute export updated")
-        resp = {
+        if result.get("ok") or result.get("mode") == "digest_mute_snapshot_upload":
+            resp = {
+                "response_type": "ephemeral",
+                "replace_original": False,
+                "text": text[:2900],
+            }
+            return (
+                200,
+                {"Content-Type": "application/json"},
+                json.dumps(resp, ensure_ascii=False).encode("utf-8"),
+            )
+        err = str(result.get("error") or "mute_export_failed")
+        status = 429 if err == "rate_limited" else 400
+        retry = result.get("retry_after_sec")
+        body: Dict[str, Any] = {
             "response_type": "ephemeral",
-            "replace_original": False,
-            "text": text[:2900],
+            "text": text[:2900] if text else f"Mute export action failed: {err}",
+            "ok": False,
+            "error": err,
         }
+        headers_out = {"Content-Type": "application/json"}
+        if err == "rate_limited":
+            headers_out["Retry-After"] = str(int(float(retry or 1)))
+            body["retry_after_sec"] = retry
         return (
-            200 if result.get("ok") or result.get("mode") == "digest_mute_snapshot_upload" else 400,
-            {"Content-Type": "application/json"},
-            json.dumps(resp, ensure_ascii=False).encode("utf-8"),
+            status,
+            headers_out,
+            json.dumps(body, ensure_ascii=False).encode("utf-8"),
         )
 
     if result.get("mode") in {"digest_mute", "digest_catch_up"}:

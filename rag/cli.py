@@ -1343,8 +1343,23 @@ def cmd_webhook_signing_sidecar(args: argparse.Namespace) -> int:
         report["notify_pd"] = maybe_notify_sidecar_cert_rotate_fail(
             report, force=notify_force or not bool(report.get("ok"))
         )
+        # Dry-run CI gate: fail when rotation would be needed
+        gate_rc = 0
+        if report.get("dry_run"):
+            gate_flag = os.environ.get(
+                "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_DRY_RUN_GATE", "1"
+            ).strip().lower()
+            would = report.get("would_rotate") or []
+            if gate_flag not in {"0", "false", "no", "off"} and would:
+                report["gate"] = "would_rotate"
+                report["gate_fail"] = True
+                gate_rc = 2
+            elif not report.get("ok"):
+                gate_rc = 1
+        elif not report.get("ok"):
+            gate_rc = 1
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
-        return 0 if report.get("ok") else 1
+        return gate_rc
 
     if getattr(args, "check_certs", False):
         report = inspect_sidecar_certs()

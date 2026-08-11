@@ -431,19 +431,19 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_mute_revoke_thread_rotate_pd_sev_og_close():
+def test_readme_sonraki_adaylar_after_mute_revoke_ratelimit_rotate_dryrun_og_ack():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
     sonraki = text.split("## Sonraki adaylar")[1].split("##")[0]
-    assert "mute export revoke rate-limit + audit digest annotate" in sonraki
-    assert "sidecar rotate dry-run CI gate" in sonraki
-    assert "Opsgenie close ack sync" in sonraki
+    assert "mute export revoke Slack canvas refresh on revoke" in sonraki
+    assert "sidecar rotate notify digest" in sonraki
+    assert "Grafana folder alert routing" in sonraki
     # Completed this round — should not remain as next candidates
-    assert "mute export revoke audit Slack thread reply" not in sonraki
-    assert "sidecar rotate PD severity by error" not in sonraki
-    assert "Opsgenie close on recover deep-link" not in sonraki
+    assert "mute export revoke rate-limit + audit digest annotate" not in sonraki
+    assert "sidecar rotate dry-run CI gate" not in sonraki
+    assert "Opsgenie close ack sync" not in sonraki
     assert "webhook-signing-sidecar" in text
     assert "--export-mute-snapshots" in text
     assert "--upload-mute-snapshots" in text
@@ -456,6 +456,7 @@ def test_readme_sonraki_adaylar_after_mute_revoke_thread_rotate_pd_sev_og_close(
     assert "judge_mute_export_revoke_modal" in text
     assert "mute_export_sign" in text
     assert "mute_export_revoke" in text
+    assert "mute_export_revokes" in text
     assert "mute_export_sweep" in text
     assert "mute_export_signed_urls.json" in text
     assert "/judge/mute-snapshots" in text
@@ -464,6 +465,7 @@ def test_readme_sonraki_adaylar_after_mute_revoke_thread_rotate_pd_sev_og_close(
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SWEEP" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_CONFIRM" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_THREAD" in text
+    assert "RAG_JUDGE_ACK_RATE_LIMIT_SEC" in text
     assert "judge_ack_digest_export_mute_snapshots" in text
     assert "judge-ack-digest.yml" in text
     assert "webhook-signing-sidecar-rotate.yml" in text
@@ -475,15 +477,20 @@ def test_readme_sonraki_adaylar_after_mute_revoke_thread_rotate_pd_sev_og_close(
     assert "--rotate-certs" in text
     assert "--rotate-certs-if-expiring" in text
     assert "--notify" in text
+    assert "--dry-run" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PAGERDUTY_ROUTING_KEY" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_SEVERITY_BY_ERROR" in text
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_DRY_RUN_GATE" in text
+    assert "would_rotate" in text
     assert "notify_pd" in text
     assert "runbook:silence-burn" in text
     assert "INHIBIT_EQUAL_CANARY_OPSGENIE_TAGS" in text
     assert "opsgenie_alert_deep_link" in text
     assert "INHIBIT_EQUAL_CANARY_OPSGENIE_ALERT_URL" in text
     assert "opsgenie_url" in text
+    assert "INHIBIT_EQUAL_CANARY_CLOSE_ACK_SYNC" in text
+    assert "opsgenie_ack_regions" in text
     assert "green recover close" in text
     assert "RagWebhookSigningSidecarForwardFail" in text
     assert "rag_webhook_signing_sidecar.yml" in text
@@ -515,11 +522,16 @@ def test_webhook_signing_sidecar_rotate_workflow_yaml():
     assert "--rotate-certs" in text
     assert "--check-certs" in text
     assert "--notify" in text
+    assert "--dry-run" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PAGERDUTY_ROUTING_KEY" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_NOTIFY" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_SEVERITY_BY_ERROR" in text
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_DRY_RUN_GATE" in text
+    assert "DRY_RUN_GATE_FAIL" in text
+    assert "would_rotate" in text or "would rotate" in text
+    assert "sidecar_cert_rotate_dry_run.json" in text
     assert "webhook-signing-sidecar" in text
     assert "metadata/sidecar-tls" in text
     assert "sidecar_cert_rotate.json" in text

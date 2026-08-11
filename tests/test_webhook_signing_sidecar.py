@@ -466,3 +466,46 @@ def test_sidecar_cert_expiry_inspect(tmp_path: Path, monkeypatch) -> None:
     )
     assert sev_out.get("severity") == "critical"
     assert pd_calls[0].get("severity") == "critical"
+
+    # Dry-run CI gate: would_rotate → exit 2
+    from rag.cli import cmd_webhook_signing_sidecar
+    from argparse import Namespace
+
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_DRY_RUN_GATE", "1")
+    monkeypatch.setattr(
+        "rag.webhook_signing_sidecar.rotate_sidecar_certs",
+        lambda **kw: {
+            "ok": True,
+            "dry_run": True,
+            "would_rotate": ["server"],
+            "rotated": [],
+        },
+    )
+    monkeypatch.setattr(
+        "rag.webhook_signing_sidecar.maybe_notify_sidecar_cert_rotate",
+        lambda *a, **k: {"ok": True, "skipped": True},
+    )
+    monkeypatch.setattr(
+        "rag.webhook_signing_sidecar.maybe_notify_sidecar_cert_rotate_fail",
+        lambda *a, **k: {"ok": True, "skipped": True},
+    )
+    rc = cmd_webhook_signing_sidecar(
+        Namespace(
+            rotate_certs=False,
+            rotate_certs_if_expiring=True,
+            dry_run=True,
+            cert_days=90,
+            notify=False,
+            check_certs=False,
+            sign_once=False,
+            upstream=None,
+            tls_cert=None,
+            tls_key=None,
+            tls_ca=None,
+            mtls=False,
+            upstream_client_cert=None,
+            upstream_client_key=None,
+            upstream_ca=None,
+        )
+    )
+    assert rc == 2

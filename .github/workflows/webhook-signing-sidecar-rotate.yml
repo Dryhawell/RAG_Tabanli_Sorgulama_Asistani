@@ -58,6 +58,7 @@ jobs:
           RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PAGERDUTY_ROUTING_KEY: ${{ secrets.RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PAGERDUTY_ROUTING_KEY || secrets.RAG_JUDGE_PAGERDUTY_ROUTING_KEY }}
           RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_SEVERITY: ${{ vars.RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_SEVERITY || 'error' }}
           RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_SEVERITY_BY_ERROR: ${{ vars.RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PD_SEVERITY_BY_ERROR || '' }}
+          RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_DRY_RUN_GATE: ${{ vars.RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_DRY_RUN_GATE || '1' }}
         run: |
           mkdir -p metadata/sidecar-tls
           EXTRA=""
@@ -73,8 +74,38 @@ jobs:
           # shellcheck disable=SC2086
           python -m rag.cli webhook-signing-sidecar $MODE --cert-days "$CERT_DAYS" --notify $EXTRA \
             | tee metadata/sidecar_cert_rotate.json
+          ROTATE_RC=${PIPESTATUS[0]}
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            # Dry-run CI gate: exit 2 = would_rotate
+            if [ "$ROTATE_RC" -eq 2 ]; then
+              echo "DRY_RUN_GATE_FAIL: certs would rotate (see sidecar_cert_rotate.json)"
+              exit 2
+            fi
+            if [ "$ROTATE_RC" -ne 0 ]; then
+              exit "$ROTATE_RC"
+            fi
+            python -m rag.cli webhook-signing-sidecar --check-certs \
+              | tee metadata/sidecar_cert_check.json
+            exit $?
+          fi
           python -m rag.cli webhook-signing-sidecar --check-certs \
             | tee metadata/sidecar_cert_check.json || true
+          exit "$ROTATE_RC"
+      - name: Dry-run CI gate (plan only)
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run != true
+        env:
+          RAG_WEBHOOK_SIGNING_SIDECAR_TLS_DIR: metadata/sidecar-tls
+          RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CERT: metadata/sidecar-tls/server.crt
+          RAG_WEBHOOK_SIGNING_SIDECAR_TLS_KEY: metadata/sidecar-tls/server.key
+          RAG_WEBHOOK_SIGNING_SIDECAR_TLS_CA: metadata/sidecar-tls/ca.crt
+          RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT: metadata/sidecar-tls/client.crt
+          RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_KEY: metadata/sidecar-tls/client.key
+          RAG_WEBHOOK_SIGNING_SIDECAR_CERT_EXPIRY_WARN_DAYS: ${{ vars.RAG_WEBHOOK_SIGNING_SIDECAR_CERT_EXPIRY_WARN_DAYS || '14' }}
+          RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_DRY_RUN_GATE: ${{ vars.RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_DRY_RUN_GATE || '0' }}
+        run: |
+          # Optional post-rotate dry-run snapshot (gate off by default — rotate already applied)
+          python -m rag.cli webhook-signing-sidecar --rotate-certs-if-expiring --dry-run --cert-days 90 \
+            | tee metadata/sidecar_cert_rotate_dry_run.json || true
       - name: Upload rotate report
         if: always()
         uses: actions/upload-artifact@v4
@@ -82,6 +113,7 @@ jobs:
           name: webhook-signing-sidecar-cert-rotate
           path: |
             metadata/sidecar_cert_rotate.json
+            metadata/sidecar_cert_rotate_dry_run.json
             metadata/sidecar_cert_check.json
             metadata/sidecar-tls/
           if-no-files-found: ignore

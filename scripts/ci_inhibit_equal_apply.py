@@ -1003,6 +1003,7 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
 
     from rag.judge_alert import (
         opsgenie_alert_deep_link,
+        post_opsgenie_ack,
         post_opsgenie_close,
         post_pagerduty,
         post_slack,
@@ -1077,9 +1078,13 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
         )
 
     og_by_region: Dict[str, bool] = {}
+    og_ack_by_region: Dict[str, bool] = {}
     close_note = "RAG inhibit-equal canary resolved (green apply · silence-burn recover)"
     if og_deep_link:
         close_note = f"{close_note} · {og_deep_link}"
+    ack_sync = os.environ.get(
+        "INHIBIT_EQUAL_CANARY_CLOSE_ACK_SYNC", "1"
+    ).strip().lower() not in {"0", "false", "no", "off"}
     for t in og_targets:
         region = t.get("region") or "us"
         ok = bool(
@@ -1091,7 +1096,20 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
             )
         )
         og_by_region[region] = ok
+        if ack_sync:
+            acked = bool(
+                post_opsgenie_ack(
+                    api_key=t["api_key"],
+                    source="inhibit-equal-canary",
+                    region=region,
+                    note=(
+                        f"silence-burn recover close+ack sync · {close_note}"
+                    )[:15000],
+                )
+            )
+            og_ack_by_region[region] = acked
     og_ok = any(og_by_region.values()) if og_by_region else False
+    og_ack_ok = any(og_ack_by_region.values()) if og_ack_by_region else False
     has_slack = bool(webhook or slack_thread_reply or (bot_token and thread_ts))
     closed = slack_ok or pd_ok or og_ok
     if slack_thread_reply:
@@ -1120,6 +1138,9 @@ def notify_inhibit_equal_close_on_green(report: Dict[str, Any]) -> Dict[str, Any
         "pagerduty": pd_ok if pd_key else None,
         "opsgenie": og_ok if og_targets else None,
         "opsgenie_regions": og_by_region or None,
+        "opsgenie_ack": og_ack_ok if og_ack_by_region else None,
+        "opsgenie_ack_regions": og_ack_by_region or None,
+        "opsgenie_ack_sync": bool(ack_sync and og_targets),
     }
 
 
