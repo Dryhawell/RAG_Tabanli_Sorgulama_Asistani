@@ -1,0 +1,93 @@
+groups:
+  - name: rag_dual_write
+    interval: 30s
+    rules:
+      - record: rag:dual_write_shadow_overlap:avg1h
+        expr: avg_over_time(rag_vector_dual_write_shadow_overlap[1h])
+      - record: rag:dual_write_shadow_overlap:avg6h
+        expr: avg_over_time(rag_vector_dual_write_shadow_overlap[6h])
+      - record: rag:dual_write_lag:avg1h
+        expr: avg_over_time(rag_vector_dual_write_lag[1h])
+      - record: rag:dual_write_lag:avg6h
+        expr: avg_over_time(rag_vector_dual_write_lag[6h])
+      # Multi-window burn-rate style: short window (1h) + long window (6h)
+      - record: rag:dual_write_shadow_burn:1h
+        expr: clamp_min(1 - rag:dual_write_shadow_overlap:avg1h, 0)
+      - record: rag:dual_write_shadow_burn:6h
+        expr: clamp_min(1 - rag:dual_write_shadow_overlap:avg6h, 0)
+      - alert: RagDualWriteShadowOverlapLow
+        expr: rag:dual_write_shadow_overlap:avg1h < 0.95
+        for: 30m
+        labels:
+          severity: warning
+          service: rag-ingest
+        annotations:
+          summary: "Dual-write shadow overlap trend low"
+          description: >
+            1h avg shadow overlap {{ $value | humanize }} < 0.95
+            (secondary={{ $labels.secondary_backend }}).
+            Run: python -m rag.cli migrate-vector --shadow-compare --auto-catch-up-on-fail
+      - alert: RagDualWriteLagHigh
+        expr: rag:dual_write_lag:avg1h > 10
+        for: 20m
+        labels:
+          severity: warning
+          service: rag-ingest
+        annotations:
+          summary: "Dual-write lag high"
+          description: >
+            1h avg lag {{ $value | humanize }} chunks
+            (secondary={{ $labels.secondary_backend }}).
+            Run: python -m rag.cli migrate-vector --catch-up
+      - alert: RagDualWriteLagShadowBurn
+        # Combined: lag elevated AND shadow burn (1-overlap) on short or long window
+        expr: |
+          (
+            rag:dual_write_lag:avg1h > 5
+            and rag:dual_write_shadow_burn:1h > 0.05
+          )
+          or
+          (
+            rag:dual_write_lag:avg6h > 3
+            and rag:dual_write_shadow_burn:6h > 0.03
+          )
+        for: 15m
+        labels:
+          severity: critical
+          service: rag-ingest
+        annotations:
+          summary: "Dual-write lag + shadow burn-rate"
+          description: >
+            Combined lag/shadow burn for secondary={{ $labels.secondary_backend }}.
+            Catch-up then re-gate: migrate-vector --shadow-compare --auto-catch-up-on-fail
+      - record: rag:dual_write_dlq_depth:avg1h
+        expr: avg_over_time(rag_dual_write_webhook_dlq_depth[1h])
+      - record: rag:dual_write_dlq_quarantine_depth:avg1h
+        expr: avg_over_time(rag_dual_write_webhook_dlq_quarantine_depth[1h])
+      - alert: RagDualWriteDlqDepthHigh
+        expr: rag_dual_write_webhook_dlq_depth >= 10
+        for: 15m
+        labels:
+          severity: warning
+          service: rag-ingest
+        annotations:
+          summary: "Dual-write webhook DLQ depth high"
+          description: >
+            DLQ depth {{ $value | humanize }} ≥ 10.
+            Run: python -m rag.cli dual-write-dlq --replay --notify
+      - alert: RagDualWriteDlqQuarantineDepthHigh
+        expr: rag_dual_write_webhook_dlq_quarantine_depth >= 1
+        for: 10m
+        labels:
+          severity: warning
+          service: rag-ingest
+        annotations:
+          summary: "Dual-write DLQ quarantine not empty"
+          description: >
+            Quarantine depth {{ $value | humanize }} ≥ 1.
+            Dashboard: rag-judge (DLQ quarantine panel).
+            Inspect: python -m rag.cli dual-write-dlq --quarantine --notify
+            Replay: python -m rag.cli dual-write-dlq --replay-quarantine
+            Prune: python -m rag.cli dual-write-dlq --prune-quarantine --notify
+          dashboard_uid: rag-judge
+          panel_id: "dlq-quarantine"
