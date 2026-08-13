@@ -1592,6 +1592,7 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
         export_judge_ack_digest_mute_snapshots,
         maybe_prune_judge_ack_digest_mutes,
         maybe_purge_judge_ack_audit,
+        maybe_purge_mute_export_revoke_fanout_audit,
         summarize_judge_ack_audit,
     )
 
@@ -1626,6 +1627,22 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
 
         os.environ.setdefault("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_SWEEP", "1")
         report = sweep_mute_export_signed_urls(dry_run=dry_run)
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("ok") else 1
+
+    if getattr(args, "prune_mute_export_revoke_fanouts", False) and not (
+        getattr(args, "export_mute_snapshots", False)
+        or getattr(args, "upload_mute_snapshots", False)
+        or getattr(args, "fan_out", False)
+    ):
+        from rag.judge_alert import maybe_purge_mute_export_revoke_fanout_audit
+
+        os.environ.setdefault(
+            "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_PRUNE", "1"
+        )
+        report = maybe_purge_mute_export_revoke_fanout_audit(
+            path=audit, dry_run=dry_run
+        )
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0 if report.get("ok") else 1
 
@@ -1694,6 +1711,13 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
         return 0 if report.get("ok") else 1
 
     purge = maybe_purge_judge_ack_audit(path=audit, dry_run=dry_run)
+    if getattr(args, "prune_mute_export_revoke_fanouts", False):
+        os.environ.setdefault(
+            "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_PRUNE", "1"
+        )
+    fanout_retention = maybe_purge_mute_export_revoke_fanout_audit(
+        path=audit, dry_run=dry_run
+    )
     mute_prune = maybe_prune_judge_ack_digest_mutes(dry_run=dry_run)
     if getattr(args, "prune_mutes", False):
         from rag.judge_alert import (
@@ -1741,6 +1765,7 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
             block_kit=block_kit,
         )
         report["retention_purge"] = purge
+        report["fanout_retention"] = fanout_retention
         report["mute_prune"] = mute_prune
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("ok") else 1
@@ -1766,6 +1791,7 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
                 "summary": summary,
                 "dispatch": dispatched,
                 "retention_purge": purge,
+                "fanout_retention": fanout_retention,
                 "mute_prune": mute_prune,
             },
             ensure_ascii=False,
@@ -2348,6 +2374,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--sweep-mute-export-urls",
         action="store_true",
         help="Expired/revoked mute export signed URL TTL sweep",
+    )
+    p_jdig.add_argument(
+        "--prune-mute-export-revoke-fanouts",
+        action="store_true",
+        help="mute_export_revoke_fanout audit retention (days/keep)",
     )
     p_jdig.add_argument(
         "--actor",

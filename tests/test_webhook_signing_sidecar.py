@@ -622,7 +622,36 @@ def test_sidecar_cert_rotate_notify_digest_thread(tmp_path: Path, monkeypatch) -
     assert posts and posts[0][1].get("thread_ts") == "99.1"
     assert threads and "digest thread" in str(threads[0].get("text") or "").lower()
     state = json.loads((tmp_path / "rotate_thread.json").read_text(encoding="utf-8"))
-    assert state.get("thread_ts") == "99.2"
+    assert state.get("thread_ts") == "99.1"
+    assert state.get("parent_ts") == "99.1"
+    assert state.get("last_reply_ts") == "99.2"
+    assert notified.get("persist", {}).get("ok") is True
+    hist = state.get("history") or []
+    assert len(hist) == 1
+    assert hist[0].get("stamp") == "20990101T000000Z"
+
+    posts.clear()
+    threads.clear()
+    monkeypatch.delenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_TS", raising=False
+    )
+    again = maybe_notify_sidecar_cert_rotate(
+        {
+            "ok": True,
+            "rotated": ["upstream_client"],
+            "stamp": "20990101T000010Z",
+            "after": {
+                "min_days_left": 60.0,
+                "upstream_client": {"days_left": 60.0},
+            },
+        },
+        force=True,
+    )
+    assert again.get("thread") is True
+    assert posts and posts[0][1].get("thread_ts") == "99.1"
+    state2 = json.loads((tmp_path / "rotate_thread.json").read_text(encoding="utf-8"))
+    assert state2.get("parent_ts") == "99.1"
+    assert len(state2.get("history") or []) == 2
 
     posts.clear()
     threads.clear()

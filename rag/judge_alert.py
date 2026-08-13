@@ -241,6 +241,127 @@ def maybe_purge_judge_ack_audit(
     return purge_judge_ack_audit(path=path, days=days, keep=keep, dry_run=dry_run)
 
 
+def purge_mute_export_revoke_fanout_audit(
+    *,
+    path: Optional[str] = None,
+    days: Optional[float] = None,
+    keep: Optional[int] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Retention for mute_export_revoke_fanout rows only (other events kept)."""
+    event = "mute_export_revoke_fanout"
+    out_path = path or judge_ack_audit_path()
+    if days is None and keep is None:
+        return {
+            "ok": False,
+            "error": "days_or_keep_required",
+            "path": out_path,
+            "event": event,
+            "dry_run": bool(dry_run),
+        }
+    if days is not None and float(days) < 0:
+        return {"ok": False, "error": "days_negative", "path": out_path, "event": event}
+    if keep is not None and int(keep) < 0:
+        return {"ok": False, "error": "keep_negative", "path": out_path, "event": event}
+    if not os.path.isfile(out_path):
+        return {
+            "ok": True,
+            "path": out_path,
+            "event": event,
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "fanout_before": 0,
+            "fanout_after": 0,
+            "dry_run": bool(dry_run),
+            "missing": True,
+        }
+    raw_rows: List[Dict[str, Any]] = []
+    with open(out_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                raw_rows.append(row)
+    fanouts = [r for r in raw_rows if str(r.get("event") or "") == event]
+    others = [r for r in raw_rows if str(r.get("event") or "") != event]
+    fanout_before = len(fanouts)
+    cutoff: Optional[str] = None
+    kept_fanouts = list(fanouts)
+    if days is not None:
+        cutoff_ts = time.time() - float(days) * 86400.0
+        cutoff = datetime.fromtimestamp(cutoff_ts, tz=timezone.utc).isoformat()
+        kept_fanouts = [r for r in kept_fanouts if str(r.get("ts") or "") >= cutoff]
+    if keep is not None:
+        kept_fanouts = kept_fanouts[-int(keep) :]
+    kept = others + kept_fanouts
+    kept.sort(key=lambda r: str(r.get("ts") or ""))
+    removed = fanout_before - len(kept_fanouts)
+    if not dry_run and removed > 0:
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            for row in kept:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return {
+        "ok": True,
+        "path": out_path,
+        "event": event,
+        "before": len(raw_rows),
+        "after": len(kept),
+        "removed": removed,
+        "fanout_before": fanout_before,
+        "fanout_after": len(kept_fanouts),
+        "dry_run": bool(dry_run),
+        "days": float(days) if days is not None else None,
+        "keep": int(keep) if keep is not None else None,
+        "cutoff": cutoff,
+    }
+
+
+def maybe_purge_mute_export_revoke_fanout_audit(
+    *,
+    path: Optional[str] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Env: RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_RETENTION_DAYS / _KEEP / _PRUNE."""
+    prune_flag = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_PRUNE", ""
+    ).strip().lower()
+    if prune_flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "prune_disabled"}
+    days_raw = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_RETENTION_DAYS", ""
+    ).strip()
+    keep_raw = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_KEEP", ""
+    ).strip()
+    days: Optional[float] = None
+    keep: Optional[int] = None
+    if days_raw:
+        try:
+            days = float(days_raw)
+        except Exception:
+            return {"ok": False, "skipped": True, "reason": "days_invalid"}
+    if keep_raw:
+        try:
+            keep = int(keep_raw)
+        except Exception:
+            return {"ok": False, "skipped": True, "reason": "keep_invalid"}
+    if days is None and keep is None:
+        if prune_flag not in {"1", "true", "yes", "on"}:
+            return {"ok": True, "skipped": True, "reason": "retention_not_configured"}
+        days = 14.0
+        keep = 200
+    return purge_mute_export_revoke_fanout_audit(
+        path=path, days=days, keep=keep, dry_run=dry_run
+    )
+
+
 def export_judge_ack_audit(
     *,
     fmt: str = "jsonl",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1171,6 +1172,10 @@ def test_mute_export_retention_and_signed_url(tmp_path: Path, monkeypatch) -> No
         ["judge-ack-digest", "--sweep-mute-export-urls"]
     )
     assert sweep_args.sweep_mute_export_urls is True
+    fan_args = build_parser().parse_args(
+        ["judge-ack-digest", "--prune-mute-export-revoke-fanouts", "--dry-run"]
+    )
+    assert fan_args.prune_mute_export_revoke_fanouts is True
 
 
 def test_mute_export_revoke_block_kit_action(tmp_path: Path, monkeypatch) -> None:
@@ -1710,6 +1715,75 @@ def test_maybe_purge_judge_ack_audit_from_env(tmp_path: Path, monkeypatch) -> No
     monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT_PRUNE", "0")
     disabled = maybe_purge_judge_ack_audit(path=path)
     assert disabled.get("reason") == "prune_disabled"
+
+
+def test_purge_mute_export_revoke_fanout_audit_retention(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from rag.judge_alert import (
+        append_judge_ack_audit,
+        maybe_purge_mute_export_revoke_fanout_audit,
+        purge_mute_export_revoke_fanout_audit,
+        read_judge_ack_audit,
+    )
+
+    path = str(tmp_path / "ack.jsonl")
+    monkeypatch.setenv("RAG_JUDGE_ACK_AUDIT", path)
+    append_judge_ack_audit("ack", actor="keep-me", path=path)
+    append_judge_ack_audit(
+        "mute_export_revoke_fanout",
+        actor="ops",
+        path=path,
+        extra={"tenant_id": "acme", "jti": "old", "updated": 1, "failed": 0},
+    )
+    # Backdate the fanout row
+    rows = Path(path).read_text(encoding="utf-8").splitlines()
+    rewritten = []
+    for ln in rows:
+        rec = json.loads(ln)
+        if rec.get("event") == "mute_export_revoke_fanout":
+            rec["ts"] = "2020-01-01T00:00:00+00:00"
+        rewritten.append(json.dumps(rec, ensure_ascii=False))
+    Path(path).write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    append_judge_ack_audit(
+        "mute_export_revoke_fanout",
+        actor="ops",
+        path=path,
+        extra={"tenant_id": "acme", "jti": "new", "updated": 2, "failed": 0},
+    )
+    dry = purge_mute_export_revoke_fanout_audit(path=path, days=30, dry_run=True)
+    assert dry["ok"] is True
+    assert dry["dry_run"] is True
+    assert dry["fanout_before"] == 2
+    assert dry["removed"] == 1
+    real = purge_mute_export_revoke_fanout_audit(path=path, days=30, keep=10)
+    assert real["ok"] is True
+    assert real["removed"] == 1
+    left = read_judge_ack_audit(path=path)
+    events = [r.get("event") for r in left]
+    assert "ack" in events
+    assert events.count("mute_export_revoke_fanout") == 1
+    assert any(r.get("jti") == "new" for r in left)
+
+    monkeypatch.delenv(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_RETENTION_DAYS",
+        raising=False,
+    )
+    monkeypatch.delenv(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_KEEP", raising=False
+    )
+    monkeypatch.delenv(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_PRUNE", raising=False
+    )
+    skipped = maybe_purge_mute_export_revoke_fanout_audit(path=path)
+    assert skipped.get("skipped") is True
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_PRUNE", "1")
+    monkeypatch.setenv("RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_KEEP", "1")
+    pruned = maybe_purge_mute_export_revoke_fanout_audit(path=path)
+    assert pruned["ok"] is True
+    cli = Path("rag/cli.py").read_text(encoding="utf-8")
+    assert "--prune-mute-export-revoke-fanouts" in cli
+    assert "maybe_purge_mute_export_revoke_fanout_audit" in cli
 
 
 def test_slack_files_upload_requires_token() -> None:

@@ -333,6 +333,61 @@ def save_sidecar_rotate_notify_thread_state(
     return out
 
 
+def persist_sidecar_rotate_notify_thread_state(
+    *,
+    channel_id: Optional[str] = None,
+    stamp: str = "",
+    roles: Optional[List[Any]] = None,
+    parent_ts: Optional[str] = None,
+    reply_ts: Optional[str] = None,
+    path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Keep parent thread_ts stable and append rotate history (capped)."""
+    flag = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_PERSIST", "1"
+    ).strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "persist_disabled"}
+    prev = load_sidecar_rotate_notify_thread_state(path=path)
+    parent = (
+        (parent_ts or "").strip()
+        or str(prev.get("parent_ts") or "").strip()
+        or str(prev.get("thread_ts") or "").strip()
+        or (reply_ts or "").strip()
+    )
+    reply = (reply_ts or "").strip() or parent
+    keep_raw = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_KEEP", "20"
+    ).strip()
+    try:
+        keep = max(1, int(keep_raw or 20))
+    except Exception:
+        keep = 20
+    history = prev.get("history") if isinstance(prev.get("history"), list) else []
+    entry = {
+        "stamp": stamp,
+        "roles": list(roles or []),
+        "reply_ts": reply,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    history = [h for h in history if isinstance(h, dict)]
+    history.append(entry)
+    history = history[-keep:]
+    state = {
+        "thread_ts": parent,
+        "parent_ts": parent,
+        "last_reply_ts": reply,
+        "channel_id": channel_id or prev.get("channel_id") or "",
+        "stamp": stamp,
+        "roles": list(roles or []),
+        "updated_at": entry["at"],
+        "history": history,
+        "history_keep": keep,
+    }
+    out = save_sidecar_rotate_notify_thread_state(state, path=path)
+    return {"ok": True, "skipped": False, "path": out, "state": state}
+
+
 def generate_sidecar_self_signed_pair(
     *,
     common_name: str = "webhook-signing-sidecar",
@@ -640,11 +695,13 @@ def maybe_notify_sidecar_cert_rotate(
         "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD", "1"
     ).strip().lower()
     use_thread = use_digest and thread_flag not in {"0", "false", "no", "off"}
+    stored = load_sidecar_rotate_notify_thread_state()
     thread_ts = (
         os.environ.get(
             "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_TS", ""
         ).strip()
-        or str(load_sidecar_rotate_notify_thread_state().get("thread_ts") or "").strip()
+        or str(stored.get("parent_ts") or "").strip()
+        or str(stored.get("thread_ts") or "").strip()
     )
     if use_thread and thread_ts:
         payload["thread_ts"] = thread_ts
@@ -653,6 +710,7 @@ def maybe_notify_sidecar_cert_rotate(
 
         ok = post_slack(webhook, payload)
         thread_reply: Dict[str, Any] = {"ok": True, "skipped": True}
+        persist: Dict[str, Any] = {"ok": True, "skipped": True}
         if use_thread:
             channel_id = (
                 os.environ.get(
@@ -673,24 +731,32 @@ def maybe_notify_sidecar_cert_rotate(
                 thread_ts=thread_ts or None,
                 bot_token=bot_token or None,
             )
-            new_ts = str(
-                thread_reply.get("ts")
-                or thread_reply.get("thread_ts")
+            parent_ts = str(
+                thread_reply.get("thread_ts")
                 or thread_ts
+                or stored.get("parent_ts")
+                or stored.get("thread_ts")
                 or ""
             ).strip()
-            if new_ts:
-                try:
-                    save_sidecar_rotate_notify_thread_state(
-                        {
-                            "thread_ts": new_ts,
-                            "channel_id": channel_id,
-                            "stamp": stamp,
-                            "roles": rotated,
-                        }
-                    )
-                except Exception:
-                    pass
+            reply_ts = str(
+                thread_reply.get("ts") or parent_ts or ""
+            ).strip()
+            if not parent_ts and reply_ts:
+                parent_ts = reply_ts
+            try:
+                persist = persist_sidecar_rotate_notify_thread_state(
+                    channel_id=channel_id,
+                    stamp=stamp,
+                    roles=rotated,
+                    parent_ts=parent_ts or None,
+                    reply_ts=reply_ts or None,
+                )
+            except Exception as exc:
+                persist = {
+                    "ok": False,
+                    "skipped": False,
+                    "error": type(exc).__name__,
+                }
         return {
             "ok": bool(ok),
             "skipped": False,
@@ -699,8 +765,12 @@ def maybe_notify_sidecar_cert_rotate(
             "stamp": stamp,
             "digest": bool(use_digest),
             "thread": bool(use_thread),
-            "thread_ts": thread_ts or thread_reply.get("ts") or thread_reply.get("thread_ts"),
+            "thread_ts": thread_ts
+            or (persist.get("state") or {}).get("parent_ts")
+            or thread_reply.get("thread_ts")
+            or thread_reply.get("ts"),
             "thread_reply": thread_reply,
+            "persist": persist,
         }
     except Exception as exc:
         return {
