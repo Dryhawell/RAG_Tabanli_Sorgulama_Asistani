@@ -393,13 +393,26 @@ def test_sidecar_cert_expiry_inspect(tmp_path: Path, monkeypatch) -> None:
         "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK",
         "https://hooks.slack.test/rotate-notify",
     )
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-rotate")
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_CHANNEL", "C-rot")
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_TS", "99.1")
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_STATE",
+        str(tmp_path / "rotate_thread.json"),
+    )
     posts: list = []
+    threads: list = []
 
     def _fake_slack(url, payload):
         posts.append((url, payload))
         return True
 
+    def _fake_thread(**kwargs):
+        threads.append(kwargs)
+        return {"ok": True, "ts": "99.2", "thread_ts": kwargs.get("thread_ts")}
+
     monkeypatch.setattr("rag.judge_alert.post_slack", _fake_slack)
+    monkeypatch.setattr("rag.judge_alert.post_slack_thread_message", _fake_thread)
     notified = maybe_notify_sidecar_cert_rotate(
         {
             "ok": True,
@@ -423,6 +436,7 @@ def test_sidecar_cert_expiry_inspect(tmp_path: Path, monkeypatch) -> None:
     assert notified.get("digest") is True
     assert posts and posts[0][0].endswith("/rotate-notify")
     body = posts[0][1]
+    assert body.get("thread_ts") == "99.1"
     assert "digest" in str(body.get("text") or "").lower()
     assert "days_left" in str(body.get("text") or "")
     assert "was" in str(body.get("text") or "")
@@ -439,8 +453,13 @@ def test_sidecar_cert_expiry_inspect(tmp_path: Path, monkeypatch) -> None:
         for el in (b.get("elements") or [])
     ]
     assert any("rag-ingest" in str(c) for c in ctx)
+    assert notified.get("thread") is True
+    assert notified.get("thread_reply", {}).get("ok") is True
+    assert threads and "digest thread" in str(threads[0].get("text") or "").lower()
+    assert (tmp_path / "rotate_thread.json").is_file()
 
     posts.clear()
+    threads.clear()
     monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_DIGEST", "0")
     legacy = maybe_notify_sidecar_cert_rotate(
         {
@@ -452,6 +471,7 @@ def test_sidecar_cert_expiry_inspect(tmp_path: Path, monkeypatch) -> None:
         force=True,
     )
     assert legacy.get("digest") is False
+    assert legacy.get("thread") is not True
     legacy_headers = [
         b.get("text", {}).get("text")
         for b in (posts[0][1].get("blocks") or [])
@@ -554,3 +574,69 @@ def test_sidecar_cert_expiry_inspect(tmp_path: Path, monkeypatch) -> None:
         )
     )
     assert rc == 2
+
+
+def test_sidecar_cert_rotate_notify_digest_thread(tmp_path: Path, monkeypatch) -> None:
+    from rag.webhook_signing_sidecar import maybe_notify_sidecar_cert_rotate
+
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK",
+        "https://hooks.slack.test/rotate-notify",
+    )
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-rotate")
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_CHANNEL", "C-rot")
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_TS", "99.1")
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_STATE",
+        str(tmp_path / "rotate_thread.json"),
+    )
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_DIGEST", "1")
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD", "1")
+    posts: list = []
+    threads: list = []
+
+    def _fake_slack(url, payload):
+        posts.append((url, payload))
+        return True
+
+    def _fake_thread(**kwargs):
+        threads.append(kwargs)
+        return {"ok": True, "ts": "99.2", "thread_ts": kwargs.get("thread_ts")}
+
+    monkeypatch.setattr("rag.judge_alert.post_slack", _fake_slack)
+    monkeypatch.setattr("rag.judge_alert.post_slack_thread_message", _fake_thread)
+    notified = maybe_notify_sidecar_cert_rotate(
+        {
+            "ok": True,
+            "rotated": ["server"],
+            "stamp": "20990101T000000Z",
+            "before": {"server": {"days_left": 3.0}},
+            "after": {"min_days_left": 60.0, "server": {"days_left": 60.0}},
+        },
+        force=True,
+    )
+    assert notified.get("ok") is True
+    assert notified.get("digest") is True
+    assert notified.get("thread") is True
+    assert notified.get("thread_reply", {}).get("ok") is True
+    assert posts and posts[0][1].get("thread_ts") == "99.1"
+    assert threads and "digest thread" in str(threads[0].get("text") or "").lower()
+    state = json.loads((tmp_path / "rotate_thread.json").read_text(encoding="utf-8"))
+    assert state.get("thread_ts") == "99.2"
+
+    posts.clear()
+    threads.clear()
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_DIGEST", "0")
+    legacy = maybe_notify_sidecar_cert_rotate(
+        {
+            "ok": True,
+            "rotated": ["server"],
+            "stamp": "20990101T000001Z",
+            "after": {"min_days_left": 60.0, "server": {"days_left": 60.0}},
+        },
+        force=True,
+    )
+    assert legacy.get("digest") is False
+    assert legacy.get("thread") is not True
+    assert not threads
+

@@ -629,6 +629,20 @@ def format_judge_ack_digest_diff_text(diff: Optional[Dict[str, Any]]) -> str:
                 parts.append(f"`{jti}` by *{actor}*")
             if parts:
                 bits.append("Mute export revokes: " + " · ".join(parts))
+        fanouts = (
+            diff.get("mute_export_revoke_fanouts") if isinstance(diff, dict) else None
+        )
+        if fanouts:
+            parts = []
+            for row in list(fanouts)[:5]:
+                if not isinstance(row, dict):
+                    continue
+                tid = str(row.get("tenant_id") or "").strip() or "?"
+                updated = row.get("updated")
+                failed = row.get("failed")
+                parts.append(f"`{tid}` upd=`{updated}` fail=`{failed}`")
+            if parts:
+                bits.append("Revoke canvas fan-out: " + " · ".join(parts))
         if bits:
             return base + "\n" + "\n".join(bits)
         return base
@@ -673,6 +687,18 @@ def format_judge_ack_digest_diff_text(diff: Optional[Dict[str, Any]]) -> str:
             parts.append(f"`{jti}` by *{actor}*")
         if parts:
             lines.append("Mute export revokes: " + " · ".join(parts))
+    fanouts = diff.get("mute_export_revoke_fanouts") or []
+    if fanouts:
+        parts = []
+        for row in list(fanouts)[:5]:
+            if not isinstance(row, dict):
+                continue
+            tid = str(row.get("tenant_id") or "").strip() or "?"
+            updated = row.get("updated")
+            failed = row.get("failed")
+            parts.append(f"`{tid}` upd=`{updated}` fail=`{failed}`")
+        if parts:
+            lines.append("Revoke canvas fan-out: " + " · ".join(parts))
     return "\n".join(lines)
 
 
@@ -708,6 +734,47 @@ def recent_mute_export_revokes(
                 "actor": row.get("actor"),
                 "ts": row.get("ts"),
                 "note": row.get("note"),
+            }
+        )
+    return out
+
+
+def recent_mute_export_revoke_fanouts(
+    *,
+    path: Optional[str] = None,
+    limit: int = 5,
+    since_hours: float = 168.0,
+) -> List[Dict[str, Any]]:
+    """Recent mute_export_revoke_fanout audit rows for digest-diff annotate."""
+    try:
+        hours = float(since_hours or 168.0)
+    except Exception:
+        hours = 168.0
+    since = None
+    try:
+        from datetime import datetime, timedelta, timezone
+
+        since = (datetime.now(timezone.utc) - timedelta(hours=max(0.0, hours))).isoformat()
+    except Exception:
+        since = None
+    rows = read_judge_ack_audit(
+        path=path,
+        event="mute_export_revoke_fanout",
+        since=since,
+        limit=max(1, int(limit or 5)),
+    )
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        out.append(
+            {
+                "tenant_id": row.get("tenant_id"),
+                "jti": row.get("jti"),
+                "updated": row.get("updated"),
+                "failed": row.get("failed"),
+                "actor": row.get("actor"),
+                "ts": row.get("ts"),
             }
         )
     return out
@@ -3241,6 +3308,16 @@ def handle_slack_mute_export_revoke(
                     bot_token=token,
                     exclude_message_ts=thread_ts,
                 )
+                fanout_audit = audit_mute_export_revoke_canvas_fanout(
+                    tenant_id=tid,
+                    jti=ref,
+                    actor=actor or "slack",
+                    fanout=fanout_sync,
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    bot_token=token or None,
+                )
+                fanout_sync = {**fanout_sync, "audit": fanout_audit}
             else:
                 message_update = {
                     "ok": False,
@@ -3303,6 +3380,71 @@ def post_mute_export_revoke_thread_reply(
         thread_ts=thread_ts,
         bot_token=bot_token,
     )
+
+
+def audit_mute_export_revoke_canvas_fanout(
+    *,
+    tenant_id: str,
+    jti: str = "",
+    actor: str = "slack",
+    fanout: Optional[Dict[str, Any]] = None,
+    channel_id: Optional[str] = None,
+    thread_ts: Optional[str] = None,
+    bot_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """JSONL + Slack thread audit after mute-export revoke canvas fan-out."""
+    flag = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_AUDIT", "1"
+    ).strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "fanout_audit_disabled"}
+    fo = fanout if isinstance(fanout, dict) else {}
+    updated = int(fo.get("updated") or 0)
+    failed = int(fo.get("failed") or 0)
+    skipped = bool(fo.get("skipped"))
+    refs = fo.get("updates") if isinstance(fo.get("updates"), list) else []
+    extra: Dict[str, Any] = {
+        "tenant_id": tenant_id,
+        "jti": jti,
+        "updated": updated,
+        "failed": failed,
+        "skipped": skipped,
+        "ref_count": len(refs),
+        "channel_id": channel_id,
+        "thread_ts": thread_ts,
+    }
+    record = append_judge_ack_audit(
+        "mute_export_revoke_fanout",
+        actor=actor or "slack",
+        source="mute_export",
+        extra=extra,
+    )
+    thread: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "no_thread"}
+    thread_flag = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_THREAD", "1"
+    ).strip().lower()
+    if thread_flag not in {"0", "false", "no", "off"} and channel_id and thread_ts:
+        text = (
+            f"Canvas fan-out after revoke · tenant=`{tenant_id}`"
+            f" · jti=`{jti or '—'}` · updated=`{updated}` · failed=`{failed}`"
+        )
+        if skipped:
+            text += f" · skipped=`{fo.get('reason') or 'true'}`"
+        thread = post_slack_thread_message(
+            text=text,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            bot_token=bot_token,
+        )
+    return {
+        "ok": "_write_error" not in record,
+        "skipped": False,
+        "event": "mute_export_revoke_fanout",
+        "updated": updated,
+        "failed": failed,
+        "audit": record,
+        "thread_reply": thread,
+    }
 
 
 def build_mute_export_revoke_modal_view(
@@ -3733,6 +3875,12 @@ def dispatch_judge_ack_digest(
             )
             if revokes:
                 diff["mute_export_revokes"] = revokes
+            fanouts = recent_mute_export_revoke_fanouts(
+                limit=5,
+                since_hours=float(summary.get("since_hours") or 168),
+            )
+            if fanouts:
+                diff["mute_export_revoke_fanouts"] = fanouts
         except Exception:
             pass
 

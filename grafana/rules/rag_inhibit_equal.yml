@@ -68,7 +68,8 @@ groups:
             Slack canary button + PagerDuty/Opsgenie details.runbook_url
             (INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL).
             Grafana folder "RAG Silence Burn" + Alertmanager
-            grafana_folder=rag-silence-burn / alertname route.
+            grafana_folder=rag-silence-burn / alertname exclusive folder
+            receiver policy (group_wait=15s, group_interval=2m, repeat=1h).
             python -m rag.cli alertmanager --list-silences
             python -m rag.cli alertmanager --check-config
             Check INHIBIT_EQUAL_CANARY_AUTO_SILENCE + Alertmanager silences API.

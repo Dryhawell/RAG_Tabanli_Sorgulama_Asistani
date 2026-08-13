@@ -12,15 +12,23 @@ route:
         - service = rag-judge
       receiver: judge-webhook
       continue: true
-    # Silence-burn folder route (before broad service=rag catch-all)
+    # Silence-burn folder receiver policy (exclusive; before service=rag)
+    - matchers:
+        - grafana_folder =~ "rag-silence-burn|RAG Silence Burn"
+      receiver: silence-burn-webhook
+      group_by: ["grafana_folder", "alertname"]
+      group_wait: 15s
+      group_interval: 2m
+      repeat_interval: 1h
+      continue: false
     - matchers:
         - alertname = RagInhibitEqualCanarySilenceBurn
       receiver: silence-burn-webhook
-      continue: true
-    - matchers:
-        - grafana_folder = rag-silence-burn
-      receiver: silence-burn-webhook
-      continue: true
+      group_by: ["grafana_folder", "alertname"]
+      group_wait: 15s
+      group_interval: 2m
+      repeat_interval: 1h
+      continue: false
     # Quarantine before broad ingest catch-up route
     - matchers:
         - alertname = RagDualWriteDlqQuarantineDepthHigh

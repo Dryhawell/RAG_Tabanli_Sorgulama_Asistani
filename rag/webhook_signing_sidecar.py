@@ -295,6 +295,44 @@ def sidecar_tls_dir() -> str:
     return "metadata/sidecar-tls"
 
 
+def sidecar_rotate_notify_thread_state_path() -> str:
+    explicit = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_STATE", ""
+    ).strip()
+    if explicit:
+        return explicit
+    return os.path.join("metadata", "sidecar_rotate_notify_thread.json")
+
+
+def load_sidecar_rotate_notify_thread_state(
+    path: Optional[str] = None,
+) -> Dict[str, Any]:
+    out = path or sidecar_rotate_notify_thread_state_path()
+    if not os.path.isfile(out):
+        return {}
+    try:
+        with open(out, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_sidecar_rotate_notify_thread_state(
+    state: Dict[str, Any],
+    path: Optional[str] = None,
+) -> str:
+    out = path or sidecar_rotate_notify_thread_state_path()
+    parent = os.path.dirname(out) or "."
+    os.makedirs(parent, exist_ok=True)
+    tmp = out + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, out)
+    return out
+
+
 def generate_sidecar_self_signed_pair(
     *,
     common_name: str = "webhook-signing-sidecar",
@@ -598,10 +636,61 @@ def maybe_notify_sidecar_cert_rotate(
                 },
             ],
         }
+    thread_flag = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD", "1"
+    ).strip().lower()
+    use_thread = use_digest and thread_flag not in {"0", "false", "no", "off"}
+    thread_ts = (
+        os.environ.get(
+            "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_TS", ""
+        ).strip()
+        or str(load_sidecar_rotate_notify_thread_state().get("thread_ts") or "").strip()
+    )
+    if use_thread and thread_ts:
+        payload["thread_ts"] = thread_ts
     try:
-        from rag.judge_alert import post_slack
+        from rag.judge_alert import post_slack, post_slack_thread_message
 
         ok = post_slack(webhook, payload)
+        thread_reply: Dict[str, Any] = {"ok": True, "skipped": True}
+        if use_thread:
+            channel_id = (
+                os.environ.get(
+                    "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_CHANNEL", ""
+                ).strip()
+                or os.environ.get("RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_CHANNEL", "").strip()
+                or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "").strip()
+            )
+            bot_token = os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
+            follow = (
+                f"Sidecar cert rotate digest thread · stamp=`{stamp or '—'}`"
+                f" · roles=`{len(rotated)}`"
+                " · quarantine HMAC — restart sidecar if live."
+            )
+            thread_reply = post_slack_thread_message(
+                text=follow,
+                channel_id=channel_id or None,
+                thread_ts=thread_ts or None,
+                bot_token=bot_token or None,
+            )
+            new_ts = str(
+                thread_reply.get("ts")
+                or thread_reply.get("thread_ts")
+                or thread_ts
+                or ""
+            ).strip()
+            if new_ts:
+                try:
+                    save_sidecar_rotate_notify_thread_state(
+                        {
+                            "thread_ts": new_ts,
+                            "channel_id": channel_id,
+                            "stamp": stamp,
+                            "roles": rotated,
+                        }
+                    )
+                except Exception:
+                    pass
         return {
             "ok": bool(ok),
             "skipped": False,
@@ -609,6 +698,9 @@ def maybe_notify_sidecar_cert_rotate(
             "roles": rotated,
             "stamp": stamp,
             "digest": bool(use_digest),
+            "thread": bool(use_thread),
+            "thread_ts": thread_ts or thread_reply.get("ts") or thread_reply.get("thread_ts"),
+            "thread_reply": thread_reply,
         }
     except Exception as exc:
         return {

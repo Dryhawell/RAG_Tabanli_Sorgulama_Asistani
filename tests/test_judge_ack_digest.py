@@ -119,14 +119,29 @@ def test_digest_diff_mute_export_revoke_annotation(tmp_path: Path, monkeypatch) 
         note="leak",
         extra={"jti": "jti-annotate-1", "filename": "mutes.csv"},
     )
+    append_judge_ack_audit(
+        "mute_export_revoke_fanout",
+        actor="ops",
+        path=path,
+        extra={
+            "tenant_id": "acme",
+            "jti": "jti-annotate-1",
+            "updated": 2,
+            "failed": 0,
+        },
+    )
     summary = summarize_judge_ack_audit(path=path, since_hours=24 * 365)
     result = dispatch_judge_ack_digest(summary, dry_run=True, base=str(tmp_path))
     assert result["diff"] is not None
     revokes = result["diff"].get("mute_export_revokes") or []
     assert any(r.get("jti") == "jti-annotate-1" for r in revokes)
+    fanouts = result["diff"].get("mute_export_revoke_fanouts") or []
+    assert any(r.get("tenant_id") == "acme" and r.get("updated") == 2 for r in fanouts)
     text = format_judge_ack_digest_diff_text(result["diff"])
     assert "Mute export revokes" in text
     assert "jti-annotate-1" in text
+    assert "Revoke canvas fan-out" in text
+    assert "acme" in text
 
 
 def test_digest_diff_snapshot_delta(tmp_path: Path, monkeypatch) -> None:
@@ -1426,6 +1441,13 @@ def test_mute_export_revoke_canvas_refresh(tmp_path: Path, monkeypatch) -> None:
     assert result.get("tenant_id") == "acme"
     assert result.get("message_update", {}).get("ok") is True
     assert result.get("fanout_sync", {}).get("ok") is True
+    audit = (result.get("fanout_sync") or {}).get("audit") or {}
+    assert audit.get("ok") is True
+    assert audit.get("event") == "mute_export_revoke_fanout"
+    assert audit.get("skipped") is not True
+    lines = (tmp_path / "ack.jsonl").read_text(encoding="utf-8").splitlines()
+    events = [__import__("json").loads(ln).get("event") for ln in lines if ln.strip()]
+    assert "mute_export_revoke_fanout" in events
     assert fetched.called
     assert refreshed.called
     assert synced.called
