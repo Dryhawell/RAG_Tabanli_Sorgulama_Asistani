@@ -319,6 +319,114 @@ def resolve_sidecar_rotate_notify_channel(
     )
 
 
+def parse_sidecar_rotate_notify_broadcast_channels(raw: str) -> List[str]:
+    """JSON list or comma/semicolon-separated Slack channel ids."""
+    text = (raw or "").strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            data = json.loads(text)
+            if isinstance(data, list):
+                return [str(x).strip() for x in data if str(x).strip()]
+        except Exception:
+            pass
+    out: List[str] = []
+    for part in text.replace(";", ",").split(","):
+        ch = part.strip()
+        if ch:
+            out.append(ch)
+    return out
+
+
+def resolve_sidecar_rotate_notify_broadcast_channels(
+    stored: Optional[Dict[str, Any]] = None,
+    *,
+    primary: Optional[str] = None,
+) -> List[str]:
+    """Extra Slack channels for rotate digest thread reply broadcast.
+
+    Env ``RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_BROADCAST_CHANNELS``
+    (JSON list or comma-separated) plus persisted ``broadcast_channels``.
+    Primary rotate channel is skipped so the thread reply is not doubled.
+    """
+    st = stored if isinstance(stored, dict) else {}
+    flag = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_BROADCAST", "1"
+    ).strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return []
+    env_chs = parse_sidecar_rotate_notify_broadcast_channels(
+        os.environ.get(
+            "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_BROADCAST_CHANNELS",
+            "",
+        )
+    )
+    stored_raw = st.get("broadcast_channels")
+    stored_chs: List[str] = []
+    if isinstance(stored_raw, list):
+        stored_chs = [str(x).strip() for x in stored_raw if str(x).strip()]
+    elif isinstance(stored_raw, str):
+        stored_chs = parse_sidecar_rotate_notify_broadcast_channels(stored_raw)
+    seen = set()
+    skip = {(primary or "").strip()}
+    ordered: List[str] = []
+    for ch in env_chs + stored_chs:
+        if not ch or ch in skip or ch in seen:
+            continue
+        seen.add(ch)
+        ordered.append(ch)
+    return ordered
+
+
+def broadcast_sidecar_rotate_notify_thread_reply(
+    *,
+    text: str,
+    channels: Optional[List[str]] = None,
+    bot_token: Optional[str] = None,
+    stored: Optional[Dict[str, Any]] = None,
+    primary: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Post rotate digest thread reply copy to extra Slack channels."""
+    flag = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_BROADCAST", "1"
+    ).strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "broadcast_disabled"}
+    chans = list(channels or []) or resolve_sidecar_rotate_notify_broadcast_channels(
+        stored, primary=primary
+    )
+    if not chans:
+        return {"ok": True, "skipped": True, "reason": "no_broadcast_channels"}
+    from rag.judge_alert import post_slack_thread_message
+
+    results: List[Dict[str, Any]] = []
+    posted = 0
+    failed = 0
+    for ch in chans:
+        reply = post_slack_thread_message(
+            text=text,
+            channel_id=ch,
+            thread_ts=None,
+            bot_token=bot_token,
+            bind_thread=False,
+        )
+        ok = bool(reply.get("ok")) and not reply.get("skipped")
+        if ok:
+            posted += 1
+        else:
+            failed += 1
+        results.append({"channel_id": ch, "ok": ok, "reply": reply})
+    return {
+        "ok": failed == 0,
+        "skipped": False,
+        "posted": posted,
+        "failed": failed,
+        "channels": chans,
+        "results": results,
+    }
+
+
 def load_sidecar_rotate_notify_thread_state(
     path: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -355,6 +463,7 @@ def persist_sidecar_rotate_notify_thread_state(
     roles: Optional[List[Any]] = None,
     parent_ts: Optional[str] = None,
     reply_ts: Optional[str] = None,
+    broadcast_channels: Optional[List[str]] = None,
     path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Keep parent thread_ts stable and append rotate history (capped)."""
@@ -388,6 +497,11 @@ def persist_sidecar_rotate_notify_thread_state(
     history = [h for h in history if isinstance(h, dict)]
     history.append(entry)
     history = history[-keep:]
+    bcast = [str(c).strip() for c in (broadcast_channels or []) if str(c).strip()]
+    if not bcast:
+        prev_b = prev.get("broadcast_channels")
+        if isinstance(prev_b, list):
+            bcast = [str(c).strip() for c in prev_b if str(c).strip()]
     state = {
         "thread_ts": parent,
         "parent_ts": parent,
@@ -398,6 +512,7 @@ def persist_sidecar_rotate_notify_thread_state(
         "updated_at": entry["at"],
         "history": history,
         "history_keep": keep,
+        "broadcast_channels": bcast,
     }
     out = save_sidecar_rotate_notify_thread_state(state, path=path)
     return {"ok": True, "skipped": False, "path": out, "state": state}
@@ -732,6 +847,7 @@ def maybe_notify_sidecar_cert_rotate(
         ok = post_slack(webhook, payload)
         thread_reply: Dict[str, Any] = {"ok": True, "skipped": True}
         persist: Dict[str, Any] = {"ok": True, "skipped": True}
+        broadcast: Dict[str, Any] = {"ok": True, "skipped": True}
         if use_thread:
             bot_token = os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
             follow = (
@@ -760,6 +876,23 @@ def maybe_notify_sidecar_cert_rotate(
             ).strip()
             if not parent_ts and reply_ts:
                 parent_ts = reply_ts
+            bcast_channels = resolve_sidecar_rotate_notify_broadcast_channels(
+                stored, primary=channel_id
+            )
+            try:
+                broadcast = broadcast_sidecar_rotate_notify_thread_reply(
+                    text=follow,
+                    channels=bcast_channels,
+                    bot_token=bot_token or None,
+                    stored=stored,
+                    primary=channel_id,
+                )
+            except Exception as exc:
+                broadcast = {
+                    "ok": False,
+                    "skipped": False,
+                    "error": type(exc).__name__,
+                }
             try:
                 persist = persist_sidecar_rotate_notify_thread_state(
                     channel_id=channel_id or None,
@@ -767,6 +900,7 @@ def maybe_notify_sidecar_cert_rotate(
                     roles=rotated,
                     parent_ts=parent_ts or None,
                     reply_ts=reply_ts or None,
+                    broadcast_channels=bcast_channels or None,
                 )
             except Exception as exc:
                 persist = {
@@ -788,6 +922,7 @@ def maybe_notify_sidecar_cert_rotate(
             or thread_reply.get("thread_ts")
             or thread_reply.get("ts"),
             "thread_reply": thread_reply,
+            "broadcast": broadcast,
             "persist": persist,
         }
     except Exception as exc:

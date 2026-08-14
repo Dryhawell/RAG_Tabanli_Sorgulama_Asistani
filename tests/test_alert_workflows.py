@@ -440,19 +440,19 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_mute_fanout_grafana_rotate_channel_active_intervals():
+def test_readme_sonraki_adaylar_after_mute_fanout_grafana_panel_rotate_broadcast_silence_inhibit():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
     sonraki = text.split("## Sonraki adaylar")[1].split("##")[0]
-    assert "mute export revoke fan-out Grafana annotation panel" in sonraki
-    assert "sidecar rotate notify digest thread reply broadcast" in sonraki
-    assert "silence burn folder inhibition by mute window" in sonraki
+    assert "mute export revoke fan-out Grafana annotation link" in sonraki
+    assert "sidecar rotate notify digest thread reply ack" in sonraki
+    assert "silence burn folder inhibition equal grafana_folder" in sonraki
     # Completed this round — should not remain as next candidates
-    assert "mute export revoke fan-out audit Grafana annotate" not in sonraki
-    assert "digest thread channel" not in sonraki
-    assert "folder active time intervals" not in sonraki
+    assert "mute export revoke fan-out Grafana annotation panel" not in sonraki
+    assert "digest thread reply broadcast" not in sonraki
+    assert "inhibition by mute window" not in sonraki
     assert "webhook-signing-sidecar" in text
     assert "--export-mute-snapshots" in text
     assert "--upload-mute-snapshots" in text
@@ -483,6 +483,14 @@ def test_readme_sonraki_adaylar_after_mute_fanout_grafana_rotate_channel_active_
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA" in text
     assert "post_grafana_annotation" in text
     assert "mute-export-revoke-fanout" in text
+    assert "Mute export revoke fan-out annotations" in text
+    assert "_GRAFANA_PANEL" in text
+    assert "annolist" in text
+    assert "broadcast_sidecar_rotate_notify_thread_reply" in text
+    assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_BROADCAST" in text
+    assert "_BROADCAST_CHANNELS" in text
+    assert "mute-window inhibit" in text
+    assert "equal grafana_folder" in text or "equal `grafana_folder`" in text
     assert "--prune-mute-export-revoke-fanouts" in text
     assert "RAG_JUDGE_ACK_RATE_LIMIT_SEC" in text
     assert "judge_ack_digest_export_mute_snapshots" in text
@@ -719,6 +727,8 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "group_wait=15s" in rules
     assert "mute_time_intervals=silence-burn-quiet" in rules
     assert "active_time_intervals=silence-burn-business" in rules
+    assert "mute-window inhibit" in rules
+    assert "equal grafana_folder" in rules
     alerting = Path("grafana/alerting/rag_inhibit_equal_canary.yaml").read_text(
         encoding="utf-8"
     )
@@ -739,6 +749,8 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "continue=false" in alerting
     assert "mute_time_intervals=silence-burn-quiet" in alerting
     assert "active_time_intervals=silence-burn-business" in alerting
+    assert "mute-window inhibit" in alerting
+    assert "equal grafana_folder" in alerting
     contact = Path("grafana/provisioning/alerting/rag_judge_contact.yaml").read_text(
         encoding="utf-8"
     )
@@ -754,6 +766,8 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "silence-burn-business" in contact
     assert "mute_time_intervals:" in contact
     assert "active_time_intervals:" in contact
+    assert "mute-window inhibit" in contact
+    assert "equal grafana_folder" in contact
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
     assert "webhook-signing-sidecar" in compose
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM" in compose
@@ -770,6 +784,9 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "silence-burn-business" in am
     assert "active_time_intervals:" in am
     assert "time_intervals:" in am
+    assert "mute-window inhibit" in am
+    assert 'grafana_folder =~ "rag-silence-burn|RAG Silence Burn"' in am
+    assert "equal: [\"grafana_folder\"]" in am
     tmpl = Path("grafana/alertmanager.yml.template").read_text(encoding="utf-8")
     assert "signing sidecar" in tmpl
     assert "silence-burn-slack" in tmpl
@@ -780,10 +797,15 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "silence-burn-business" in tmpl
     assert "mute_time_intervals:" in tmpl
     assert "active_time_intervals:" in tmpl
+    assert "mute-window inhibit" in tmpl
+    assert 'equal: ["grafana_folder"]' in tmpl
     dash = Path("grafana/dashboards/rag_judge.json").read_text(encoding="utf-8")
     assert "Silence burn" in dash
     assert "opsgenie.com/alert/list" in dash
     assert "rag:inhibit_equal_canary_silence_fail_ratio:1h > 0.2" in dash
+    assert "Mute export revoke fan-out annotations" in dash
+    assert '"type": "annolist"' in dash
+    assert '"id": 27' in dash
 
 
 def test_webhook_signing_sidecar_grafana_alert_artifacts():

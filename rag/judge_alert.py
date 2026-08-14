@@ -3572,6 +3572,7 @@ def audit_mute_export_revoke_canvas_fanout(
                 "fanout",
                 f"tenant:{tenant_id}" if tenant_id else "",
             ],
+            panel_id=mute_export_revoke_fanout_grafana_panel_id(),
         )
     except Exception as exc:
         grafana = {"ok": False, "skipped": False, "error": type(exc).__name__}
@@ -5918,6 +5919,7 @@ def post_slack_thread_message(
     channel_id: Optional[str] = None,
     thread_ts: Optional[str] = None,
     bot_token: Optional[str] = None,
+    bind_thread: bool = True,
 ) -> Dict[str, Any]:
     """Genel chat.postMessage (opsiyonel thread_ts + parent resolve)."""
     token = (
@@ -5929,10 +5931,9 @@ def post_slack_thread_message(
         (channel_id or "").strip()
         or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "").strip()
     )
-    ts = (
-        (thread_ts or "").strip()
-        or os.environ.get("RAG_JUDGE_SLACK_THREAD_TS", "").strip()
-    )
+    ts = (thread_ts or "").strip()
+    if not ts and bind_thread:
+        ts = os.environ.get("RAG_JUDGE_SLACK_THREAD_TS", "").strip()
     if not token:
         return {"ok": False, "error": "bot_token_missing", "skipped": True}
     lookup: Optional[Dict[str, Any]] = None
@@ -6064,6 +6065,17 @@ def post_slack(webhook: str, payload: Dict[str, Any]) -> bool:
         return False
 
 
+def mute_export_revoke_fanout_grafana_panel_id() -> int:
+    """Dashboard annolist panel for mute-export-revoke-fanout annotations."""
+    raw = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_PANEL", "27"
+    ).strip()
+    try:
+        return int(raw or 27)
+    except Exception:
+        return 27
+
+
 def grafana_annotation_url(*, base: Optional[str] = None) -> str:
     root = (
         (base or "").strip()
@@ -6107,15 +6119,17 @@ def post_grafana_annotation(
         ).strip()
         or "rag-judge-soft-fail"
     )
+    resolved_panel = panel_id
+    if resolved_panel is None:
+        resolved_panel = mute_export_revoke_fanout_grafana_panel_id()
     body: Dict[str, Any] = {
         "dashboardUID": uid,
         "time": now_ms,
         "timeEnd": now_ms,
         "tags": [t for t in (tags or []) if t],
         "text": (text or "")[:4000],
+        "panelId": int(resolved_panel),
     }
-    if panel_id is not None:
-        body["panelId"] = int(panel_id)
     try:
         import requests
 
@@ -6140,6 +6154,7 @@ def post_grafana_annotation(
             "status": r.status_code,
             "id": (data or {}).get("id") if isinstance(data, dict) else None,
             "dashboard_uid": uid,
+            "panel_id": int(resolved_panel),
             "response": data,
         }
     except Exception as exc:

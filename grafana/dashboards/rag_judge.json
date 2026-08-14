@@ -831,8 +831,32 @@
           "refId": "A"
         }
       ]
-    }
-  ],
+    },
+      {
+        "type": "annolist",
+        "title": "Mute export revoke fan-out annotations",
+        "description": "Native Grafana annotations tagged mute-export-revoke-fanout (panel id 27)",
+        "gridPos": {
+          "h": 7,
+          "w": 24,
+          "x": 0,
+          "y": 93
+        },
+        "id": 27,
+        "options": {
+          "limit": 10,
+          "navigateAfter": "1h",
+          "navigateBefore": "1h",
+          "navigateToPanel": true,
+          "onlyFromThisDashboard": true,
+          "onlyInRange": true,
+          "showTags": true,
+          "showTime": true,
+          "showUser": true,
+          "tags": ["mute-export-revoke-fanout"]
+        }
+      }
+    ],
   "schemaVersion": 39,
   "tags": [
     "ack-audit",
@@ -850,6 +874,7 @@
     "rag",
     "shadow",
     "sidecar",
+    "fanout",
     "soft-fail",
     "tempo"
   ],

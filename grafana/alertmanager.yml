@@ -98,6 +98,14 @@ inhibit_rules:
     target_matchers:
       - severity = warning
     equal: ["alertname", "service"]
+  # Silence-burn folder mute-window inhibition: when the burn alert is
+  # firing, suppress sibling alerts in the same grafana_folder. Complements
+  # mute_time_intervals silence-burn-quiet (notifications muted) with AM inhibit.
+  - source_matchers:
+      - alertname = RagInhibitEqualCanarySilenceBurn
+    target_matchers:
+      - grafana_folder =~ "rag-silence-burn|RAG Silence Burn"
+    equal: ["grafana_folder"]
 
 time_intervals:
   - name: silence-burn-quiet

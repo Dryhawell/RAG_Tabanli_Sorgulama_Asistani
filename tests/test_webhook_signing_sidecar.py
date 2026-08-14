@@ -705,3 +705,76 @@ def test_resolve_sidecar_rotate_notify_channel(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_CHANNEL", "C-rot")
     assert resolve_sidecar_rotate_notify_channel(stored) == "C-rot"
 
+
+def test_sidecar_rotate_notify_thread_reply_broadcast(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from rag.webhook_signing_sidecar import (
+        maybe_notify_sidecar_cert_rotate,
+        parse_sidecar_rotate_notify_broadcast_channels,
+        resolve_sidecar_rotate_notify_broadcast_channels,
+    )
+
+    assert parse_sidecar_rotate_notify_broadcast_channels("C-ops, C-sec") == [
+        "C-ops",
+        "C-sec",
+    ]
+    assert parse_sidecar_rotate_notify_broadcast_channels('["C-json"]') == ["C-json"]
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_BROADCAST_CHANNELS",
+        "C-ops,C-rot",
+    )
+    chans = resolve_sidecar_rotate_notify_broadcast_channels({}, primary="C-rot")
+    assert chans == ["C-ops"]
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_BROADCAST", "0"
+    )
+    assert resolve_sidecar_rotate_notify_broadcast_channels({}, primary="C-rot") == []
+
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_BROADCAST", "1"
+    )
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK",
+        "https://hooks.slack.test/rotate-notify",
+    )
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-rotate")
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_CHANNEL", "C-rot")
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_TS", "99.1")
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_STATE",
+        str(tmp_path / "rotate_thread.json"),
+    )
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_DIGEST", "1")
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD", "1")
+    threads: list = []
+
+    def _fake_slack(url, payload):
+        return True
+
+    def _fake_thread(**kwargs):
+        threads.append(kwargs)
+        return {"ok": True, "ts": "99.2", "thread_ts": kwargs.get("thread_ts")}
+
+    monkeypatch.setattr("rag.judge_alert.post_slack", _fake_slack)
+    monkeypatch.setattr("rag.judge_alert.post_slack_thread_message", _fake_thread)
+    notified = maybe_notify_sidecar_cert_rotate(
+        {
+            "ok": True,
+            "rotated": ["server"],
+            "stamp": "20990101T000000Z",
+            "after": {"min_days_left": 60.0, "server": {"days_left": 60.0}},
+        },
+        force=True,
+    )
+    assert notified.get("ok") is True
+    bcast = notified.get("broadcast") or {}
+    assert bcast.get("skipped") is not True
+    assert bcast.get("posted") == 1
+    assert bcast.get("channels") == ["C-ops"]
+    assert any(t.get("channel_id") == "C-ops" for t in threads)
+    assert any(t.get("channel_id") == "C-rot" for t in threads)
+    assert any(t.get("thread_ts") is None for t in threads)
+    state = json.loads((tmp_path / "rotate_thread.json").read_text(encoding="utf-8"))
+    assert state.get("broadcast_channels") == ["C-ops"]
+

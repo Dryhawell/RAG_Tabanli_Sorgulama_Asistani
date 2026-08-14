@@ -4,6 +4,10 @@
 # via grafana_folder matcher (see grafana/alerting/rag_inhibit_equal_canary.yaml).
 apiVersion: 1
 
+# Silence-burn mute-window inhibition (Alertmanager inhibit_rules):
+# source alertname=RagInhibitEqualCanarySilenceBurn →
+# target grafana_folder=rag-silence-burn|RAG Silence Burn, equal grafana_folder.
+# Complements muteTimes silence-burn-quiet.
 muteTimes:
   - orgId: 1
     name: silence-burn-quiet

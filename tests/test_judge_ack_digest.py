@@ -1460,6 +1460,7 @@ def test_mute_export_revoke_canvas_refresh(tmp_path: Path, monkeypatch) -> None:
     assert gann.called
     tags = gann.call_args.kwargs.get("tags") or []
     assert "mute-export-revoke-fanout" in tags
+    assert gann.call_args.kwargs.get("panel_id") == 27
     assert fetched.called
     assert refreshed.called
     assert synced.called
@@ -1816,10 +1817,12 @@ def test_post_grafana_annotation_skip_and_post(monkeypatch) -> None:
         )
     assert out.get("ok") is True
     assert out.get("id") == 7
+    assert out.get("panel_id") == 27
     assert posted.called
     assert posted.call_args.args[0].endswith("/api/annotations")
     body = posted.call_args.kwargs.get("json") or {}
     assert body.get("dashboardUID") == "rag-judge-soft-fail"
+    assert body.get("panelId") == 27
     assert "mute-export-revoke-fanout" in (body.get("tags") or [])
 
 

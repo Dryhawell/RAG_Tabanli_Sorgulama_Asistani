@@ -41,6 +41,16 @@ def test_rag_judge_grafana_dashboard_json():
     assert any("sidecar" in (t or "").lower() for t in titles)
     assert any("silence burn" in (t or "").lower() for t in titles)
     assert any("cert expiry" in (t or "").lower() for t in titles)
+    assert any("fan-out annotations" in (t or "").lower() for t in titles)
+    types = [p.get("type") for p in data.get("panels") or []]
+    assert "annolist" in types
+    fanout_panel = next(
+        p for p in (data.get("panels") or []) if p.get("id") == 27
+    )
+    assert fanout_panel.get("type") == "annolist"
+    assert "mute-export-revoke-fanout" in (fanout_panel.get("options") or {}).get(
+        "tags", []
+    )
     ann = (data.get("annotations") or {}).get("list") or []
     names = [a.get("name") for a in ann if isinstance(a, dict)]
     assert any("Mute export revoke fan-out" in str(n) for n in names)
@@ -53,3 +63,4 @@ def test_rag_judge_grafana_dashboard_json():
     assert "msgref" in (data.get("tags") or [])
     assert "mute" in (data.get("tags") or [])
     assert "sidecar" in (data.get("tags") or [])
+    assert "fanout" in (data.get("tags") or [])
