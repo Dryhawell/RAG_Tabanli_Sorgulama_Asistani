@@ -11,7 +11,7 @@ import os
 import secrets
 import ssl
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
@@ -629,12 +629,14 @@ def format_sidecar_rotate_notify_thread_ack_history(
 def prune_sidecar_rotate_notify_thread_ack_history(
     *,
     keep: Optional[int] = None,
+    ttl_days: Optional[float] = None,
     path: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Trim persisted ack_history to keep (ACK_KEEP)."""
+    """Trim persisted ack_history to keep (ACK_KEEP) and drop TTL-expired entries."""
     prev = load_sidecar_rotate_notify_thread_state(path=path)
     history = prev.get("ack_history") if isinstance(prev.get("ack_history"), list) else []
     history = [h for h in history if isinstance(h, dict)]
+    before = len(history)
     keep_raw = (
         keep
         if keep is not None
@@ -646,17 +648,54 @@ def prune_sidecar_rotate_notify_thread_ack_history(
         n = max(1, int(keep_raw or 20))
     except Exception:
         n = 20
+    ttl_raw = (
+        ttl_days
+        if ttl_days is not None
+        else os.environ.get(
+            "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_TTL_DAYS",
+            "14",
+        )
+    )
+    try:
+        ttl = float(ttl_raw if ttl_raw is not None else 0)
+    except Exception:
+        ttl = 14.0
+    expired = 0
+    if ttl > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=ttl)
+        kept: List[Dict[str, Any]] = []
+        for item in history:
+            at = str(item.get("at") or "").strip()
+            if not at:
+                kept.append(item)
+                continue
+            try:
+                dt = datetime.fromisoformat(at.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                kept.append(item)
+                continue
+            if dt >= cutoff:
+                kept.append(item)
+            else:
+                expired += 1
+        history = kept
     trimmed = history[-n:]
     state = dict(prev)
     state["ack_history"] = trimmed
     state["ack_keep"] = n
+    if ttl > 0:
+        state["ack_ttl_days"] = ttl
     out = save_sidecar_rotate_notify_thread_state(state, path=path)
     return {
         "ok": True,
         "skipped": False,
-        "before": len(history),
+        "before": before,
         "after": len(trimmed),
         "keep": n,
+        "expired": expired,
+        "ttl_days": ttl if ttl > 0 else None,
         "path": out,
         "state": state,
     }
@@ -1092,6 +1131,7 @@ def maybe_notify_sidecar_cert_rotate(
         persist: Dict[str, Any] = {"ok": True, "skipped": True}
         broadcast: Dict[str, Any] = {"ok": True, "skipped": True}
         ack: Dict[str, Any] = {"ok": True, "skipped": True}
+        ack_prune: Dict[str, Any] = {"ok": True, "skipped": True}
         if use_thread:
             bot_token = os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
             follow = (
@@ -1169,6 +1209,19 @@ def maybe_notify_sidecar_cert_rotate(
                     "skipped": False,
                     "error": type(exc).__name__,
                 }
+            prune_flag = os.environ.get(
+                "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_PRUNE",
+                "1",
+            ).strip().lower()
+            if prune_flag not in {"0", "false", "no", "off"}:
+                try:
+                    ack_prune = prune_sidecar_rotate_notify_thread_ack_history()
+                except Exception as exc:
+                    ack_prune = {
+                        "ok": False,
+                        "skipped": False,
+                        "error": type(exc).__name__,
+                    }
         return {
             "ok": bool(ok),
             "skipped": False,
@@ -1186,8 +1239,11 @@ def maybe_notify_sidecar_cert_rotate(
             "broadcast": broadcast,
             "ack": ack,
             "ack_history": format_sidecar_rotate_notify_thread_ack_history(
-                persist.get("state") or stored
+                (ack_prune.get("state") if isinstance(ack_prune, dict) else None)
+                or persist.get("state")
+                or stored
             ),
+            "ack_prune": ack_prune,
             "persist": persist,
         }
     except Exception as exc:

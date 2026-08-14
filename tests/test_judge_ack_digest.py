@@ -1176,6 +1176,10 @@ def test_mute_export_retention_and_signed_url(tmp_path: Path, monkeypatch) -> No
         ["judge-ack-digest", "--prune-mute-export-revoke-fanouts", "--dry-run"]
     )
     assert fan_args.prune_mute_export_revoke_fanouts is True
+    gprune_args = build_parser().parse_args(
+        ["judge-ack-digest", "--prune-grafana-annotations", "--dry-run"]
+    )
+    assert gprune_args.prune_grafana_annotations is True
 
 
 def test_mute_export_revoke_block_kit_action(tmp_path: Path, monkeypatch) -> None:
@@ -1438,7 +1442,10 @@ def test_mute_export_revoke_canvas_refresh(tmp_path: Path, monkeypatch) -> None:
     ) as gann, patch(
         "rag.judge_alert.query_grafana_annotations",
         return_value={"ok": True, "skipped": False, "count": 3, "items": [{"id": 42}]},
-    ) as gquery:
+    ) as gquery, patch(
+        "rag.judge_alert.prune_grafana_annotations",
+        return_value={"ok": True, "skipped": False, "pruned": 2, "deleted": [1, 2]},
+    ) as gprune:
         result = handle_slack_mute_export_revoke(
             {
                 "actions": [
@@ -1469,7 +1476,9 @@ def test_mute_export_revoke_canvas_refresh(tmp_path: Path, monkeypatch) -> None:
     assert "viewPanel=27" in str(audit.get("grafana", {}).get("link") or "")
     assert "explore" in str(audit.get("grafana") or "")
     assert (audit.get("grafana") or {}).get("query", {}).get("count") == 3
+    assert (audit.get("grafana") or {}).get("prune", {}).get("pruned") == 2
     assert gquery.called
+    assert gprune.called
     assert gann.called
     tags = gann.call_args.kwargs.get("tags") or []
     assert "mute-export-revoke-fanout" in tags
@@ -1805,6 +1814,8 @@ def test_purge_mute_export_revoke_fanout_audit_retention(
     cli = Path("rag/cli.py").read_text(encoding="utf-8")
     assert "--prune-mute-export-revoke-fanouts" in cli
     assert "maybe_purge_mute_export_revoke_fanout_audit" in cli
+    assert "--prune-grafana-annotations" in cli
+    assert "prune_grafana_annotations" in cli
 
 
 def test_post_grafana_annotation_skip_and_post(monkeypatch) -> None:
@@ -1903,6 +1914,57 @@ def test_query_grafana_annotations_skip_and_get(monkeypatch) -> None:
     )
     disabled = query_grafana_annotations()
     assert disabled.get("reason") == "grafana_query_disabled"
+
+
+def test_prune_grafana_annotations_skip_and_delete(monkeypatch) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from rag.judge_alert import prune_grafana_annotations
+
+    monkeypatch.delenv("RAG_GRAFANA_API_KEY", raising=False)
+    monkeypatch.delenv("GRAFANA_API_KEY", raising=False)
+    skipped = prune_grafana_annotations()
+    assert skipped.get("skipped") is True
+    assert skipped.get("reason") == "grafana_api_key_missing"
+
+    monkeypatch.setenv("RAG_GRAFANA_API_KEY", "glsa_test")
+    monkeypatch.setenv("RAG_GRAFANA_URL", "http://grafana.test")
+    monkeypatch.setenv(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_PRUNE_DAYS", "7"
+    )
+    old_ms = int(__import__("time").time() * 1000) - 10 * 86_400_000
+    mock_get = MagicMock()
+    mock_get.status_code = 200
+    mock_get.json.return_value = [
+        {"id": 1, "time": old_ms, "tags": ["mute-export-revoke-fanout"]},
+        {"id": 9, "time": old_ms, "tags": ["mute-export-revoke-fanout"]},
+    ]
+    mock_del = MagicMock()
+    mock_del.status_code = 200
+    mock_del.json.return_value = {"message": "Annotation deleted"}
+    with patch("requests.get", return_value=mock_get), patch(
+        "requests.delete", return_value=mock_del
+    ) as deleted:
+        out = prune_grafana_annotations(keep_id=9, days=7)
+    assert out.get("ok") is True
+    assert out.get("pruned") == 1
+    assert 1 in (out.get("deleted") or [])
+    assert 9 not in (out.get("deleted") or [])
+    assert deleted.called
+    assert deleted.call_args.args[0].endswith("/api/annotations/1")
+    with patch("requests.get", return_value=mock_get), patch(
+        "requests.delete", return_value=mock_del
+    ) as deleted_dry:
+        dry = prune_grafana_annotations(keep_id=9, days=7, dry_run=True)
+    assert dry.get("dry_run") is True
+    assert dry.get("would_prune") == 1
+    assert dry.get("pruned") == 0
+    assert not deleted_dry.called
+    monkeypatch.setenv(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_PRUNE", "0"
+    )
+    disabled = prune_grafana_annotations()
+    assert disabled.get("reason") == "grafana_prune_disabled"
 
 
 def test_grafana_annotation_deep_link(monkeypatch) -> None:

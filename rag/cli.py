@@ -1302,6 +1302,18 @@ def cmd_webhook_signing_sidecar(args: argparse.Namespace) -> int:
     if getattr(args, "upstream_ca", None):
         os.environ["RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CA"] = str(args.upstream_ca)
 
+    if getattr(args, "prune_rotate_ack_history", False):
+        from rag.webhook_signing_sidecar import (
+            prune_sidecar_rotate_notify_thread_ack_history,
+        )
+
+        os.environ.setdefault(
+            "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_PRUNE", "1"
+        )
+        report = prune_sidecar_rotate_notify_thread_ack_history()
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("ok") else 1
+
     if getattr(args, "rotate_certs", False) or getattr(
         args, "rotate_certs_if_expiring", False
     ):
@@ -1643,6 +1655,20 @@ def cmd_judge_ack_digest(args: argparse.Namespace) -> int:
         report = maybe_purge_mute_export_revoke_fanout_audit(
             path=audit, dry_run=dry_run
         )
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("ok") else 1
+
+    if getattr(args, "prune_grafana_annotations", False) and not (
+        getattr(args, "export_mute_snapshots", False)
+        or getattr(args, "upload_mute_snapshots", False)
+        or getattr(args, "fan_out", False)
+    ):
+        from rag.judge_alert import prune_grafana_annotations
+
+        os.environ.setdefault(
+            "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_PRUNE", "1"
+        )
+        report = prune_grafana_annotations(dry_run=dry_run)
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0 if report.get("ok") else 1
 
@@ -2381,6 +2407,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="mute_export_revoke_fanout audit retention (days/keep)",
     )
     p_jdig.add_argument(
+        "--prune-grafana-annotations",
+        action="store_true",
+        help="DELETE old mute-export-revoke-fanout Grafana annotations",
+    )
+    p_jdig.add_argument(
         "--actor",
         default=None,
         help="Audit actor (--revoke-mute-export)",
@@ -2488,6 +2519,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--notify",
         action="store_true",
         help="Rotate sonrası Slack notify (RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY)",
+    )
+    p_wss.add_argument(
+        "--prune-rotate-ack-history",
+        action="store_true",
+        help="Prune rotate digest thread ack_history (keep + TTL)",
     )
     p_wss.set_defaults(func=cmd_webhook_signing_sidecar)
 

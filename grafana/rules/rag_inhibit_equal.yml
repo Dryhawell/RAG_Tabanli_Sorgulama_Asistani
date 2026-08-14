@@ -56,6 +56,7 @@ groups:
         labels:
           severity: critical
           service: rag
+          team: rag
           grafana_folder: rag-silence-burn
         annotations:
           summary: "Inhibit equal canary silence burn-rate"
@@ -74,8 +75,8 @@ groups:
             active_time_intervals=silence-burn-business,
             mute-window inhibit: source alertname=RagInhibitEqualCanarySilenceBurn
             → target grafana_folder=rag-silence-burn|RAG Silence Burn
-            equal grafana_folder; critical→warning equal grafana_folder
-            and equal alertname+service for grafana_folder=rag-silence-burn /
+            equal grafana_folder+service+team; critical→warning equal grafana_folder
+            and equal alertname+service+team for grafana_folder=rag-silence-burn /
             grafana_folder="RAG Silence Burn" and folder regex match).
             python -m rag.cli alertmanager --list-silences
             python -m rag.cli alertmanager --check-config

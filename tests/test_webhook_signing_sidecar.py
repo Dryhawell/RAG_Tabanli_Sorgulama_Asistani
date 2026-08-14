@@ -388,6 +388,10 @@ def test_sidecar_cert_expiry_inspect(tmp_path: Path, monkeypatch) -> None:
         ["webhook-signing-sidecar", "--rotate-certs", "--notify"]
     )
     assert notify_args.notify is True
+    prune_ack_args = _bp().parse_args(
+        ["webhook-signing-sidecar", "--prune-rotate-ack-history"]
+    )
+    assert prune_ack_args.prune_rotate_ack_history is True
 
     monkeypatch.setenv(
         "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK",
@@ -876,6 +880,8 @@ def test_sidecar_rotate_notify_thread_reply_ack(tmp_path: Path, monkeypatch) -> 
     assert state.get("ack_name") == "ack"
     assert len(state.get("ack_history") or []) == 1
     assert "acks=`1`" in str(notified.get("ack_history") or "")
+    assert notified.get("ack_prune", {}).get("ok") is True
+    assert notified.get("ack_prune", {}).get("skipped") is not True
 
 
 def test_sidecar_rotate_notify_thread_ack_history(tmp_path: Path, monkeypatch) -> None:
@@ -923,4 +929,28 @@ def test_sidecar_rotate_notify_thread_ack_history(tmp_path: Path, monkeypatch) -
     assert list_sidecar_rotate_notify_thread_ack_history(path=path)[-1].get(
         "timestamp"
     ) == "3.3"
+    from datetime import datetime, timedelta, timezone
+
+    old_at = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    fresh_at = datetime.now(timezone.utc).isoformat()
+    persist_sidecar_rotate_notify_thread_ack(
+        channel_id="C-rot", timestamp="4.4", name="ack", path=path
+    )
+    persist_sidecar_rotate_notify_thread_ack(
+        channel_id="C-rot", timestamp="5.5", name="ack", path=path
+    )
+    state = json.loads(Path(path).read_text(encoding="utf-8"))
+    hist = state.get("ack_history") or []
+    if hist:
+        hist[0]["at"] = old_at
+        hist[-1]["at"] = fresh_at
+    Path(path).write_text(json.dumps(state), encoding="utf-8")
+    ttl = prune_sidecar_rotate_notify_thread_ack_history(
+        keep=20, ttl_days=14, path=path
+    )
+    assert ttl.get("ok") is True
+    assert ttl.get("expired") >= 1
+    left = list_sidecar_rotate_notify_thread_ack_history(path=path)
+    assert all(h.get("timestamp") != "4.4" or h.get("at") == fresh_at for h in left)
+    assert any(h.get("timestamp") == "5.5" for h in left)
 

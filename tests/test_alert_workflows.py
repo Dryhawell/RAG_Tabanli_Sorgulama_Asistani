@@ -440,19 +440,19 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_mute_fanout_grafana_query_rotate_ack_history_equal_service():
+def test_readme_sonraki_adaylar_after_mute_fanout_grafana_prune_rotate_ack_prune_equal_team():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
     sonraki = text.split("## Sonraki adaylar")[1].split("##")[0]
-    assert "mute export revoke fan-out Grafana annotation prune" in sonraki
-    assert "sidecar rotate notify digest thread reply ack prune" in sonraki
-    assert "silence burn folder inhibition equal team" in sonraki
+    assert "mute export revoke fan-out Grafana annotation patch" in sonraki
+    assert "sidecar rotate notify digest thread reply ack TTL sweep" in sonraki
+    assert "silence burn folder inhibition equal severity" in sonraki
     # Completed this round — should not remain as next candidates
-    assert "mute export revoke fan-out Grafana annotation query" not in sonraki
-    assert "thread reply ack history" not in sonraki
-    assert "inhibition equal service" not in sonraki
+    assert "mute export revoke fan-out Grafana annotation prune" not in sonraki
+    assert "thread reply ack prune" not in sonraki
+    assert "inhibition equal team" not in sonraki
     assert "webhook-signing-sidecar" in text
     assert "--export-mute-snapshots" in text
     assert "--upload-mute-snapshots" in text
@@ -492,11 +492,20 @@ def test_readme_sonraki_adaylar_after_mute_fanout_grafana_query_rotate_ack_histo
     assert "query_grafana_annotations" in text
     assert "GRAFANA_QUERY" in text
     assert "_QUERY_LIMIT" in text
+    assert "prune_grafana_annotations" in text
+    assert "GRAFANA_PRUNE" in text
+    assert "_PRUNE_DAYS" in text
+    assert "--prune-grafana-annotations" in text
+    assert "pruned=" in text or "pruned=`" in text
     assert "list_sidecar_rotate_notify_thread_ack_history" in text
     assert "format_sidecar_rotate_notify_thread_ack_history" in text
     assert "prune_sidecar_rotate_notify_thread_ack_history" in text
     assert "ACK_HISTORY" in text
     assert "last_ack=" in text or "last_ack=`" in text
+    assert "--prune-rotate-ack-history" in text
+    assert "ACK_PRUNE" in text
+    assert "ACK_TTL_DAYS" in text
+    assert "equal team" in text
     assert "equal alertname+service" in text
     assert "GRAFANA_EXPLORE" in text
     assert "persist_sidecar_rotate_notify_thread_ack" in text
@@ -749,6 +758,7 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL" in rules
     assert "Opsgenie" in rules or "details.runbook_url" in rules
     assert "grafana_folder: rag-silence-burn" in rules
+    assert "team: rag" in rules
     assert "RAG Silence Burn" in rules
     assert "group_wait=15s" in rules
     assert "mute_time_intervals=silence-burn-quiet" in rules
@@ -758,6 +768,7 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "critical→warning equal grafana_folder" in rules
     assert "equal alertname" in rules
     assert "equal alertname+service" in rules
+    assert "equal team" in rules or "alertname+service+team" in rules
     alerting = Path("grafana/alerting/rag_inhibit_equal_canary.yaml").read_text(
         encoding="utf-8"
     )
@@ -783,6 +794,7 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "critical→warning equal grafana_folder" in alerting
     assert "equal alertname" in alerting
     assert "equal alertname+service" in alerting
+    assert "equal team" in alerting or "alertname+service+team" in alerting
     contact = Path("grafana/provisioning/alerting/rag_judge_contact.yaml").read_text(
         encoding="utf-8"
     )
@@ -803,6 +815,7 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "critical→warning" in contact
     assert "equal alertname" in contact
     assert "equal service" in contact
+    assert "equal team" in contact
     assert 'grafana_folder=rag-silence-burn' in contact or "grafana_folder=rag-silence-burn" in contact
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
     assert "webhook-signing-sidecar" in compose
@@ -822,10 +835,10 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "time_intervals:" in am
     assert "mute-window inhibit" in am
     assert 'grafana_folder =~ "rag-silence-burn|RAG Silence Burn"' in am
-    assert "equal: [\"grafana_folder\"]" in am or 'equal: ["grafana_folder", "service"]' in am
-    assert 'equal: ["grafana_folder", "service"]' in am
-    assert 'equal: ["grafana_folder", "alertname", "service"]' in am
-    assert 'equal: ["alertname", "service"]' in am
+    assert "equal: [\"grafana_folder\"]" in am or 'equal: ["grafana_folder", "service", "team"]' in am
+    assert 'equal: ["grafana_folder", "service", "team"]' in am
+    assert 'equal: ["grafana_folder", "alertname", "service", "team"]' in am
+    assert 'equal: ["alertname", "service", "team"]' in am
     assert "grafana_folder = rag-silence-burn" in am
     assert "severity = warning" in am
     assert 'grafana_folder = "RAG Silence Burn"' in am
@@ -840,9 +853,9 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "mute_time_intervals:" in tmpl
     assert "active_time_intervals:" in tmpl
     assert "mute-window inhibit" in tmpl
-    assert 'equal: ["grafana_folder", "service"]' in tmpl
-    assert 'equal: ["grafana_folder", "alertname", "service"]' in tmpl
-    assert 'equal: ["alertname", "service"]' in tmpl
+    assert 'equal: ["grafana_folder", "service", "team"]' in tmpl
+    assert 'equal: ["grafana_folder", "alertname", "service", "team"]' in tmpl
+    assert 'equal: ["alertname", "service", "team"]' in tmpl
     assert "grafana_folder = rag-silence-burn" in tmpl
     assert "severity = warning" in tmpl
     assert 'grafana_folder = "RAG Silence Burn"' in tmpl

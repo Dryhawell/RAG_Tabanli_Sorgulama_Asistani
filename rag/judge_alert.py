@@ -3570,6 +3570,17 @@ def audit_mute_export_revoke_canvas_fanout(
     except Exception as exc:
         queried = {"ok": False, "skipped": False, "error": type(exc).__name__}
     grafana["query"] = queried
+    pruned: Dict[str, Any] = {"ok": True, "skipped": True}
+    try:
+        pruned = prune_grafana_annotations(
+            tags=["mute-export-revoke-fanout"],
+            dashboard_uid=str(grafana.get("dashboard_uid") or "") or None,
+            panel_id=grafana.get("panel_id"),
+            keep_id=grafana.get("id"),
+        )
+    except Exception as exc:
+        pruned = {"ok": False, "skipped": False, "error": type(exc).__name__}
+    grafana["prune"] = pruned
     grafana_link = str(grafana.get("link") or "").strip()
     grafana_explore = str(grafana.get("explore") or "").strip()
     extra["grafana_annotation_id"] = grafana.get("id")
@@ -3577,6 +3588,7 @@ def audit_mute_export_revoke_canvas_fanout(
     extra["grafana_annotation_url"] = grafana_link or None
     extra["grafana_explore_url"] = grafana_explore or None
     extra["grafana_query_n"] = queried.get("count")
+    extra["grafana_pruned"] = pruned.get("pruned")
     thread_flag = os.environ.get(
         "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_THREAD", "1"
     ).strip().lower()
@@ -3593,6 +3605,8 @@ def audit_mute_export_revoke_canvas_fanout(
             text += f" · explore={grafana_explore}"
         if queried.get("count") is not None and not queried.get("skipped"):
             text += f" · annotations=`{queried.get('count')}`"
+        if pruned.get("pruned") is not None and not pruned.get("skipped"):
+            text += f" · pruned=`{pruned.get('pruned')}`"
         thread = post_slack_thread_message(
             text=text,
             channel_id=channel_id,
@@ -6306,6 +6320,180 @@ def query_grafana_annotations(
             "error": type(exc).__name__,
             "detail": str(exc)[:300],
         }
+
+
+def delete_grafana_annotation(
+    annotation_id: Any,
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """DELETE Grafana native annotation by id."""
+    key = grafana_api_key(api_key=api_key)
+    if not key:
+        return {"ok": True, "skipped": True, "reason": "grafana_api_key_missing"}
+    try:
+        ann_id = int(annotation_id)
+    except Exception:
+        return {"ok": False, "skipped": False, "reason": "annotation_id_invalid"}
+    url = grafana_annotation_url(base=base_url).rstrip("/") + f"/{ann_id}"
+    try:
+        import requests
+
+        r = requests.delete(
+            url,
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=10,
+        )
+        ok = r.status_code < 400
+        data: Any = {}
+        try:
+            data = r.json()
+        except Exception:
+            data = {"text": (r.text or "")[:300]}
+        return {
+            "ok": bool(ok),
+            "skipped": False,
+            "status": r.status_code,
+            "id": ann_id,
+            "response": data if isinstance(data, dict) else {},
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "skipped": False,
+            "id": ann_id,
+            "error": type(exc).__name__,
+            "detail": str(exc)[:300],
+        }
+
+
+def prune_grafana_annotations(
+    *,
+    tags: Optional[List[str]] = None,
+    dashboard_uid: Optional[str] = None,
+    panel_id: Optional[int] = None,
+    days: Optional[float] = None,
+    keep_id: Optional[Any] = None,
+    limit: Optional[int] = None,
+    dry_run: bool = False,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """DELETE mute-export-revoke-fanout Grafana annotations older than PRUNE_DAYS."""
+    flag = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_PRUNE", "1"
+    ).strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "grafana_prune_disabled"}
+    key = grafana_api_key(api_key=api_key)
+    if not key:
+        return {"ok": True, "skipped": True, "reason": "grafana_api_key_missing"}
+    try:
+        retain = float(
+            days
+            if days is not None
+            else os.environ.get(
+                "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_PRUNE_DAYS",
+                "7",
+            )
+            or 7
+        )
+    except Exception:
+        retain = 7.0
+    retain = max(0.0, retain)
+    try:
+        cap = int(
+            limit
+            if limit is not None
+            else os.environ.get(
+                "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_PRUNE_LIMIT",
+                "50",
+            )
+            or 50
+        )
+    except Exception:
+        cap = 50
+    cap = max(1, min(cap, 100))
+    now_ms = int(time.time() * 1000)
+    cutoff_ms = now_ms - int(retain * 86_400_000)
+    lookback_ms = max(int(retain * 86_400_000 * 4), 90 * 86_400_000)
+    queried = query_grafana_annotations(
+        tags=tags or ["mute-export-revoke-fanout"],
+        dashboard_uid=dashboard_uid,
+        panel_id=panel_id,
+        from_ms=now_ms - lookback_ms,
+        to_ms=cutoff_ms,
+        limit=cap,
+        base_url=base_url,
+        api_key=key,
+    )
+    if queried.get("skipped"):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": queried.get("reason") or "grafana_query_skipped",
+            "query": queried,
+        }
+    if not queried.get("ok"):
+        return {
+            "ok": False,
+            "skipped": False,
+            "error": queried.get("error") or "grafana_query_failed",
+            "query": queried,
+            "pruned": 0,
+        }
+    keep = None
+    try:
+        if keep_id is not None and str(keep_id).strip() != "":
+            keep = int(keep_id)
+    except Exception:
+        keep = None
+    candidates: List[Any] = []
+    for item in queried.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            aid = int(item.get("id"))
+        except Exception:
+            continue
+        if keep is not None and aid == keep:
+            continue
+        t_ms = item.get("time")
+        try:
+            t_ms = int(t_ms) if t_ms is not None else None
+        except Exception:
+            t_ms = None
+        if t_ms is not None and t_ms >= cutoff_ms:
+            continue
+        candidates.append(aid)
+        if len(candidates) >= cap:
+            break
+    deleted: List[Any] = []
+    failed: List[Any] = []
+    if not dry_run:
+        for aid in candidates:
+            out = delete_grafana_annotation(
+                aid, base_url=base_url, api_key=key
+            )
+            if out.get("ok") and not out.get("skipped"):
+                deleted.append(aid)
+            else:
+                failed.append({"id": aid, "error": out.get("reason") or out.get("error")})
+    return {
+        "ok": True,
+        "skipped": False,
+        "dry_run": bool(dry_run),
+        "pruned": len(deleted) if not dry_run else 0,
+        "would_prune": len(candidates) if dry_run else len(deleted),
+        "candidates": candidates,
+        "deleted": deleted,
+        "failed": failed,
+        "days": retain,
+        "cutoff_ms": cutoff_ms,
+        "keep_id": keep,
+        "query": {"ok": queried.get("ok"), "count": queried.get("count")},
+    }
 
 
 def post_grafana_annotation(
