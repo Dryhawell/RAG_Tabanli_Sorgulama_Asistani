@@ -1,0 +1,86 @@
+groups:
+  - name: rag_inhibit_equal
+    interval: 30s
+    rules:
+      - alert: RagInhibitEqualCanaryResolveFail
+        expr: increase(rag_inhibit_equal_canary_resolve_total{result="fail"}[1h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: rag
+        annotations:
+          summary: "Inhibit equal canary resolve failed"
+          description: >
+            Canary resolve fail count {{ $value | humanize }} in the last 1h
+            (via={{ $labels.via }}).
+            Dashboard: rag-judge (Inhibit equal canary resolve panel).
+            CI: scripts/ci_inhibit_equal_apply.py close-on-green / thread resolve.
+          dashboard_uid: rag-judge
+          panel_id: "18"
+      - alert: RagInhibitEqualCanaryResolveFailBurst
+        expr: sum(increase(rag_inhibit_equal_canary_resolve_total{result="fail"}[6h])) >= 3
+        for: 10m
+        labels:
+          severity: critical
+          service: rag
+        annotations:
+          summary: "Inhibit equal canary resolve fail burst"
+          description: >
+            ≥3 canary resolve failures in 6h (value={{ $value | humanize }}).
+            Check Slack thread / webhook close path and CI inhibit-equal canary.
+          dashboard_uid: rag-judge
+          panel_id: "18"
+      # Silence burn-rate: fail ratio over short (1h) + long (6h) windows
+      - record: rag:inhibit_equal_canary_silence_fail_ratio:1h
+        expr: |
+          sum(increase(rag_inhibit_equal_canary_silence_total{result="fail"}[1h]))
+          /
+          clamp_min(sum(increase(rag_inhibit_equal_canary_silence_total[1h])), 1)
+      - record: rag:inhibit_equal_canary_silence_fail_ratio:6h
+        expr: |
+          sum(increase(rag_inhibit_equal_canary_silence_total{result="fail"}[6h]))
+          /
+          clamp_min(sum(increase(rag_inhibit_equal_canary_silence_total[6h])), 1)
+      - alert: RagInhibitEqualCanarySilenceBurn
+        expr: |
+          (
+            rag:inhibit_equal_canary_silence_fail_ratio:1h > 0.2
+            and sum(increase(rag_inhibit_equal_canary_silence_total[1h])) >= 3
+          )
+          or
+          (
+            rag:inhibit_equal_canary_silence_fail_ratio:6h > 0.1
+            and sum(increase(rag_inhibit_equal_canary_silence_total[6h])) >= 5
+          )
+        for: 10m
+        labels:
+          severity: critical
+          service: rag
+          grafana_folder: rag-silence-burn
+        annotations:
+          summary: "Inhibit equal canary silence burn-rate"
+          description: >
+            Silence fail ratio elevated (1h or 6h window).
+            Dashboard: rag-judge (Inhibit equal canary silence panel).
+            Runbook: /ops/silence-burn (amtool: /ops/amtool).
+            Opsgenie deep-link: app.opsgenie.com/alert/list?query=alias:"rag-judge-soft-fail/inhibit-equal-canary"
+            (INHIBIT_EQUAL_CANARY_OPSGENIE_ALERT_URL / opsgenie_alert_deep_link).
+            Slack canary button + PagerDuty/Opsgenie details.runbook_url
+            (INHIBIT_EQUAL_CANARY_PD_RUNBOOK_URL).
+            Grafana folder "RAG Silence Burn" + Alertmanager
+            grafana_folder=rag-silence-burn / alertname exclusive folder
+            receiver policy (group_wait=15s, group_interval=2m, repeat=1h,
+            mute_time_intervals=silence-burn-quiet,
+            active_time_intervals=silence-burn-business,
+            mute-window inhibit: source alertname=RagInhibitEqualCanarySilenceBurn
+            → target grafana_folder=rag-silence-burn|RAG Silence Burn
+            equal grafana_folder; critical→warning equal grafana_folder
+            and equal alertname for grafana_folder=rag-silence-burn /
+            grafana_folder="RAG Silence Burn" and folder regex match).
+            python -m rag.cli alertmanager --list-silences
+            python -m rag.cli alertmanager --check-config
+            Check INHIBIT_EQUAL_CANARY_AUTO_SILENCE + Alertmanager silences API.
+          runbook_url: /ops/silence-burn
+          opsgenie_url: https://app.opsgenie.com/alert/list?query=alias%3A%22rag-judge-soft-fail%2Finhibit-equal-canary%22
+          dashboard_uid: rag-judge
+          panel_id: "25"
