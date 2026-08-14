@@ -605,6 +605,10 @@ def test_sidecar_cert_rotate_notify_digest_thread(tmp_path: Path, monkeypatch) -
 
     monkeypatch.setattr("rag.judge_alert.post_slack", _fake_slack)
     monkeypatch.setattr("rag.judge_alert.post_slack_thread_message", _fake_thread)
+    monkeypatch.setattr(
+        "rag.judge_alert.slack_api",
+        lambda method, **kwargs: {"ok": True, "method": method},
+    )
     notified = maybe_notify_sidecar_cert_rotate(
         {
             "ok": True,
@@ -758,6 +762,10 @@ def test_sidecar_rotate_notify_thread_reply_broadcast(
 
     monkeypatch.setattr("rag.judge_alert.post_slack", _fake_slack)
     monkeypatch.setattr("rag.judge_alert.post_slack_thread_message", _fake_thread)
+    monkeypatch.setattr(
+        "rag.judge_alert.slack_api",
+        lambda method, **kwargs: {"ok": True, "method": method},
+    )
     notified = maybe_notify_sidecar_cert_rotate(
         {
             "ok": True,
@@ -777,4 +785,74 @@ def test_sidecar_rotate_notify_thread_reply_broadcast(
     assert any(t.get("thread_ts") is None for t in threads)
     state = json.loads((tmp_path / "rotate_thread.json").read_text(encoding="utf-8"))
     assert state.get("broadcast_channels") == ["C-ops"]
+
+
+def test_sidecar_rotate_notify_thread_reply_ack(tmp_path: Path, monkeypatch) -> None:
+    from rag.webhook_signing_sidecar import (
+        ack_sidecar_rotate_notify_thread_reply,
+        maybe_notify_sidecar_cert_rotate,
+    )
+
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK", "0")
+    skipped = ack_sidecar_rotate_notify_thread_reply(
+        channel_id="C-rot", timestamp="99.2", bot_token="xoxb"
+    )
+    assert skipped.get("skipped") is True
+    assert skipped.get("reason") == "ack_disabled"
+
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK", "1")
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_EMOJI", "ack"
+    )
+    calls: list = []
+
+    def _fake_api(method, **kwargs):
+        calls.append((method, kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr("rag.judge_alert.slack_api", _fake_api)
+    acked = ack_sidecar_rotate_notify_thread_reply(
+        channel_id="C-rot", timestamp="99.2", bot_token="xoxb-rotate"
+    )
+    assert acked.get("ok") is True
+    assert acked.get("skipped") is not True
+    assert acked.get("name") == "ack"
+    assert calls and calls[0][0] == "reactions.add"
+    body = (calls[0][1].get("json_body") or {})
+    assert body.get("channel") == "C-rot"
+    assert body.get("timestamp") == "99.2"
+    assert body.get("name") == "ack"
+
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK",
+        "https://hooks.slack.test/rotate-notify",
+    )
+    monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-rotate")
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_CHANNEL", "C-rot")
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_TS", "99.1")
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_STATE",
+        str(tmp_path / "rotate_thread.json"),
+    )
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_DIGEST", "1")
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD", "1")
+    monkeypatch.setattr("rag.judge_alert.post_slack", lambda url, payload: True)
+    monkeypatch.setattr(
+        "rag.judge_alert.post_slack_thread_message",
+        lambda **kwargs: {"ok": True, "ts": "99.2", "thread_ts": "99.1"},
+    )
+    notified = maybe_notify_sidecar_cert_rotate(
+        {
+            "ok": True,
+            "rotated": ["server"],
+            "stamp": "20990101T000000Z",
+            "after": {"min_days_left": 60.0, "server": {"days_left": 60.0}},
+        },
+        force=True,
+    )
+    assert notified.get("ack", {}).get("ok") is True
+    assert notified.get("ack", {}).get("name") == "ack"
+    state = json.loads((tmp_path / "rotate_thread.json").read_text(encoding="utf-8"))
+    assert state.get("last_ack_ts") == "99.2"
+    assert state.get("ack_name") == "ack"
 

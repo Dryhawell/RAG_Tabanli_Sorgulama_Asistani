@@ -119,6 +119,22 @@ inhibit_rules:
     target_matchers:
       - grafana_folder =~ "rag-silence-burn|RAG Silence Burn"
     equal: ["grafana_folder"]
+  # Silence-burn folder: critical inhibits warning when grafana_folder is equal
+  # (canonical slug + Grafana display-name label spellings).
+  - source_matchers:
+      - grafana_folder = rag-silence-burn
+      - severity = critical
+    target_matchers:
+      - grafana_folder = rag-silence-burn
+      - severity = warning
+    equal: ["grafana_folder"]
+  - source_matchers:
+      - grafana_folder = "RAG Silence Burn"
+      - severity = critical
+    target_matchers:
+      - grafana_folder = "RAG Silence Burn"
+      - severity = warning
+    equal: ["grafana_folder"]
 
 time_intervals:
   - name: silence-burn-quiet

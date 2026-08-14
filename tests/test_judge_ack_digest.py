@@ -1428,7 +1428,12 @@ def test_mute_export_revoke_canvas_refresh(tmp_path: Path, monkeypatch) -> None:
         "rag.judge_alert.slack_api", return_value={"ok": True}
     ), patch(
         "rag.judge_alert.post_grafana_annotation",
-        return_value={"ok": True, "skipped": False, "id": 42},
+        return_value={
+            "ok": True,
+            "skipped": False,
+            "id": 42,
+            "link": "http://grafana.test/d/rag-judge-soft-fail/rag-judge-soft-fail?orgId=1&viewPanel=27&editAnnotation=42",
+        },
     ) as gann:
         result = handle_slack_mute_export_revoke(
             {
@@ -1457,6 +1462,7 @@ def test_mute_export_revoke_canvas_refresh(tmp_path: Path, monkeypatch) -> None:
     events = [__import__("json").loads(ln).get("event") for ln in lines if ln.strip()]
     assert "mute_export_revoke_fanout" in events
     assert audit.get("grafana", {}).get("id") == 42
+    assert "viewPanel=27" in str(audit.get("grafana", {}).get("link") or "")
     assert gann.called
     tags = gann.call_args.kwargs.get("tags") or []
     assert "mute-export-revoke-fanout" in tags
@@ -1824,6 +1830,35 @@ def test_post_grafana_annotation_skip_and_post(monkeypatch) -> None:
     assert body.get("dashboardUID") == "rag-judge-soft-fail"
     assert body.get("panelId") == 27
     assert "mute-export-revoke-fanout" in (body.get("tags") or [])
+    assert out.get("link")
+    assert "/d/rag-judge-soft-fail/" in str(out.get("link"))
+    assert "viewPanel=27" in str(out.get("link"))
+    assert "editAnnotation=7" in str(out.get("link"))
+
+
+def test_grafana_annotation_deep_link(monkeypatch) -> None:
+    from rag.judge_alert import grafana_annotation_deep_link
+
+    monkeypatch.delenv(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_LINK",
+        raising=False,
+    )
+    monkeypatch.setenv("RAG_GRAFANA_URL", "http://grafana.test")
+    link = grafana_annotation_deep_link(
+        dashboard_uid="rag-judge-soft-fail",
+        panel_id=27,
+        annotation_id=9,
+        time_ms=1_700_000_000_000,
+    )
+    assert link.startswith("http://grafana.test/d/rag-judge-soft-fail/")
+    assert "viewPanel=27" in link
+    assert "editAnnotation=9" in link
+    assert "orgId=1" in link
+    monkeypatch.setenv(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_LINK",
+        "https://g.example/anno",
+    )
+    assert grafana_annotation_deep_link() == "https://g.example/anno"
 
 
 def test_slack_files_upload_requires_token() -> None:

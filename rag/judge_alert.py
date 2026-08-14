@@ -3541,22 +3541,6 @@ def audit_mute_export_revoke_canvas_fanout(
         extra=extra,
     )
     thread: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "no_thread"}
-    thread_flag = os.environ.get(
-        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_THREAD", "1"
-    ).strip().lower()
-    if thread_flag not in {"0", "false", "no", "off"} and channel_id and thread_ts:
-        text = (
-            f"Canvas fan-out after revoke · tenant=`{tenant_id}`"
-            f" · jti=`{jti or '—'}` · updated=`{updated}` · failed=`{failed}`"
-        )
-        if skipped:
-            text += f" · skipped=`{fo.get('reason') or 'true'}`"
-        thread = post_slack_thread_message(
-            text=text,
-            channel_id=channel_id,
-            thread_ts=thread_ts,
-            bot_token=bot_token,
-        )
     grafana: Dict[str, Any] = {"ok": True, "skipped": True}
     try:
         grafana = post_grafana_annotation(
@@ -3576,8 +3560,28 @@ def audit_mute_export_revoke_canvas_fanout(
         )
     except Exception as exc:
         grafana = {"ok": False, "skipped": False, "error": type(exc).__name__}
+    grafana_link = str(grafana.get("link") or "").strip()
     extra["grafana_annotation_id"] = grafana.get("id")
     extra["grafana_ok"] = bool(grafana.get("ok")) and not grafana.get("skipped")
+    extra["grafana_annotation_url"] = grafana_link or None
+    thread_flag = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_THREAD", "1"
+    ).strip().lower()
+    if thread_flag not in {"0", "false", "no", "off"} and channel_id and thread_ts:
+        text = (
+            f"Canvas fan-out after revoke · tenant=`{tenant_id}`"
+            f" · jti=`{jti or '—'}` · updated=`{updated}` · failed=`{failed}`"
+        )
+        if skipped:
+            text += f" · skipped=`{fo.get('reason') or 'true'}`"
+        if grafana_link:
+            text += f" · grafana={grafana_link}"
+        thread = post_slack_thread_message(
+            text=text,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            bot_token=bot_token,
+        )
     return {
         "ok": "_write_error" not in record,
         "skipped": False,
@@ -6076,6 +6080,62 @@ def mute_export_revoke_fanout_grafana_panel_id() -> int:
         return 27
 
 
+def grafana_public_base_url(*, base: Optional[str] = None) -> str:
+    """Browser-facing Grafana origin (annotation / dashboard deep-links)."""
+    root = (
+        (base or "").strip()
+        or os.environ.get("RAG_GRAFANA_PUBLIC_URL", "").strip()
+        or os.environ.get("RAG_GRAFANA_URL", "").strip()
+        or os.environ.get("GRAFANA_URL", "").strip()
+        or "http://127.0.0.1:3000"
+    )
+    return root.rstrip("/")
+
+
+def grafana_annotation_deep_link(
+    *,
+    dashboard_uid: Optional[str] = None,
+    panel_id: Optional[int] = None,
+    annotation_id: Optional[Any] = None,
+    time_ms: Optional[int] = None,
+    slug: Optional[str] = None,
+    base: Optional[str] = None,
+) -> str:
+    """Dashboard deep-link for a mute-export-revoke-fanout annotation panel."""
+    explicit = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_LINK", ""
+    ).strip()
+    if explicit:
+        return explicit
+    uid = (
+        (dashboard_uid or "").strip()
+        or os.environ.get(
+            "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_DASHBOARD",
+            "rag-judge-soft-fail",
+        ).strip()
+        or "rag-judge-soft-fail"
+    )
+    dash_slug = (
+        (slug or "").strip()
+        or os.environ.get(
+            "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_SLUG",
+            uid,
+        ).strip()
+        or uid
+    )
+    panel = panel_id if panel_id is not None else mute_export_revoke_fanout_grafana_panel_id()
+    from urllib.parse import urlencode
+
+    query: Dict[str, Any] = {"orgId": 1, "viewPanel": int(panel)}
+    if time_ms is not None:
+        t = int(time_ms)
+        query["from"] = str(t - 3_600_000)
+        query["to"] = str(t + 3_600_000)
+    if annotation_id is not None and str(annotation_id).strip():
+        query["editAnnotation"] = str(annotation_id).strip()
+    return f"{grafana_public_base_url(base=base)}/d/{uid}/{dash_slug}?{urlencode(query)}"
+
+
 def grafana_annotation_url(*, base: Optional[str] = None) -> str:
     root = (
         (base or "").strip()
@@ -6148,13 +6208,22 @@ def post_grafana_annotation(
             data = r.json()
         except Exception:
             data = {"text": r.text[:300]}
+        ann_id = (data or {}).get("id") if isinstance(data, dict) else None
+        link = grafana_annotation_deep_link(
+            dashboard_uid=uid,
+            panel_id=int(resolved_panel),
+            annotation_id=ann_id,
+            time_ms=now_ms,
+            base=base_url,
+        )
         return {
             "ok": bool(ok),
             "skipped": False,
             "status": r.status_code,
-            "id": (data or {}).get("id") if isinstance(data, dict) else None,
+            "id": ann_id,
             "dashboard_uid": uid,
             "panel_id": int(resolved_panel),
+            "link": link,
             "response": data,
         }
     except Exception as exc:

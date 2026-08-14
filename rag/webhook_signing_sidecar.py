@@ -427,6 +427,58 @@ def broadcast_sidecar_rotate_notify_thread_reply(
     }
 
 
+def sidecar_rotate_notify_thread_ack_emoji() -> str:
+    raw = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_EMOJI",
+        "white_check_mark",
+    ).strip()
+    return raw.strip(":") or "white_check_mark"
+
+
+def ack_sidecar_rotate_notify_thread_reply(
+    *,
+    channel_id: Optional[str] = None,
+    timestamp: Optional[str] = None,
+    bot_token: Optional[str] = None,
+    name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Slack reactions.add on the rotate digest thread reply (ack)."""
+    flag = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK", "1"
+    ).strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "ack_disabled"}
+    ch = (channel_id or "").strip()
+    ts = (timestamp or "").strip()
+    if not ch or not ts:
+        return {"ok": True, "skipped": True, "reason": "ack_target_missing"}
+    token = (
+        (bot_token or "").strip()
+        or os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
+    )
+    if not token:
+        return {"ok": True, "skipped": True, "reason": "bot_token_missing"}
+    emoji = (name or "").strip().strip(":") or sidecar_rotate_notify_thread_ack_emoji()
+    from rag.judge_alert import slack_api
+
+    data = slack_api(
+        "reactions.add",
+        bot_token=token,
+        json_body={"channel": ch, "timestamp": ts, "name": emoji},
+    )
+    already = str(data.get("error") or "") == "already_reacted"
+    ok = bool(data.get("ok")) or already
+    return {
+        "ok": ok,
+        "skipped": False,
+        "channel_id": ch,
+        "timestamp": ts,
+        "name": emoji,
+        "already_reacted": already,
+        "response": data,
+    }
+
+
 def load_sidecar_rotate_notify_thread_state(
     path: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -464,6 +516,8 @@ def persist_sidecar_rotate_notify_thread_state(
     parent_ts: Optional[str] = None,
     reply_ts: Optional[str] = None,
     broadcast_channels: Optional[List[str]] = None,
+    last_ack_ts: Optional[str] = None,
+    ack_name: Optional[str] = None,
     path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Keep parent thread_ts stable and append rotate history (capped)."""
@@ -513,6 +567,8 @@ def persist_sidecar_rotate_notify_thread_state(
         "history": history,
         "history_keep": keep,
         "broadcast_channels": bcast,
+        "last_ack_ts": (last_ack_ts or "").strip() or prev.get("last_ack_ts") or "",
+        "ack_name": (ack_name or "").strip() or prev.get("ack_name") or "",
     }
     out = save_sidecar_rotate_notify_thread_state(state, path=path)
     return {"ok": True, "skipped": False, "path": out, "state": state}
@@ -848,6 +904,7 @@ def maybe_notify_sidecar_cert_rotate(
         thread_reply: Dict[str, Any] = {"ok": True, "skipped": True}
         persist: Dict[str, Any] = {"ok": True, "skipped": True}
         broadcast: Dict[str, Any] = {"ok": True, "skipped": True}
+        ack: Dict[str, Any] = {"ok": True, "skipped": True}
         if use_thread:
             bot_token = os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
             follow = (
@@ -894,6 +951,18 @@ def maybe_notify_sidecar_cert_rotate(
                     "error": type(exc).__name__,
                 }
             try:
+                ack = ack_sidecar_rotate_notify_thread_reply(
+                    channel_id=channel_id or None,
+                    timestamp=reply_ts or parent_ts or None,
+                    bot_token=bot_token or None,
+                )
+            except Exception as exc:
+                ack = {
+                    "ok": False,
+                    "skipped": False,
+                    "error": type(exc).__name__,
+                }
+            try:
                 persist = persist_sidecar_rotate_notify_thread_state(
                     channel_id=channel_id or None,
                     stamp=stamp,
@@ -901,6 +970,8 @@ def maybe_notify_sidecar_cert_rotate(
                     parent_ts=parent_ts or None,
                     reply_ts=reply_ts or None,
                     broadcast_channels=bcast_channels or None,
+                    last_ack_ts=str(ack.get("timestamp") or "") or None,
+                    ack_name=str(ack.get("name") or "") or None,
                 )
             except Exception as exc:
                 persist = {
@@ -923,6 +994,7 @@ def maybe_notify_sidecar_cert_rotate(
             or thread_reply.get("ts"),
             "thread_reply": thread_reply,
             "broadcast": broadcast,
+            "ack": ack,
             "persist": persist,
         }
     except Exception as exc:

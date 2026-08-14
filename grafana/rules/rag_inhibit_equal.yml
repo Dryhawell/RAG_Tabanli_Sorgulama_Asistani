@@ -74,7 +74,8 @@ groups:
             active_time_intervals=silence-burn-business,
             mute-window inhibit: source alertname=RagInhibitEqualCanarySilenceBurn
             → target grafana_folder=rag-silence-burn|RAG Silence Burn
-            equal grafana_folder).
+            equal grafana_folder; critical→warning equal grafana_folder
+            for grafana_folder=rag-silence-burn and grafana_folder="RAG Silence Burn").
             python -m rag.cli alertmanager --list-silences
             python -m rag.cli alertmanager --check-config
             Check INHIBIT_EQUAL_CANARY_AUTO_SILENCE + Alertmanager silences API.
