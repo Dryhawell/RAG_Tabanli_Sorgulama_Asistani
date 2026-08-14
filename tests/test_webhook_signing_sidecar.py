@@ -791,8 +791,13 @@ def test_sidecar_rotate_notify_thread_reply_ack(tmp_path: Path, monkeypatch) -> 
     from rag.webhook_signing_sidecar import (
         ack_sidecar_rotate_notify_thread_reply,
         maybe_notify_sidecar_cert_rotate,
+        persist_sidecar_rotate_notify_thread_ack,
     )
 
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_STATE",
+        str(tmp_path / "rotate_thread.json"),
+    )
     monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK", "0")
     skipped = ack_sidecar_rotate_notify_thread_reply(
         channel_id="C-rot", timestamp="99.2", bot_token="xoxb"
@@ -803,6 +808,9 @@ def test_sidecar_rotate_notify_thread_reply_ack(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK", "1")
     monkeypatch.setenv(
         "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_EMOJI", "ack"
+    )
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_PERSIST", "1"
     )
     calls: list = []
 
@@ -817,11 +825,26 @@ def test_sidecar_rotate_notify_thread_reply_ack(tmp_path: Path, monkeypatch) -> 
     assert acked.get("ok") is True
     assert acked.get("skipped") is not True
     assert acked.get("name") == "ack"
+    assert acked.get("persist", {}).get("ok") is True
     assert calls and calls[0][0] == "reactions.add"
     body = (calls[0][1].get("json_body") or {})
     assert body.get("channel") == "C-rot"
     assert body.get("timestamp") == "99.2"
     assert body.get("name") == "ack"
+    state = json.loads((tmp_path / "rotate_thread.json").read_text(encoding="utf-8"))
+    assert state.get("last_ack_ts") == "99.2"
+    assert len(state.get("ack_history") or []) == 1
+
+    again = ack_sidecar_rotate_notify_thread_reply(
+        channel_id="C-rot", timestamp="99.2", bot_token="xoxb-rotate"
+    )
+    assert again.get("reason") == "already_acked_persisted"
+    assert len(calls) == 1
+
+    persisted = persist_sidecar_rotate_notify_thread_ack(
+        channel_id="C-rot", timestamp="99.2", name="ack"
+    )
+    assert persisted.get("reason") == "ack_already_persisted"
 
     monkeypatch.setenv(
         "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_SLACK_WEBHOOK",
@@ -830,10 +853,6 @@ def test_sidecar_rotate_notify_thread_reply_ack(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("RAG_JUDGE_SLACK_BOT_TOKEN", "xoxb-rotate")
     monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_CHANNEL", "C-rot")
     monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_TS", "99.1")
-    monkeypatch.setenv(
-        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_STATE",
-        str(tmp_path / "rotate_thread.json"),
-    )
     monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_DIGEST", "1")
     monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD", "1")
     monkeypatch.setattr("rag.judge_alert.post_slack", lambda url, payload: True)
@@ -855,4 +874,5 @@ def test_sidecar_rotate_notify_thread_reply_ack(tmp_path: Path, monkeypatch) -> 
     state = json.loads((tmp_path / "rotate_thread.json").read_text(encoding="utf-8"))
     assert state.get("last_ack_ts") == "99.2"
     assert state.get("ack_name") == "ack"
+    assert len(state.get("ack_history") or []) == 1
 

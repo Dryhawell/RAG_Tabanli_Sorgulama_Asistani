@@ -1433,6 +1433,7 @@ def test_mute_export_revoke_canvas_refresh(tmp_path: Path, monkeypatch) -> None:
             "skipped": False,
             "id": 42,
             "link": "http://grafana.test/d/rag-judge-soft-fail/rag-judge-soft-fail?orgId=1&viewPanel=27&editAnnotation=42",
+            "explore": "http://grafana.test/explore?orgId=1&left=%7B%22queries%22%3A%5B%7B%22queryType%22%3A%22annotations%22%7D%5D%7D",
         },
     ) as gann:
         result = handle_slack_mute_export_revoke(
@@ -1463,6 +1464,7 @@ def test_mute_export_revoke_canvas_refresh(tmp_path: Path, monkeypatch) -> None:
     assert "mute_export_revoke_fanout" in events
     assert audit.get("grafana", {}).get("id") == 42
     assert "viewPanel=27" in str(audit.get("grafana", {}).get("link") or "")
+    assert "explore" in str(audit.get("grafana") or "")
     assert gann.called
     tags = gann.call_args.kwargs.get("tags") or []
     assert "mute-export-revoke-fanout" in tags
@@ -1834,6 +1836,34 @@ def test_post_grafana_annotation_skip_and_post(monkeypatch) -> None:
     assert "/d/rag-judge-soft-fail/" in str(out.get("link"))
     assert "viewPanel=27" in str(out.get("link"))
     assert "editAnnotation=7" in str(out.get("link"))
+    assert out.get("explore")
+    assert "/explore" in str(out.get("explore"))
+    assert "queryType" in str(out.get("explore"))
+    assert "annotations" in str(out.get("explore"))
+
+
+def test_grafana_annotation_explore_link(monkeypatch) -> None:
+    from rag.judge_alert import grafana_annotation_explore_link
+
+    monkeypatch.delenv(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_EXPLORE",
+        raising=False,
+    )
+    monkeypatch.setenv("RAG_GRAFANA_URL", "http://grafana.test")
+    link = grafana_annotation_explore_link(
+        tags=["mute-export-revoke-fanout", "tenant:acme"],
+        time_ms=1_700_000_000_000,
+    )
+    assert link.startswith("http://grafana.test/explore?")
+    assert "orgId=1" in link
+    assert "left=" in link
+    assert "annotations" in link
+    assert "mute-export-revoke-fanout" in link
+    monkeypatch.setenv(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_EXPLORE",
+        "https://g.example/explore",
+    )
+    assert grafana_annotation_explore_link() == "https://g.example/explore"
 
 
 def test_grafana_annotation_deep_link(monkeypatch) -> None:

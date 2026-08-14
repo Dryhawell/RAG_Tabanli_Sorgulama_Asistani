@@ -3561,9 +3561,11 @@ def audit_mute_export_revoke_canvas_fanout(
     except Exception as exc:
         grafana = {"ok": False, "skipped": False, "error": type(exc).__name__}
     grafana_link = str(grafana.get("link") or "").strip()
+    grafana_explore = str(grafana.get("explore") or "").strip()
     extra["grafana_annotation_id"] = grafana.get("id")
     extra["grafana_ok"] = bool(grafana.get("ok")) and not grafana.get("skipped")
     extra["grafana_annotation_url"] = grafana_link or None
+    extra["grafana_explore_url"] = grafana_explore or None
     thread_flag = os.environ.get(
         "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_THREAD", "1"
     ).strip().lower()
@@ -3576,6 +3578,8 @@ def audit_mute_export_revoke_canvas_fanout(
             text += f" · skipped=`{fo.get('reason') or 'true'}`"
         if grafana_link:
             text += f" · grafana={grafana_link}"
+        if grafana_explore:
+            text += f" · explore={grafana_explore}"
         thread = post_slack_thread_message(
             text=text,
             channel_id=channel_id,
@@ -6136,6 +6140,54 @@ def grafana_annotation_deep_link(
     return f"{grafana_public_base_url(base=base)}/d/{uid}/{dash_slug}?{urlencode(query)}"
 
 
+def grafana_annotation_explore_link(
+    *,
+    tags: Optional[List[str]] = None,
+    time_ms: Optional[int] = None,
+    datasource: Optional[str] = None,
+    base: Optional[str] = None,
+) -> str:
+    """Grafana Explore URL for mute-export-revoke-fanout native annotations."""
+    explicit = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_EXPLORE", ""
+    ).strip()
+    if explicit:
+        return explicit
+    from urllib.parse import quote
+
+    tag_list = [t for t in (tags or []) if t] or ["mute-export-revoke-fanout"]
+    ds = (
+        (datasource or "").strip()
+        or os.environ.get(
+            "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_EXPLORE_DS",
+            "-- Grafana --",
+        ).strip()
+        or "-- Grafana --"
+    )
+    if time_ms is not None:
+        t = int(time_ms)
+        rng = {"from": str(t - 3_600_000), "to": str(t + 3_600_000)}
+    else:
+        rng = {"from": "now-6h", "to": "now"}
+    left = {
+        "datasource": ds,
+        "queries": [
+            {
+                "refId": "A",
+                "datasource": {"type": "grafana", "uid": ds},
+                "queryType": "annotations",
+                "tags": tag_list,
+            }
+        ],
+        "range": rng,
+    }
+    payload = json.dumps(left, separators=(",", ":"), ensure_ascii=True)
+    return (
+        f"{grafana_public_base_url(base=base)}/explore"
+        f"?orgId=1&left={quote(payload)}"
+    )
+
+
 def grafana_annotation_url(*, base: Optional[str] = None) -> str:
     root = (
         (base or "").strip()
@@ -6216,6 +6268,11 @@ def post_grafana_annotation(
             time_ms=now_ms,
             base=base_url,
         )
+        explore = grafana_annotation_explore_link(
+            tags=[t for t in (tags or []) if t] or ["mute-export-revoke-fanout"],
+            time_ms=now_ms,
+            base=base_url,
+        )
         return {
             "ok": bool(ok),
             "skipped": False,
@@ -6224,6 +6281,7 @@ def post_grafana_annotation(
             "dashboard_uid": uid,
             "panel_id": int(resolved_panel),
             "link": link,
+            "explore": explore,
             "response": data,
         }
     except Exception as exc:

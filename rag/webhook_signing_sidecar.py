@@ -459,6 +459,19 @@ def ack_sidecar_rotate_notify_thread_reply(
     if not token:
         return {"ok": True, "skipped": True, "reason": "bot_token_missing"}
     emoji = (name or "").strip().strip(":") or sidecar_rotate_notify_thread_ack_emoji()
+    stored = load_sidecar_rotate_notify_thread_state()
+    if (
+        str(stored.get("last_ack_ts") or "").strip() == ts
+        and str(stored.get("ack_name") or "").strip() in {"", emoji}
+    ):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "already_acked_persisted",
+            "channel_id": ch,
+            "timestamp": ts,
+            "name": emoji,
+        }
     from rag.judge_alert import slack_api
 
     data = slack_api(
@@ -468,6 +481,16 @@ def ack_sidecar_rotate_notify_thread_reply(
     )
     already = str(data.get("error") or "") == "already_reacted"
     ok = bool(data.get("ok")) or already
+    persist: Dict[str, Any] = {"ok": True, "skipped": True}
+    if ok:
+        try:
+            persist = persist_sidecar_rotate_notify_thread_ack(
+                channel_id=ch,
+                timestamp=ts,
+                name=emoji,
+            )
+        except Exception as exc:
+            persist = {"ok": False, "skipped": False, "error": type(exc).__name__}
     return {
         "ok": ok,
         "skipped": False,
@@ -475,8 +498,71 @@ def ack_sidecar_rotate_notify_thread_reply(
         "timestamp": ts,
         "name": emoji,
         "already_reacted": already,
+        "persist": persist,
         "response": data,
     }
+
+
+def persist_sidecar_rotate_notify_thread_ack(
+    *,
+    channel_id: Optional[str] = None,
+    timestamp: Optional[str] = None,
+    name: Optional[str] = None,
+    path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Append capped ack history (idempotent on timestamp+name)."""
+    flag = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_PERSIST", "1"
+    ).strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "ack_persist_disabled"}
+    ts = (timestamp or "").strip()
+    if not ts:
+        return {"ok": True, "skipped": True, "reason": "ack_timestamp_missing"}
+    emoji = (name or "").strip().strip(":") or sidecar_rotate_notify_thread_ack_emoji()
+    prev = load_sidecar_rotate_notify_thread_state(path=path)
+    keep_raw = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_KEEP", "20"
+    ).strip()
+    try:
+        keep = max(1, int(keep_raw or 20))
+    except Exception:
+        keep = 20
+    history = prev.get("ack_history") if isinstance(prev.get("ack_history"), list) else []
+    history = [h for h in history if isinstance(h, dict)]
+    last = history[-1] if history else {}
+    if str(last.get("timestamp") or "") == ts and str(last.get("name") or "") == emoji:
+        state = dict(prev)
+        state["last_ack_ts"] = ts
+        state["ack_name"] = emoji
+        if channel_id:
+            state["channel_id"] = channel_id
+        out = save_sidecar_rotate_notify_thread_state(state, path=path)
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "ack_already_persisted",
+            "path": out,
+            "state": state,
+        }
+    entry = {
+        "timestamp": ts,
+        "name": emoji,
+        "channel_id": (channel_id or prev.get("channel_id") or ""),
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    history.append(entry)
+    history = history[-keep:]
+    state = dict(prev)
+    state["last_ack_ts"] = ts
+    state["ack_name"] = emoji
+    state["ack_history"] = history
+    state["ack_keep"] = keep
+    if channel_id:
+        state["channel_id"] = channel_id
+    state["updated_at"] = entry["at"]
+    out = save_sidecar_rotate_notify_thread_state(state, path=path)
+    return {"ok": True, "skipped": False, "path": out, "state": state}
 
 
 def load_sidecar_rotate_notify_thread_state(
@@ -569,6 +655,10 @@ def persist_sidecar_rotate_notify_thread_state(
         "broadcast_channels": bcast,
         "last_ack_ts": (last_ack_ts or "").strip() or prev.get("last_ack_ts") or "",
         "ack_name": (ack_name or "").strip() or prev.get("ack_name") or "",
+        "ack_history": (
+            prev.get("ack_history") if isinstance(prev.get("ack_history"), list) else []
+        ),
+        "ack_keep": prev.get("ack_keep") or 20,
     }
     out = save_sidecar_rotate_notify_thread_state(state, path=path)
     return {"ok": True, "skipped": False, "path": out, "state": state}
