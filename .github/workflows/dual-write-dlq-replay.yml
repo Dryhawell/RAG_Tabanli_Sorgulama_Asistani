@@ -1,0 +1,132 @@
+"""Dual-write Alertmanager webhook DLQ replay (cron + manuel)."""
+
+name: Dual-write DLQ Replay
+
+on:
+  schedule:
+    - cron: "15 */6 * * *"  # catch-up :30 ofseti
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Replay limiti"
+        required: false
+        default: "5"
+        type: string
+      dry_run:
+        description: "Replay etmeden plan"
+        required: false
+        default: false
+        type: boolean
+      force:
+        description: "Cooldown/circuit'i yok say"
+        required: false
+        default: true
+        type: boolean
+      replay_quarantine:
+        description: "Quarantine kayıtlarını da yeniden dene"
+        required: false
+        default: false
+        type: boolean
+      requeue:
+        description: "Quarantine fail → ana DLQ'ya geri koy"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Replay dual-write webhook DLQ
+        env:
+          RAG_ENABLE_METRICS: "1"
+          RAG_ENABLE_PROMETHEUS: "1"
+          RAG_DUAL_WRITE_WEBHOOK_DLQ: metadata/dual_write_webhook_dlq.jsonl
+          RAG_DUAL_WRITE_WEBHOOK_STATE: metadata/dual_write_webhook_state.json
+          RAG_DUAL_WRITE_WEBHOOK_DLQ_QUARANTINE: metadata/dual_write_webhook_dlq_quarantine.jsonl
+          RAG_DUAL_WRITE_DLQ_QUARANTINE_AFTER: ${{ vars.RAG_DUAL_WRITE_DLQ_QUARANTINE_AFTER || '3' }}
+          RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_RUN: ${{ vars.RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_RUN || '5' }}
+          RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_HOUR: ${{ vars.RAG_DUAL_WRITE_DLQ_REPLAY_MAX_PER_HOUR || '20' }}
+          RAG_DUAL_WRITE_DLQ_REPLAY_RUN_ID: ${{ github.run_id }}
+          RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_WEBHOOK: ${{ secrets.RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_WEBHOOK }}
+          RAG_DUAL_WRITE_DLQ_SLACK_WEBHOOK: ${{ secrets.RAG_DUAL_WRITE_DLQ_SLACK_WEBHOOK }}
+          RAG_DUAL_WRITE_DLQ_QUARANTINE_RETENTION_DAYS: ${{ vars.RAG_DUAL_WRITE_DLQ_QUARANTINE_RETENTION_DAYS || '7' }}
+          RAG_DUAL_WRITE_DLQ_QUARANTINE_ALERT_DEPTH: ${{ vars.RAG_DUAL_WRITE_DLQ_QUARANTINE_ALERT_DEPTH || '1' }}
+          RAG_DUAL_WRITE_DLQ_QUARANTINE_ALERT_AGE_DAYS: ${{ vars.RAG_DUAL_WRITE_DLQ_QUARANTINE_ALERT_AGE_DAYS || '2' }}
+          RAG_VECTOR_BACKEND: ${{ vars.RAG_VECTOR_BACKEND || 'faiss' }}
+          RAG_VECTOR_DUAL_WRITE: ${{ vars.RAG_VECTOR_DUAL_WRITE || secrets.RAG_VECTOR_DUAL_WRITE }}
+          RAG_QDRANT_URL: ${{ secrets.RAG_QDRANT_URL }}
+          RAG_QDRANT_API_KEY: ${{ secrets.RAG_QDRANT_API_KEY }}
+          RAG_QDRANT_COLLECTION: ${{ vars.RAG_QDRANT_COLLECTION || 'rag_chunks' }}
+        run: |
+          mkdir -p metadata indexes
+          LIMIT="${{ inputs.limit || '5' }}"
+          EXTRA="--replay --limit $LIMIT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            EXTRA="$EXTRA --dry-run"
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "false" ]; then
+            EXTRA="$EXTRA --no-force"
+          fi
+          # Age prune DLQ + quarantine before replay
+          python -m rag.cli dual-write-dlq --prune --no-quarantine-prune --days "${{ vars.RAG_DUAL_WRITE_DLQ_RETENTION_DAYS || '7' }}" --notify \
+            | tee metadata/dual_write_dlq_prune.json || true
+          python -m rag.cli dual-write-dlq --prune-quarantine --notify \
+            | tee metadata/dual_write_dlq_quarantine_prune.json || true
+          # shellcheck disable=SC2086
+          python -m rag.cli dual-write-dlq $EXTRA \
+            | tee metadata/dual_write_dlq_replay.json
+          # Quarantine auto-replay on cron (vars) or workflow_dispatch input
+          AUTO_Q="${{ vars.RAG_DUAL_WRITE_DLQ_QUARANTINE_AUTO_REPLAY || '1' }}"
+          DO_Q=false
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$AUTO_Q" = "1" ]; then
+            DO_Q=true
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.replay_quarantine }}" = "true" ]; then
+            DO_Q=true
+          fi
+          if [ "$DO_Q" = "true" ]; then
+            QEXTRA="--replay-quarantine --limit $LIMIT"
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+              QEXTRA="$QEXTRA --dry-run"
+            fi
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "false" ]; then
+              QEXTRA="$QEXTRA --no-force"
+            fi
+            AUTO_REQUEUE="${{ vars.RAG_DUAL_WRITE_DLQ_QUARANTINE_AUTO_REQUEUE || '0' }}"
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.requeue }}" = "true" ]; then
+              QEXTRA="$QEXTRA --requeue"
+            elif [ "${{ github.event_name }}" = "schedule" ] && [ "$AUTO_REQUEUE" = "1" ]; then
+              QEXTRA="$QEXTRA --requeue"
+            fi
+            # shellcheck disable=SC2086
+            python -m rag.cli dual-write-dlq $QEXTRA \
+              | tee metadata/dual_write_dlq_quarantine_replay.json || true
+          fi
+          python -m rag.cli dual-write-dlq --quarantine --limit 50 \
+            | tee metadata/dual_write_dlq_quarantine.json || true
+      - name: Upload DLQ replay report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dual-write-dlq-replay
+          path: |
+            metadata/dual_write_dlq_replay.json
+            metadata/dual_write_dlq_prune.json
+            metadata/dual_write_dlq_quarantine_prune.json
+            metadata/dual_write_dlq_quarantine.json
+            metadata/dual_write_dlq_quarantine_replay.json
+            metadata/dual_write_webhook_dlq.jsonl
+            metadata/dual_write_webhook_dlq_quarantine.jsonl
+            metadata/dual_write_webhook_state.json
+            metadata/metrics.jsonl
+          if-no-files-found: ignore

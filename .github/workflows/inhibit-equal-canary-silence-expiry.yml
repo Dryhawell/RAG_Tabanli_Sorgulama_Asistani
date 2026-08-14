@@ -1,0 +1,59 @@
+# Notify when inhibit-equal canary auto-silence expires.
+
+name: Inhibit Equal Canary Silence Expiry
+
+on:
+  schedule:
+    - cron: "15 */6 * * *"  # her 6 saatte
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Webhook göndermeden kontrol"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  expiry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Restore canary silence state
+        uses: actions/cache@v4
+        with:
+          path: metadata/inhibit_equal_canary_silence.json
+          key: inhibit-equal-canary-silence-${{ github.repository }}
+          restore-keys: |
+            inhibit-equal-canary-silence-
+      - name: Check silence expiry + webhook
+        env:
+          ALERTMANAGER_URL: ${{ secrets.ALERTMANAGER_URL }}
+          RAG_ALERTMANAGER_URL: ${{ secrets.ALERTMANAGER_URL }}
+          INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK: ${{ secrets.INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK || secrets.INHIBIT_EQUAL_CANARY_SLACK_WEBHOOK }}
+          INHIBIT_EQUAL_CANARY_SILENCE_STATE: metadata/inhibit_equal_canary_silence.json
+        run: |
+          mkdir -p metadata
+          EXTRA=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            EXTRA="--dry-run"
+          fi
+          # shellcheck disable=SC2086
+          python -m rag.cli alertmanager --canary-silence-expiry $EXTRA \
+            | tee metadata/inhibit_equal_canary_silence_expiry.json
+      - name: Upload expiry report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inhibit-equal-canary-silence-expiry
+          path: |
+            metadata/inhibit_equal_canary_silence_expiry.json
+            metadata/inhibit_equal_canary_silence.json
+          if-no-files-found: ignore
