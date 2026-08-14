@@ -1,0 +1,125 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  group_by: ["alertname", "service"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - service = rag-judge
+      receiver: judge-webhook
+      continue: true
+    # Silence-burn folder receiver policy (exclusive; before service=rag)
+    - matchers:
+        - grafana_folder =~ "rag-silence-burn|RAG Silence Burn"
+      receiver: silence-burn-webhook
+      group_by: ["grafana_folder", "alertname"]
+      group_wait: 15s
+      group_interval: 2m
+      repeat_interval: 1h
+      mute_time_intervals:
+        - silence-burn-quiet
+      active_time_intervals:
+        - silence-burn-business
+      continue: false
+    - matchers:
+        - alertname = RagInhibitEqualCanarySilenceBurn
+      receiver: silence-burn-webhook
+      group_by: ["grafana_folder", "alertname"]
+      group_wait: 15s
+      group_interval: 2m
+      repeat_interval: 1h
+      mute_time_intervals:
+        - silence-burn-quiet
+      active_time_intervals:
+        - silence-burn-business
+      continue: false
+    # Quarantine before broad ingest catch-up route
+    - matchers:
+        - alertname = RagDualWriteDlqQuarantineDepthHigh
+      receiver: ingest-dlq-quarantine-webhook
+      continue: true
+    - matchers:
+        - service = rag-ingest
+      receiver: ingest-webhook
+      continue: true
+    - matchers:
+        - service = rag
+      receiver: rag-webhook
+      continue: true
+
+receivers:
+  - name: default
+    webhook_configs:
+      - url: http://host.docker.internal:9999/alertmanager-default
+        send_resolved: true
+
+  # Slack Incoming Webhook URL'ini buraya yazın (veya volume override).
+  - name: judge-webhook
+    webhook_configs:
+      - url: http://host.docker.internal:9999/alertmanager-judge
+        send_resolved: true
+
+  - name: silence-burn-webhook
+    webhook_configs:
+      # Grafana folder "RAG Silence Burn" / grafana_folder=rag-silence-burn
+      - url: http://host.docker.internal:9999/alertmanager-silence-burn
+        send_resolved: true
+
+  - name: ingest-dlq-quarantine-webhook
+    webhook_configs:
+      # Direct (token) or HMAC via signing sidecar:
+      #   url: http://webhook-signing-sidecar:8777/
+      #   python -m rag.cli webhook-signing-sidecar
+      - url: http://host.docker.internal:8766/hooks/dual-write-dlq-quarantine
+        send_resolved: true
+        # Token auth (Alertmanager native Bearer). HMAC: signing sidecar +
+        #   RAG_DUAL_WRITE_DLQ_QUARANTINE_WEBHOOK_SIGNING_SECRET
+        #   or shared RAG_ALERTMANAGER_WEBHOOK_SIGNING_SECRET
+        # Optional: http_config.authorization.type=Bearer + credentials=<token>
+
+  - name: ingest-webhook
+    webhook_configs:
+      - url: http://host.docker.internal:8766/hooks/dual-write-catch-up
+        send_resolved: true
+        # Optional: http_config.authorization Bearer RAG_ALERTMANAGER_WEBHOOK_TOKEN
+
+  - name: rag-webhook
+    webhook_configs:
+      - url: http://host.docker.internal:9999/alertmanager-rag
+        send_resolved: true
+
+inhibit_rules:
+  - source_matchers:
+      - severity = critical
+    target_matchers:
+      - severity = warning
+    equal: ["alertname", "service"]
+  # Silence-burn folder mute-window inhibition: when the burn alert is
+  # firing, suppress sibling alerts in the same grafana_folder. Complements
+  # mute_time_intervals silence-burn-quiet (notifications muted) with AM inhibit.
+  - source_matchers:
+      - alertname = RagInhibitEqualCanarySilenceBurn
+    target_matchers:
+      - grafana_folder =~ "rag-silence-burn|RAG Silence Burn"
+    equal: ["grafana_folder"]
+
+time_intervals:
+  - name: silence-burn-quiet
+    time_intervals:
+      - times:
+          - start_time: "22:00"
+            end_time: "08:00"
+        location: UTC
+      - weekdays: ["saturday", "sunday"]
+        location: UTC
+  - name: silence-burn-business
+    time_intervals:
+      - times:
+          - start_time: "08:00"
+            end_time: "22:00"
+        weekdays: ["monday:friday"]
+        location: UTC
