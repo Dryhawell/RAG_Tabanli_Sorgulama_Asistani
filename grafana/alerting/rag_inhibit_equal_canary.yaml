@@ -192,7 +192,7 @@ groups:
             mute-window inhibit: source alertname=RagInhibitEqualCanarySilenceBurn
             → target grafana_folder=rag-silence-burn|RAG Silence Burn
             equal grafana_folder; critical→warning equal grafana_folder
-            and equal alertname for grafana_folder=rag-silence-burn /
+            and equal alertname+service for grafana_folder=rag-silence-burn /
             grafana_folder="RAG Silence Burn" and folder regex match).
             python -m rag.cli alertmanager --list-silences
             python -m rag.cli alertmanager --check-config

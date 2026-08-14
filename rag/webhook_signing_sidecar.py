@@ -565,6 +565,103 @@ def persist_sidecar_rotate_notify_thread_ack(
     return {"ok": True, "skipped": False, "path": out, "state": state}
 
 
+def list_sidecar_rotate_notify_thread_ack_history(
+    *,
+    path: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Return capped rotate digest thread reply ack history (newest last)."""
+    stored = load_sidecar_rotate_notify_thread_state(path=path)
+    history = stored.get("ack_history") if isinstance(stored.get("ack_history"), list) else []
+    items = [h for h in history if isinstance(h, dict)]
+    try:
+        n = int(
+            limit
+            if limit is not None
+            else os.environ.get(
+                "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_HISTORY_LIMIT",
+                "5",
+            )
+            or 5
+        )
+    except Exception:
+        n = 5
+    n = max(1, n)
+    return items[-n:]
+
+
+def format_sidecar_rotate_notify_thread_ack_history(
+    stored: Optional[Dict[str, Any]] = None,
+    *,
+    path: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> str:
+    """Compact Slack context: acks=N last=`ts`."""
+    flag = os.environ.get(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_HISTORY", "1"
+    ).strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return ""
+    st = stored if isinstance(stored, dict) else load_sidecar_rotate_notify_thread_state(path=path)
+    raw = st.get("ack_history") if isinstance(st.get("ack_history"), list) else []
+    items = [h for h in raw if isinstance(h, dict)]
+    total = len(items)
+    try:
+        n = int(
+            limit
+            if limit is not None
+            else os.environ.get(
+                "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_HISTORY_LIMIT",
+                "5",
+            )
+            or 5
+        )
+    except Exception:
+        n = 5
+    items = items[-max(1, n) :]
+    last = str((items[-1].get("timestamp") if items else "") or "").strip()
+    bit = f"acks=`{total}`"
+    if last:
+        bit += f" last_ack=`{last}`"
+    return bit
+
+
+def prune_sidecar_rotate_notify_thread_ack_history(
+    *,
+    keep: Optional[int] = None,
+    path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Trim persisted ack_history to keep (ACK_KEEP)."""
+    prev = load_sidecar_rotate_notify_thread_state(path=path)
+    history = prev.get("ack_history") if isinstance(prev.get("ack_history"), list) else []
+    history = [h for h in history if isinstance(h, dict)]
+    keep_raw = (
+        keep
+        if keep is not None
+        else os.environ.get(
+            "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_KEEP", "20"
+        )
+    )
+    try:
+        n = max(1, int(keep_raw or 20))
+    except Exception:
+        n = 20
+    trimmed = history[-n:]
+    state = dict(prev)
+    state["ack_history"] = trimmed
+    state["ack_keep"] = n
+    out = save_sidecar_rotate_notify_thread_state(state, path=path)
+    return {
+        "ok": True,
+        "skipped": False,
+        "before": len(history),
+        "after": len(trimmed),
+        "keep": n,
+        "path": out,
+        "state": state,
+    }
+
+
 def load_sidecar_rotate_notify_thread_state(
     path: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -1003,6 +1100,9 @@ def maybe_notify_sidecar_cert_rotate(
                 + (f" · channel=`{channel_id}`" if channel_id else "")
                 + " · quarantine HMAC — restart sidecar if live."
             )
+            hist_bit = format_sidecar_rotate_notify_thread_ack_history(stored)
+            if hist_bit:
+                follow += f" · {hist_bit}"
             thread_reply = post_slack_thread_message(
                 text=follow,
                 channel_id=channel_id or None,
@@ -1085,6 +1185,9 @@ def maybe_notify_sidecar_cert_rotate(
             "thread_reply": thread_reply,
             "broadcast": broadcast,
             "ack": ack,
+            "ack_history": format_sidecar_rotate_notify_thread_ack_history(
+                persist.get("state") or stored
+            ),
             "persist": persist,
         }
     except Exception as exc:

@@ -3560,12 +3560,23 @@ def audit_mute_export_revoke_canvas_fanout(
         )
     except Exception as exc:
         grafana = {"ok": False, "skipped": False, "error": type(exc).__name__}
+    queried: Dict[str, Any] = {"ok": True, "skipped": True}
+    try:
+        queried = query_grafana_annotations(
+            tags=["mute-export-revoke-fanout"],
+            dashboard_uid=str(grafana.get("dashboard_uid") or "") or None,
+            panel_id=grafana.get("panel_id"),
+        )
+    except Exception as exc:
+        queried = {"ok": False, "skipped": False, "error": type(exc).__name__}
+    grafana["query"] = queried
     grafana_link = str(grafana.get("link") or "").strip()
     grafana_explore = str(grafana.get("explore") or "").strip()
     extra["grafana_annotation_id"] = grafana.get("id")
     extra["grafana_ok"] = bool(grafana.get("ok")) and not grafana.get("skipped")
     extra["grafana_annotation_url"] = grafana_link or None
     extra["grafana_explore_url"] = grafana_explore or None
+    extra["grafana_query_n"] = queried.get("count")
     thread_flag = os.environ.get(
         "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_THREAD", "1"
     ).strip().lower()
@@ -3580,6 +3591,8 @@ def audit_mute_export_revoke_canvas_fanout(
             text += f" · grafana={grafana_link}"
         if grafana_explore:
             text += f" · explore={grafana_explore}"
+        if queried.get("count") is not None and not queried.get("skipped"):
+            text += f" · annotations=`{queried.get('count')}`"
         thread = post_slack_thread_message(
             text=text,
             channel_id=channel_id,
@@ -6196,6 +6209,103 @@ def grafana_annotation_url(*, base: Optional[str] = None) -> str:
         or "http://127.0.0.1:3000"
     )
     return root.rstrip("/") + "/api/annotations"
+
+
+def grafana_api_key(*, api_key: Optional[str] = None) -> str:
+    return (
+        (api_key or "").strip()
+        or os.environ.get("RAG_GRAFANA_API_KEY", "").strip()
+        or os.environ.get("GRAFANA_API_KEY", "").strip()
+    )
+
+
+def query_grafana_annotations(
+    *,
+    tags: Optional[List[str]] = None,
+    dashboard_uid: Optional[str] = None,
+    panel_id: Optional[int] = None,
+    from_ms: Optional[int] = None,
+    to_ms: Optional[int] = None,
+    limit: Optional[int] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """GET Grafana native annotations filtered by mute-export-revoke-fanout tags."""
+    flag = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_QUERY", "1"
+    ).strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "grafana_query_disabled"}
+    key = grafana_api_key(api_key=api_key)
+    if not key:
+        return {"ok": True, "skipped": True, "reason": "grafana_api_key_missing"}
+    tag_list = [t for t in (tags or []) if t] or ["mute-export-revoke-fanout"]
+    uid = (
+        (dashboard_uid or "").strip()
+        or os.environ.get(
+            "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_DASHBOARD",
+            "rag-judge-soft-fail",
+        ).strip()
+        or "rag-judge-soft-fail"
+    )
+    try:
+        lim = int(limit if limit is not None else os.environ.get(
+            "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_QUERY_LIMIT",
+            "20",
+        ) or 20)
+    except Exception:
+        lim = 20
+    lim = max(1, min(lim, 100))
+    now_ms = int(time.time() * 1000)
+    start = int(from_ms if from_ms is not None else now_ms - 86_400_000)
+    end = int(to_ms if to_ms is not None else now_ms + 60_000)
+    url = grafana_annotation_url(base=base_url)
+    params: List[Tuple[str, str]] = [
+        ("from", str(start)),
+        ("to", str(end)),
+        ("limit", str(lim)),
+        ("type", "annotation"),
+        ("dashboardUID", uid),
+    ]
+    for tag in tag_list:
+        params.append(("tags", tag))
+    resolved_panel = panel_id
+    if resolved_panel is None:
+        resolved_panel = mute_export_revoke_fanout_grafana_panel_id()
+    if resolved_panel is not None:
+        params.append(("panelId", str(int(resolved_panel))))
+    try:
+        import requests
+
+        r = requests.get(
+            url,
+            params=params,
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=10,
+        )
+        ok = r.status_code < 400
+        data: Any = []
+        try:
+            data = r.json()
+        except Exception:
+            data = []
+        items = data if isinstance(data, list) else []
+        return {
+            "ok": bool(ok),
+            "skipped": False,
+            "status": r.status_code,
+            "count": len(items),
+            "items": items[:lim],
+            "dashboard_uid": uid,
+            "tags": tag_list,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "skipped": False,
+            "error": type(exc).__name__,
+            "detail": str(exc)[:300],
+        }
 
 
 def post_grafana_annotation(

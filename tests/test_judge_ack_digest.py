@@ -1435,7 +1435,10 @@ def test_mute_export_revoke_canvas_refresh(tmp_path: Path, monkeypatch) -> None:
             "link": "http://grafana.test/d/rag-judge-soft-fail/rag-judge-soft-fail?orgId=1&viewPanel=27&editAnnotation=42",
             "explore": "http://grafana.test/explore?orgId=1&left=%7B%22queries%22%3A%5B%7B%22queryType%22%3A%22annotations%22%7D%5D%7D",
         },
-    ) as gann:
+    ) as gann, patch(
+        "rag.judge_alert.query_grafana_annotations",
+        return_value={"ok": True, "skipped": False, "count": 3, "items": [{"id": 42}]},
+    ) as gquery:
         result = handle_slack_mute_export_revoke(
             {
                 "actions": [
@@ -1465,6 +1468,8 @@ def test_mute_export_revoke_canvas_refresh(tmp_path: Path, monkeypatch) -> None:
     assert audit.get("grafana", {}).get("id") == 42
     assert "viewPanel=27" in str(audit.get("grafana", {}).get("link") or "")
     assert "explore" in str(audit.get("grafana") or "")
+    assert (audit.get("grafana") or {}).get("query", {}).get("count") == 3
+    assert gquery.called
     assert gann.called
     tags = gann.call_args.kwargs.get("tags") or []
     assert "mute-export-revoke-fanout" in tags
@@ -1864,6 +1869,40 @@ def test_grafana_annotation_explore_link(monkeypatch) -> None:
         "https://g.example/explore",
     )
     assert grafana_annotation_explore_link() == "https://g.example/explore"
+
+
+def test_query_grafana_annotations_skip_and_get(monkeypatch) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from rag.judge_alert import query_grafana_annotations
+
+    monkeypatch.delenv("RAG_GRAFANA_API_KEY", raising=False)
+    monkeypatch.delenv("GRAFANA_API_KEY", raising=False)
+    skipped = query_grafana_annotations()
+    assert skipped.get("skipped") is True
+    assert skipped.get("reason") == "grafana_api_key_missing"
+
+    monkeypatch.setenv("RAG_GRAFANA_API_KEY", "glsa_test")
+    monkeypatch.setenv("RAG_GRAFANA_URL", "http://grafana.test")
+    mock_r = MagicMock()
+    mock_r.status_code = 200
+    mock_r.json.return_value = [
+        {"id": 7, "tags": ["mute-export-revoke-fanout"], "text": "fan-out"}
+    ]
+    with patch("requests.get", return_value=mock_r) as gotten:
+        out = query_grafana_annotations(tags=["mute-export-revoke-fanout"])
+    assert out.get("ok") is True
+    assert out.get("count") == 1
+    assert gotten.called
+    assert gotten.call_args.args[0].endswith("/api/annotations")
+    params = gotten.call_args.kwargs.get("params") or []
+    flat = [p[1] for p in params if p[0] == "tags"]
+    assert "mute-export-revoke-fanout" in flat
+    monkeypatch.setenv(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_QUERY", "0"
+    )
+    disabled = query_grafana_annotations()
+    assert disabled.get("reason") == "grafana_query_disabled"
 
 
 def test_grafana_annotation_deep_link(monkeypatch) -> None:

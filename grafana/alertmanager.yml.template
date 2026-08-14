@@ -118,7 +118,7 @@ inhibit_rules:
       - alertname = RagInhibitEqualCanarySilenceBurn
     target_matchers:
       - grafana_folder =~ "rag-silence-burn|RAG Silence Burn"
-    equal: ["grafana_folder"]
+    equal: ["grafana_folder", "service"]
   # Silence-burn folder: critical inhibits warning when grafana_folder is equal
   # (canonical slug + Grafana display-name label spellings).
   - source_matchers:
@@ -127,15 +127,15 @@ inhibit_rules:
     target_matchers:
       - grafana_folder = rag-silence-burn
       - severity = warning
-    equal: ["grafana_folder", "alertname"]
+    equal: ["grafana_folder", "alertname", "service"]
   - source_matchers:
       - grafana_folder = "RAG Silence Burn"
       - severity = critical
     target_matchers:
       - grafana_folder = "RAG Silence Burn"
       - severity = warning
-    equal: ["grafana_folder", "alertname"]
-  # Silence-burn folder: critical inhibits warning of the same alertname
+    equal: ["grafana_folder", "alertname", "service"]
+  # Silence-burn folder: critical inhibits warning of the same alertname+service
   # even when grafana_folder slug vs display-name labels differ.
   - source_matchers:
       - grafana_folder =~ "rag-silence-burn|RAG Silence Burn"
@@ -143,7 +143,7 @@ inhibit_rules:
     target_matchers:
       - grafana_folder =~ "rag-silence-burn|RAG Silence Burn"
       - severity = warning
-    equal: ["alertname"]
+    equal: ["alertname", "service"]
 
 time_intervals:
   - name: silence-burn-quiet

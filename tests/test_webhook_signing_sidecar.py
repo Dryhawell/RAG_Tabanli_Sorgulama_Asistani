@@ -875,4 +875,52 @@ def test_sidecar_rotate_notify_thread_reply_ack(tmp_path: Path, monkeypatch) -> 
     assert state.get("last_ack_ts") == "99.2"
     assert state.get("ack_name") == "ack"
     assert len(state.get("ack_history") or []) == 1
+    assert "acks=`1`" in str(notified.get("ack_history") or "")
+
+
+def test_sidecar_rotate_notify_thread_ack_history(tmp_path: Path, monkeypatch) -> None:
+    from rag.webhook_signing_sidecar import (
+        format_sidecar_rotate_notify_thread_ack_history,
+        list_sidecar_rotate_notify_thread_ack_history,
+        persist_sidecar_rotate_notify_thread_ack,
+        prune_sidecar_rotate_notify_thread_ack_history,
+    )
+
+    path = str(tmp_path / "rotate_thread.json")
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_STATE", path
+    )
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_HISTORY", "1"
+    )
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_KEEP", "2"
+    )
+    empty = format_sidecar_rotate_notify_thread_ack_history(path=path)
+    assert "acks=`0`" in empty
+    persist_sidecar_rotate_notify_thread_ack(
+        channel_id="C-rot", timestamp="1.1", name="ack", path=path
+    )
+    persist_sidecar_rotate_notify_thread_ack(
+        channel_id="C-rot", timestamp="2.2", name="ack", path=path
+    )
+    persist_sidecar_rotate_notify_thread_ack(
+        channel_id="C-rot", timestamp="3.3", name="white_check_mark", path=path
+    )
+    listed = list_sidecar_rotate_notify_thread_ack_history(path=path, limit=5)
+    assert [h.get("timestamp") for h in listed] == ["2.2", "3.3"]
+    fmt = format_sidecar_rotate_notify_thread_ack_history(path=path)
+    assert "acks=`2`" in fmt
+    assert "last_ack=`3.3`" in fmt
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_ACK_HISTORY", "0"
+    )
+    assert format_sidecar_rotate_notify_thread_ack_history(path=path) == ""
+    pruned = prune_sidecar_rotate_notify_thread_ack_history(keep=1, path=path)
+    assert pruned.get("ok") is True
+    assert pruned.get("before") == 2
+    assert pruned.get("after") == 1
+    assert list_sidecar_rotate_notify_thread_ack_history(path=path)[-1].get(
+        "timestamp"
+    ) == "3.3"
 
