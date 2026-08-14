@@ -1,0 +1,99 @@
+# Grafana alerting provisioning pointer (örnek)
+# Gerçek ortamda contact points + notification policies ayrıca tanımlanır.
+# Silence-burn rule group lives in folder "RAG Silence Burn" and is routed
+# via grafana_folder matcher (see grafana/alerting/rag_inhibit_equal_canary.yaml).
+apiVersion: 1
+
+# Silence-burn mute-window inhibition (Alertmanager inhibit_rules):
+# source alertname=RagInhibitEqualCanarySilenceBurn →
+# target grafana_folder=rag-silence-burn|RAG Silence Burn, equal grafana_folder.
+# Complements muteTimes silence-burn-quiet.
+# Folder equal grafana_folder: critical→warning for grafana_folder=rag-silence-burn
+# and grafana_folder="RAG Silence Burn".
+# Folder equal alertname: critical→warning when grafana_folder matches
+# rag-silence-burn|RAG Silence Burn.
+# Folder equal service: critical→warning also requires service match
+# (equal: [grafana_folder, alertname, service, team] / [alertname, service, team]).
+# Folder equal team: critical→warning also requires team=rag match.
+muteTimes:
+  - orgId: 1
+    name: silence-burn-quiet
+    time_intervals:
+      - times:
+          - start_time: "22:00"
+            end_time: "08:00"
+        location: UTC
+      - weekdays: ["saturday", "sunday"]
+        location: UTC
+  - orgId: 1
+    name: silence-burn-business
+    time_intervals:
+      - times:
+          - start_time: "08:00"
+            end_time: "22:00"
+        weekdays: ["monday:friday"]
+        location: UTC
+
+policies:
+  - orgId: 1
+    receiver: rag-slack
+    group_by: ["grafana_folder", "alertname"]
+    routes:
+      - receiver: rag-silence-burn-slack
+        group_by: ["grafana_folder", "alertname"]
+        group_wait: 15s
+        group_interval: 2m
+        repeat_interval: 1h
+        mute_time_intervals:
+          - silence-burn-quiet
+        active_time_intervals:
+          - silence-burn-business
+        object_matchers:
+          - ["grafana_folder", "=", "RAG Silence Burn"]
+        continue: false
+      - receiver: rag-silence-burn-slack
+        group_by: ["grafana_folder", "alertname"]
+        group_wait: 15s
+        group_interval: 2m
+        repeat_interval: 1h
+        mute_time_intervals:
+          - silence-burn-quiet
+        active_time_intervals:
+          - silence-burn-business
+        object_matchers:
+          - ["grafana_folder", "=", "rag-silence-burn"]
+        continue: false
+      - receiver: rag-silence-burn-slack
+        group_by: ["grafana_folder", "alertname"]
+        group_wait: 15s
+        group_interval: 2m
+        repeat_interval: 1h
+        mute_time_intervals:
+          - silence-burn-quiet
+        active_time_intervals:
+          - silence-burn-business
+        object_matchers:
+          - ["alertname", "=", "RagInhibitEqualCanarySilenceBurn"]
+        continue: false
+
+contactPoints:
+  - orgId: 1
+    name: rag-slack
+    receivers:
+      - uid: rag-slack-webhook
+        type: slack
+        settings:
+          url: ${RAG_JUDGE_SLACK_WEBHOOK}
+          title: RAG Alert
+          text: "{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}"
+        disableResolveMessage: false
+  - orgId: 1
+    name: rag-silence-burn-slack
+    receivers:
+      - uid: rag-silence-burn-slack-webhook
+        type: slack
+        settings:
+          url: ${RAG_SILENCE_BURN_SLACK_WEBHOOK}
+          title: RAG Silence Burn
+          text: "{{ range .Alerts }}{{ .Annotations.summary }} · {{ .Annotations.runbook_url }}{{ end }}"
+        disableResolveMessage: false

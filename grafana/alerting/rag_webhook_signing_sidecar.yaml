@@ -1,0 +1,209 @@
+# Grafana unified alerting — webhook signing sidecar forward (DLQ quarantine HMAC)
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: rag-webhook-signing-sidecar
+    folder: RAG
+    interval: 5m
+    rules:
+      - uid: rag-webhook-signing-sidecar-forward-fail
+        title: RAG webhook signing sidecar forward fail
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 3600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: sum(increase(rag_webhook_signing_sidecar_forward_total{result!~"ok|dry_run"}[1h]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 3600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            relativeTimeRange:
+              from: 3600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Signing sidecar forward failures
+          description: >
+            Sidecar forward fail increase > 0 in 1h.
+            Dashboard: rag-judge (Signing sidecar forward panel).
+            Dual-write DLQ quarantine HMAC path via webhook-signing-sidecar.
+        labels:
+          severity: warning
+          service: rag-ingest
+          team: rag
+      - uid: rag-webhook-signing-sidecar-forward-fail-burst
+        title: RAG webhook signing sidecar forward fail burst
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 21600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: sum(increase(rag_webhook_signing_sidecar_forward_total{result!~"ok|dry_run"}[6h]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 21600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            relativeTimeRange:
+              from: 21600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gte
+                    params: [3]
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: Signing sidecar forward fail burst
+          description: >
+            ≥3 sidecar forward failures in 6h.
+            Quarantine Alertmanager → sidecar → upstream path degraded.
+        labels:
+          severity: critical
+          service: rag-ingest
+          team: rag
+      - uid: rag-webhook-signing-sidecar-cert-expiry-soon
+        title: RAG webhook signing sidecar cert expiry soon
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: rag_webhook_signing_sidecar_cert_expiry_days
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [14]
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 30m
+        annotations:
+          summary: Signing sidecar mTLS cert expiry soon
+          description: >
+            Sidecar PEM cert days_left < 14.
+            Check: python -m rag.cli webhook-signing-sidecar --check-certs
+        labels:
+          severity: warning
+          service: rag-ingest
+          team: rag
+      - uid: rag-webhook-signing-sidecar-cert-expired
+        title: RAG webhook signing sidecar cert expired
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: rag_webhook_signing_sidecar_cert_expiry_days
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [0]
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Signing sidecar mTLS cert expired
+          description: >
+            Sidecar PEM cert already expired. Rotate metadata/sidecar-tls and restart.
+        labels:
+          severity: critical
+          service: rag-ingest
+          team: rag
