@@ -620,7 +620,17 @@ def test_sidecar_cert_rotate_notify_digest_thread(tmp_path: Path, monkeypatch) -
     assert notified.get("thread") is True
     assert notified.get("thread_reply", {}).get("ok") is True
     assert posts and posts[0][1].get("thread_ts") == "99.1"
+    assert posts[0][1].get("channel") == "C-rot"
+    assert notified.get("channel_id") == "C-rot"
+    ctx = [
+        el.get("text")
+        for b in (posts[0][1].get("blocks") or [])
+        if b.get("type") == "context"
+        for el in (b.get("elements") or [])
+    ]
+    assert any("channel=`C-rot`" in str(c) for c in ctx)
     assert threads and "digest thread" in str(threads[0].get("text") or "").lower()
+    assert threads[0].get("channel_id") == "C-rot"
     state = json.loads((tmp_path / "rotate_thread.json").read_text(encoding="utf-8"))
     assert state.get("thread_ts") == "99.1"
     assert state.get("parent_ts") == "99.1"
@@ -668,4 +678,30 @@ def test_sidecar_cert_rotate_notify_digest_thread(tmp_path: Path, monkeypatch) -
     assert legacy.get("digest") is False
     assert legacy.get("thread") is not True
     assert not threads
+
+
+def test_resolve_sidecar_rotate_notify_channel(tmp_path: Path, monkeypatch) -> None:
+    from rag.webhook_signing_sidecar import (
+        resolve_sidecar_rotate_notify_channel,
+        save_sidecar_rotate_notify_thread_state,
+    )
+
+    monkeypatch.delenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_CHANNEL", raising=False)
+    monkeypatch.delenv("RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_CHANNEL", raising=False)
+    monkeypatch.delenv("RAG_JUDGE_SLACK_CHANNEL", raising=False)
+    assert resolve_sidecar_rotate_notify_channel({}) == ""
+    path = str(tmp_path / "st.json")
+    save_sidecar_rotate_notify_thread_state({"channel_id": "C-stored"}, path=path)
+    monkeypatch.setenv(
+        "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_STATE", path
+    )
+    from rag.webhook_signing_sidecar import load_sidecar_rotate_notify_thread_state
+
+    stored = load_sidecar_rotate_notify_thread_state()
+    assert resolve_sidecar_rotate_notify_channel(stored) == "C-stored"
+    monkeypatch.setenv("RAG_JUDGE_SLACK_CHANNEL", "C-judge")
+    # stored still wins over judge channel
+    assert resolve_sidecar_rotate_notify_channel(stored) == "C-stored"
+    monkeypatch.setenv("RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_CHANNEL", "C-rot")
+    assert resolve_sidecar_rotate_notify_channel(stored) == "C-rot"
 

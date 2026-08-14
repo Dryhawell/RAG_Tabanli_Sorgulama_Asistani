@@ -36,6 +36,18 @@
         "name": "Silence burn",
         "titleFormat": "silence burn",
         "textFormat": "Opsgenie: https://app.opsgenie.com/alert/list?query=alias%3A%22rag-judge-soft-fail%2Finhibit-equal-canary%22 · runbook /ops/silence-burn"
+      },
+      {
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": false,
+        "iconColor": "purple",
+        "name": "Mute export revoke fan-out",
+        "type": "tags",
+        "tags": ["mute-export-revoke-fanout"]
       }
     ]
   },

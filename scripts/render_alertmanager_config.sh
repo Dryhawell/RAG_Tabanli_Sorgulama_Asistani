@@ -44,15 +44,38 @@ fi
 # Post-process: merge generated inhibit_rules (yoksa no-op).
 # Template include yerine — generated dosya gitignore'da.
 # Python render_alertmanager_config ALERTMANAGER_MERGE_INHIBIT=0 ile shell merge'i kapatır.
+# Insert into the inhibit_rules section (before the next top-level key such as
+# time_intervals), not at EOF — appending after time_intervals breaks YAML and
+# makes the Python merge non-idempotent.
 if [ "${ALERTMANAGER_MERGE_INHIBIT:-1}" != "0" ] && [ -f "$INHIBIT" ]; then
-  # Yorum ve inhibit_rules: başlığını at; rule bloklarını ekle
-  awk '
-    /^[[:space:]]*#/ { next }
-    /^inhibit_rules:[[:space:]]*$/ { next }
-    /^inhibit_rules:/ { next }
-    /^[[:space:]]+- / { print; next }
-    /^[[:space:]]{2,}/ { print; next }
-  ' "$INHIBIT" >> "$OUTPUT"
+  _am_tmp="${OUTPUT}.inhibit.$$"
+  awk -v inhibit="$INHIBIT" '
+    function dump_inhibit(    line) {
+      while ((getline line < inhibit) > 0) {
+        if (line ~ /^[[:space:]]*#/) continue
+        if (line ~ /^inhibit_rules:[[:space:]]*$/) continue
+        if (line ~ /^inhibit_rules:/) continue
+        if (line ~ /^[[:space:]]+- / || line ~ /^[[:space:]]{2,}/) print line
+      }
+      close(inhibit)
+    }
+    BEGIN { in_inhibit = 0; inserted = 0 }
+    /^inhibit_rules:[[:space:]]*$/ || /^inhibit_rules:/ {
+      in_inhibit = 1
+      print
+      next
+    }
+    in_inhibit && /^[^[:space:]#]/ {
+      dump_inhibit()
+      in_inhibit = 0
+      inserted = 1
+    }
+    { print }
+    END {
+      if (in_inhibit && inserted == 0) dump_inhibit()
+    }
+  ' "$OUTPUT" > "$_am_tmp"
+  mv "$_am_tmp" "$OUTPUT"
   echo "inhibit_merged: $INHIBIT"
 fi
 

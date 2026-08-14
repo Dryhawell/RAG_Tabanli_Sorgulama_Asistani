@@ -22,6 +22,8 @@ route:
       repeat_interval: 1h
       mute_time_intervals:
         - silence-burn-quiet
+      active_time_intervals:
+        - silence-burn-business
       continue: false
     - matchers:
         - alertname = RagInhibitEqualCanarySilenceBurn
@@ -32,6 +34,8 @@ route:
       repeat_interval: 1h
       mute_time_intervals:
         - silence-burn-quiet
+      active_time_intervals:
+        - silence-burn-business
       continue: false
     # Quarantine before broad ingest catch-up route
     - matchers:
@@ -116,4 +120,11 @@ time_intervals:
             end_time: "08:00"
         location: UTC
       - weekdays: ["saturday", "sunday"]
+        location: UTC
+  - name: silence-burn-business
+    time_intervals:
+      - times:
+          - start_time: "08:00"
+            end_time: "22:00"
+        weekdays: ["monday:friday"]
         location: UTC

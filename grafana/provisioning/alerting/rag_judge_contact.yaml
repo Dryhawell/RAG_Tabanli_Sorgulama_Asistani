@@ -14,6 +14,14 @@ muteTimes:
         location: UTC
       - weekdays: ["saturday", "sunday"]
         location: UTC
+  - orgId: 1
+    name: silence-burn-business
+    time_intervals:
+      - times:
+          - start_time: "08:00"
+            end_time: "22:00"
+        weekdays: ["monday:friday"]
+        location: UTC
 
 policies:
   - orgId: 1
@@ -27,6 +35,8 @@ policies:
         repeat_interval: 1h
         mute_time_intervals:
           - silence-burn-quiet
+        active_time_intervals:
+          - silence-burn-business
         object_matchers:
           - ["grafana_folder", "=", "RAG Silence Burn"]
         continue: false
@@ -37,6 +47,8 @@ policies:
         repeat_interval: 1h
         mute_time_intervals:
           - silence-burn-quiet
+        active_time_intervals:
+          - silence-burn-business
         object_matchers:
           - ["grafana_folder", "=", "rag-silence-burn"]
         continue: false
@@ -47,6 +59,8 @@ policies:
         repeat_interval: 1h
         mute_time_intervals:
           - silence-burn-quiet
+        active_time_intervals:
+          - silence-burn-business
         object_matchers:
           - ["alertname", "=", "RagInhibitEqualCanarySilenceBurn"]
         continue: false

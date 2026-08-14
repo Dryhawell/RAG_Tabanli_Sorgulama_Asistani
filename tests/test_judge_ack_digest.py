@@ -1426,7 +1426,10 @@ def test_mute_export_revoke_canvas_refresh(tmp_path: Path, monkeypatch) -> None:
         return_value={"ok": True, "updated": 0},
     ) as synced, patch(
         "rag.judge_alert.slack_api", return_value={"ok": True}
-    ):
+    ), patch(
+        "rag.judge_alert.post_grafana_annotation",
+        return_value={"ok": True, "skipped": False, "id": 42},
+    ) as gann:
         result = handle_slack_mute_export_revoke(
             {
                 "actions": [
@@ -1453,6 +1456,10 @@ def test_mute_export_revoke_canvas_refresh(tmp_path: Path, monkeypatch) -> None:
     lines = (tmp_path / "ack.jsonl").read_text(encoding="utf-8").splitlines()
     events = [__import__("json").loads(ln).get("event") for ln in lines if ln.strip()]
     assert "mute_export_revoke_fanout" in events
+    assert audit.get("grafana", {}).get("id") == 42
+    assert gann.called
+    tags = gann.call_args.kwargs.get("tags") or []
+    assert "mute-export-revoke-fanout" in tags
     assert fetched.called
     assert refreshed.called
     assert synced.called
@@ -1784,6 +1791,36 @@ def test_purge_mute_export_revoke_fanout_audit_retention(
     cli = Path("rag/cli.py").read_text(encoding="utf-8")
     assert "--prune-mute-export-revoke-fanouts" in cli
     assert "maybe_purge_mute_export_revoke_fanout_audit" in cli
+
+
+def test_post_grafana_annotation_skip_and_post(monkeypatch) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from rag.judge_alert import post_grafana_annotation
+
+    monkeypatch.delenv("RAG_GRAFANA_API_KEY", raising=False)
+    monkeypatch.delenv("GRAFANA_API_KEY", raising=False)
+    skipped = post_grafana_annotation(text="fan-out")
+    assert skipped.get("skipped") is True
+    assert skipped.get("reason") == "grafana_api_key_missing"
+
+    monkeypatch.setenv("RAG_GRAFANA_API_KEY", "glsa_test")
+    monkeypatch.setenv("RAG_GRAFANA_URL", "http://grafana.test")
+    mock_r = MagicMock()
+    mock_r.status_code = 200
+    mock_r.json.return_value = {"id": 7, "message": "Annotation added"}
+    with patch("requests.post", return_value=mock_r) as posted:
+        out = post_grafana_annotation(
+            text="Mute export revoke canvas fan-out",
+            tags=["mute-export-revoke-fanout", "tenant:acme"],
+        )
+    assert out.get("ok") is True
+    assert out.get("id") == 7
+    assert posted.called
+    assert posted.call_args.args[0].endswith("/api/annotations")
+    body = posted.call_args.kwargs.get("json") or {}
+    assert body.get("dashboardUID") == "rag-judge-soft-fail"
+    assert "mute-export-revoke-fanout" in (body.get("tags") or [])
 
 
 def test_slack_files_upload_requires_token() -> None:

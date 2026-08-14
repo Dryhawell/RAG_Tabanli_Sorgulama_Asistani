@@ -3557,6 +3557,26 @@ def audit_mute_export_revoke_canvas_fanout(
             thread_ts=thread_ts,
             bot_token=bot_token,
         )
+    grafana: Dict[str, Any] = {"ok": True, "skipped": True}
+    try:
+        grafana = post_grafana_annotation(
+            text=(
+                f"Mute export revoke canvas fan-out · tenant=`{tenant_id}`"
+                f" · jti=`{jti or '—'}` · updated=`{updated}` · failed=`{failed}`"
+                + (f" · actor=`{actor}`" if actor else "")
+            ),
+            tags=[
+                "mute-export-revoke-fanout",
+                "mute-export",
+                "revoke",
+                "fanout",
+                f"tenant:{tenant_id}" if tenant_id else "",
+            ],
+        )
+    except Exception as exc:
+        grafana = {"ok": False, "skipped": False, "error": type(exc).__name__}
+    extra["grafana_annotation_id"] = grafana.get("id")
+    extra["grafana_ok"] = bool(grafana.get("ok")) and not grafana.get("skipped")
     return {
         "ok": "_write_error" not in record,
         "skipped": False,
@@ -3565,6 +3585,7 @@ def audit_mute_export_revoke_canvas_fanout(
         "failed": failed,
         "audit": record,
         "thread_reply": thread,
+        "grafana": grafana,
     }
 
 
@@ -6041,6 +6062,93 @@ def post_slack(webhook: str, payload: Dict[str, Any]) -> bool:
         return r.status_code < 400
     except Exception:
         return False
+
+
+def grafana_annotation_url(*, base: Optional[str] = None) -> str:
+    root = (
+        (base or "").strip()
+        or os.environ.get("RAG_GRAFANA_URL", "").strip()
+        or os.environ.get("GRAFANA_URL", "").strip()
+        or "http://127.0.0.1:3000"
+    )
+    return root.rstrip("/") + "/api/annotations"
+
+
+def post_grafana_annotation(
+    *,
+    text: str,
+    tags: Optional[List[str]] = None,
+    dashboard_uid: Optional[str] = None,
+    panel_id: Optional[int] = None,
+    time_ms: Optional[int] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """POST Grafana native annotation (dashboard markers)."""
+    flag = os.environ.get(
+        "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA", "1"
+    ).strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "grafana_annotate_disabled"}
+    key = (
+        (api_key or "").strip()
+        or os.environ.get("RAG_GRAFANA_API_KEY", "").strip()
+        or os.environ.get("GRAFANA_API_KEY", "").strip()
+    )
+    if not key:
+        return {"ok": True, "skipped": True, "reason": "grafana_api_key_missing"}
+    url = grafana_annotation_url(base=base_url)
+    now_ms = int(time_ms if time_ms is not None else time.time() * 1000)
+    uid = (
+        (dashboard_uid or "").strip()
+        or os.environ.get(
+            "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA_DASHBOARD",
+            "rag-judge-soft-fail",
+        ).strip()
+        or "rag-judge-soft-fail"
+    )
+    body: Dict[str, Any] = {
+        "dashboardUID": uid,
+        "time": now_ms,
+        "timeEnd": now_ms,
+        "tags": [t for t in (tags or []) if t],
+        "text": (text or "")[:4000],
+    }
+    if panel_id is not None:
+        body["panelId"] = int(panel_id)
+    try:
+        import requests
+
+        r = requests.post(
+            url,
+            json=body,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            timeout=10,
+        )
+        ok = r.status_code < 400
+        data: Any = {}
+        try:
+            data = r.json()
+        except Exception:
+            data = {"text": r.text[:300]}
+        return {
+            "ok": bool(ok),
+            "skipped": False,
+            "status": r.status_code,
+            "id": (data or {}).get("id") if isinstance(data, dict) else None,
+            "dashboard_uid": uid,
+            "response": data,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "skipped": False,
+            "error": type(exc).__name__,
+            "detail": str(exc)[:300],
+        }
 
 
 def silence_burn_ops_public_url(

@@ -63,6 +63,8 @@ def test_alertmanager_and_llm_cost_rules():
     assert Path("scripts/render_alertmanager_config.sh").is_file()
     render_sh = Path("scripts/render_alertmanager_config.sh").read_text(encoding="utf-8")
     assert "RAG_ALERTMANAGER_INGEST_DLQ_QUARANTINE_WEBHOOK_URL" in render_sh
+    assert "dump_inhibit" in render_sh
+    assert "time_intervals" in render_sh
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
     assert "alertmanager:" in compose
     assert "alertmanager.yml.template" in compose
@@ -142,6 +144,11 @@ def test_render_merges_generated_inhibit_rules(tmp_path):
     assert "inhibit_merged:" in (rc.stdout or "")
     text = out.read_text(encoding="utf-8")
     assert text.count("source_matchers:") >= 2
+    # generated inhibit blocks must land inside inhibit_rules, before time_intervals
+    top_ti = text.find("\ntime_intervals:")
+    last_src = text.rfind("source_matchers:")
+    assert top_ti > 0 and last_src > 0
+    assert last_src < top_ti
     # idempotent python merge
     report = merge_inhibit_rules_into_config(str(out), inhibit_path=str(inhibit))
     assert report["ok"] is True
@@ -433,19 +440,19 @@ def test_ci_inhibit_equal_opsgenie_canary_env():
     ) in text
 
 
-def test_readme_sonraki_adaylar_after_mute_fanout_retention_rotate_persist_mute_intervals():
+def test_readme_sonraki_adaylar_after_mute_fanout_grafana_rotate_channel_active_intervals():
     text = Path("README.md").read_text(encoding="utf-8")
     assert "## Sonraki adaylar" in text
     assert "presence multi-worker (Redis)" in text
     assert "VAPID OIDC" in text
     sonraki = text.split("## Sonraki adaylar")[1].split("##")[0]
-    assert "mute export revoke fan-out audit Grafana annotate" in sonraki
-    assert "sidecar rotate notify digest thread channel" in sonraki
-    assert "silence burn folder active time intervals" in sonraki
+    assert "mute export revoke fan-out Grafana annotation panel" in sonraki
+    assert "sidecar rotate notify digest thread reply broadcast" in sonraki
+    assert "silence burn folder inhibition by mute window" in sonraki
     # Completed this round — should not remain as next candidates
-    assert "mute export revoke fan-out audit retention" not in sonraki
-    assert "digest thread persist" not in sonraki
-    assert "folder mute time intervals" not in sonraki
+    assert "mute export revoke fan-out audit Grafana annotate" not in sonraki
+    assert "digest thread channel" not in sonraki
+    assert "folder active time intervals" not in sonraki
     assert "webhook-signing-sidecar" in text
     assert "--export-mute-snapshots" in text
     assert "--upload-mute-snapshots" in text
@@ -473,6 +480,9 @@ def test_readme_sonraki_adaylar_after_mute_fanout_retention_rotate_persist_mute_
     assert "mute_export_revoke_fanouts" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_AUDIT" in text
     assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_RETENTION_DAYS" in text
+    assert "RAG_JUDGE_ACK_DIGEST_MUTE_EXPORT_REVOKE_FANOUT_GRAFANA" in text
+    assert "post_grafana_annotation" in text
+    assert "mute-export-revoke-fanout" in text
     assert "--prune-mute-export-revoke-fanouts" in text
     assert "RAG_JUDGE_ACK_RATE_LIMIT_SEC" in text
     assert "judge_ack_digest_export_mute_snapshots" in text
@@ -491,6 +501,7 @@ def test_readme_sonraki_adaylar_after_mute_fanout_retention_rotate_persist_mute_
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_DIGEST" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_PERSIST" in text
+    assert "resolve_sidecar_rotate_notify_channel" in text
     assert "parent_ts" in text
     assert "sidecar_rotate_notify_thread.json" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_PAGERDUTY_ROUTING_KEY" in text
@@ -522,6 +533,8 @@ def test_readme_sonraki_adaylar_after_mute_fanout_retention_rotate_persist_mute_
     assert "continue: false" in text
     assert "silence-burn-quiet" in text
     assert "mute time intervals" in text
+    assert "silence-burn-business" in text
+    assert "active time intervals" in text
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM_CLIENT_CERT" in text
     assert "INHIBIT_EQUAL_CANARY_SILENCE_EXPIRY_WEBHOOK" in text
     assert "--canary-silence-expiry" in text
@@ -705,6 +718,7 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "RAG Silence Burn" in rules
     assert "group_wait=15s" in rules
     assert "mute_time_intervals=silence-burn-quiet" in rules
+    assert "active_time_intervals=silence-burn-business" in rules
     alerting = Path("grafana/alerting/rag_inhibit_equal_canary.yaml").read_text(
         encoding="utf-8"
     )
@@ -724,6 +738,7 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "grafana_folder: rag-silence-burn" in alerting
     assert "continue=false" in alerting
     assert "mute_time_intervals=silence-burn-quiet" in alerting
+    assert "active_time_intervals=silence-burn-business" in alerting
     contact = Path("grafana/provisioning/alerting/rag_judge_contact.yaml").read_text(
         encoding="utf-8"
     )
@@ -736,7 +751,9 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "repeat_interval: 1h" in contact
     assert "muteTimes:" in contact
     assert "silence-burn-quiet" in contact
+    assert "silence-burn-business" in contact
     assert "mute_time_intervals:" in contact
+    assert "active_time_intervals:" in contact
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
     assert "webhook-signing-sidecar" in compose
     assert "RAG_WEBHOOK_SIGNING_SIDECAR_UPSTREAM" in compose
@@ -750,6 +767,8 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert "continue: false" in am
     assert "mute_time_intervals:" in am
     assert "silence-burn-quiet" in am
+    assert "silence-burn-business" in am
+    assert "active_time_intervals:" in am
     assert "time_intervals:" in am
     tmpl = Path("grafana/alertmanager.yml.template").read_text(encoding="utf-8")
     assert "signing sidecar" in tmpl
@@ -758,7 +777,9 @@ def test_inhibit_equal_canary_resolve_alert_artifacts():
     assert 'grafana_folder =~ "rag-silence-burn|RAG Silence Burn"' in tmpl
     assert "group_wait: 15s" in tmpl
     assert "silence-burn-quiet" in tmpl
+    assert "silence-burn-business" in tmpl
     assert "mute_time_intervals:" in tmpl
+    assert "active_time_intervals:" in tmpl
     dash = Path("grafana/dashboards/rag_judge.json").read_text(encoding="utf-8")
     assert "Silence burn" in dash
     assert "opsgenie.com/alert/list" in dash

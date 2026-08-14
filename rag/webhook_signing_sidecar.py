@@ -304,6 +304,21 @@ def sidecar_rotate_notify_thread_state_path() -> str:
     return os.path.join("metadata", "sidecar_rotate_notify_thread.json")
 
 
+def resolve_sidecar_rotate_notify_channel(
+    stored: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Env → persisted channel_id → DLQ/judge Slack channel."""
+    st = stored if isinstance(stored, dict) else {}
+    return (
+        os.environ.get(
+            "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_CHANNEL", ""
+        ).strip()
+        or str(st.get("channel_id") or "").strip()
+        or os.environ.get("RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_CHANNEL", "").strip()
+        or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "").strip()
+    )
+
+
 def load_sidecar_rotate_notify_thread_state(
     path: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -644,6 +659,15 @@ def maybe_notify_sidecar_cert_rotate(
         "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_DIGEST", "1"
     ).strip().lower()
     use_digest = digest_flag not in {"0", "false", "no", "off"}
+    stored = load_sidecar_rotate_notify_thread_state()
+    channel_id = resolve_sidecar_rotate_notify_channel(stored)
+    ctx_bits = (
+        "mode=`rotate` · service=`rag-ingest` · "
+        "quarantine HMAC · "
+        f"roles=`{len(rotated)}`"
+    )
+    if channel_id:
+        ctx_bits += f" · channel=`{channel_id}`"
     if use_digest:
         payload = {
             "text": text,
@@ -664,11 +688,7 @@ def maybe_notify_sidecar_cert_rotate(
                     "elements": [
                         {
                             "type": "mrkdwn",
-                            "text": (
-                                "mode=`rotate` · service=`rag-ingest` · "
-                                "quarantine HMAC · "
-                                f"roles=`{len(rotated)}`"
-                            ),
+                            "text": ctx_bits,
                         }
                     ],
                 },
@@ -691,11 +711,12 @@ def maybe_notify_sidecar_cert_rotate(
                 },
             ],
         }
+    if channel_id:
+        payload["channel"] = channel_id
     thread_flag = os.environ.get(
         "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD", "1"
     ).strip().lower()
     use_thread = use_digest and thread_flag not in {"0", "false", "no", "off"}
-    stored = load_sidecar_rotate_notify_thread_state()
     thread_ts = (
         os.environ.get(
             "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_THREAD_TS", ""
@@ -712,18 +733,12 @@ def maybe_notify_sidecar_cert_rotate(
         thread_reply: Dict[str, Any] = {"ok": True, "skipped": True}
         persist: Dict[str, Any] = {"ok": True, "skipped": True}
         if use_thread:
-            channel_id = (
-                os.environ.get(
-                    "RAG_WEBHOOK_SIGNING_SIDECAR_ROTATE_NOTIFY_CHANNEL", ""
-                ).strip()
-                or os.environ.get("RAG_DUAL_WRITE_DLQ_QUARANTINE_SLACK_CHANNEL", "").strip()
-                or os.environ.get("RAG_JUDGE_SLACK_CHANNEL", "").strip()
-            )
             bot_token = os.environ.get("RAG_JUDGE_SLACK_BOT_TOKEN", "").strip()
             follow = (
                 f"Sidecar cert rotate digest thread · stamp=`{stamp or '—'}`"
                 f" · roles=`{len(rotated)}`"
-                " · quarantine HMAC — restart sidecar if live."
+                + (f" · channel=`{channel_id}`" if channel_id else "")
+                + " · quarantine HMAC — restart sidecar if live."
             )
             thread_reply = post_slack_thread_message(
                 text=follow,
@@ -731,6 +746,8 @@ def maybe_notify_sidecar_cert_rotate(
                 thread_ts=thread_ts or None,
                 bot_token=bot_token or None,
             )
+            if thread_reply.get("channel"):
+                channel_id = str(thread_reply.get("channel") or channel_id).strip()
             parent_ts = str(
                 thread_reply.get("thread_ts")
                 or thread_ts
@@ -745,7 +762,7 @@ def maybe_notify_sidecar_cert_rotate(
                 parent_ts = reply_ts
             try:
                 persist = persist_sidecar_rotate_notify_thread_state(
-                    channel_id=channel_id,
+                    channel_id=channel_id or None,
                     stamp=stamp,
                     roles=rotated,
                     parent_ts=parent_ts or None,
@@ -765,6 +782,7 @@ def maybe_notify_sidecar_cert_rotate(
             "stamp": stamp,
             "digest": bool(use_digest),
             "thread": bool(use_thread),
+            "channel_id": channel_id or None,
             "thread_ts": thread_ts
             or (persist.get("state") or {}).get("parent_ts")
             or thread_reply.get("thread_ts")

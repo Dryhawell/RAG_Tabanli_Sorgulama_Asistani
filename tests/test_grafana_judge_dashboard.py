@@ -41,6 +41,13 @@ def test_rag_judge_grafana_dashboard_json():
     assert any("sidecar" in (t or "").lower() for t in titles)
     assert any("silence burn" in (t or "").lower() for t in titles)
     assert any("cert expiry" in (t or "").lower() for t in titles)
+    ann = (data.get("annotations") or {}).get("list") or []
+    names = [a.get("name") for a in ann if isinstance(a, dict)]
+    assert any("Mute export revoke fan-out" in str(n) for n in names)
+    tags = []
+    for a in ann:
+        tags.extend(a.get("tags") or [])
+    assert "mute-export-revoke-fanout" in tags
     assert "canary" in (data.get("tags") or [])
     assert "inhibit" in (data.get("tags") or [])
     assert "msgref" in (data.get("tags") or [])

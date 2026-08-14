@@ -879,6 +879,11 @@ def _extract_inhibit_rule_blocks(text: str) -> List[str]:
     blocks: List[str] = []
     current: List[str] = []
     in_rules = False
+    saw_header = any(
+        (ln.strip() == "inhibit_rules:" or ln.strip().startswith("inhibit_rules:"))
+        and not ln.strip().startswith("#")
+        for ln in lines
+    )
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("#"):
@@ -888,7 +893,9 @@ def _extract_inhibit_rule_blocks(text: str) -> List[str]:
             continue
         if not in_rules:
             # generated file is only inhibit_rules; still accept rule starts
-            if line.startswith("  - "):
+            # when the file has no inhibit_rules: header. Do not treat earlier
+            # top-level lists (e.g. time_intervals) as inhibit rules.
+            if not saw_header and line.startswith("  - "):
                 in_rules = True
             else:
                 continue
